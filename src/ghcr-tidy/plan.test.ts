@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { packageName } from "../core/registry/package-name.js";
-import { digest, tag } from "./domain.js";
+import { digest, tag, type Digest, type RegistryPath, type Tag } from "./domain.js";
 import { FakeGhcr, version } from "./fake-ghcr.js";
 import { planPackage, type PlanPackageOptions, type PlanPolicy } from "./plan.js";
-import type { Clock } from "./ports.js";
+import type { Clock, RegistryReader } from "./ports.js";
+import type { ManifestResolution } from "../core/registry/manifest.js";
 
 const org = "pyck-ai";
 const registryOwner = "pyck-ai";
@@ -253,5 +254,120 @@ describe("planPackage", () => {
     const second = await planPackage(options(build(), policy));
 
     expect(first).toEqual(second);
+  });
+
+  it("determinism under concurrency: staggered resolve latencies do not change the plan", async () => {
+    // Both tag resolution (roots.ts) and BFS frontier resolution
+    // (reachability.ts) now resolve concurrently. This wraps a real
+    // FakeGhcr world with artificial, REVERSED latency (later-registered
+    // refs resolve first) to prove the emitted plan is identical to the
+    // synchronous fake regardless of completion order.
+    function delayed(inner: RegistryReader, delayFor: ReadonlyMap<string, number>): RegistryReader {
+      return {
+        listTags: (path) => inner.listTags(path),
+        resolve: (path: RegistryPath, ref: Digest | Tag): Promise<ManifestResolution> => {
+          const ms = delayFor.get(ref) ?? 0;
+          return new Promise((resolve) => {
+            setTimeout(() => {
+              inner.resolve(path, ref).then(resolve);
+            }, ms);
+          });
+        },
+      };
+    }
+
+    const build = (): FakeGhcr => {
+      const fake = new FakeGhcr();
+      fake
+        .setManifest(digest("sha256:index"), {
+          children: [
+            { digest: "sha256:c1" },
+            { digest: "sha256:c2" },
+            { digest: "sha256:c3" },
+            { digest: "sha256:c4" },
+          ],
+        })
+        .setManifest(digest("sha256:c1"), {})
+        .setManifest(digest("sha256:c2"), {})
+        .setManifest(digest("sha256:c3"), {})
+        .setManifest(digest("sha256:c4"), {})
+        .setTag(tag("latest"), digest("sha256:index"))
+        .setTag(tag("v-old"), digest("sha256:index"))
+        .addVersion(version(1, "sha256:index", RECENT, ["latest", "v-old"]))
+        .addVersion(version(2, "sha256:c1", OLD))
+        .addVersion(version(3, "sha256:c2", OLD))
+        .addVersion(version(4, "sha256:c3", OLD))
+        .addVersion(version(5, "sha256:c4", OLD));
+      return fake;
+    };
+
+    // Deliberately inverted vs. discovery order: the LAST child discovered
+    // resolves FIRST, so a naive implementation relying on completion
+    // order (rather than list/frontier order) would produce a different
+    // `edges`/`rootChildren` insertion order or a different reported
+    // failure in a failing variant.
+    const delayFor = new Map<string, number>([
+      ["latest", 8],
+      ["v-old", 6],
+      ["sha256:c1", 8],
+      ["sha256:c2", 6],
+      ["sha256:c3", 4],
+      ["sha256:c4", 2],
+    ]);
+
+    const policy: PlanPolicy = {
+      retention: { protectedTagPatterns: [], keepLast: 0, keepDays: 30 },
+      graceDays: 30,
+    };
+
+    const baseline = await planPackage(options(build(), policy));
+    const withJitter = await planPackage({
+      ...options(build(), policy),
+      registry: delayed(build().registryReader(), delayFor),
+    });
+
+    expect(withJitter).toEqual(baseline);
+  });
+
+  it("fail-closed under concurrency: with multiple failing children, the FIRST in discovery order is always reported", async () => {
+    const fake = new FakeGhcr();
+    fake
+      .setManifest(digest("sha256:index"), {
+        children: [{ digest: "sha256:bad-a" }, { digest: "sha256:bad-b" }],
+      })
+      .setManifest(digest("sha256:bad-a"), { notFound: true })
+      .setManifest(digest("sha256:bad-b"), { notFound: true })
+      .setTag(tag("latest"), digest("sha256:index"))
+      .addVersion(version(1, "sha256:index", OLD, ["latest"]))
+      .addVersion(version(2, "sha256:bad-a", OLD))
+      .addVersion(version(3, "sha256:bad-b", OLD));
+
+    // "bad-b" (discovered second) resolves before "bad-a" (discovered
+    // first) — the report must still name "bad-a", proving the BFS
+    // frontier's failure selection is order-based, not race-based.
+    const inner = fake.registryReader();
+    const registry: RegistryReader = {
+      listTags: (path) => inner.listTags(path),
+      resolve: (path: RegistryPath, ref: Digest | Tag): Promise<ManifestResolution> => {
+        const ms = ref === "sha256:bad-a" ? 8 : 0;
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            inner.resolve(path, ref).then(resolve);
+          }, ms);
+        });
+      },
+    };
+
+    const policy: PlanPolicy = {
+      retention: { protectedTagPatterns: [/^latest$/], keepLast: 1, keepDays: 30 },
+      graceDays: 30,
+    };
+    const result = await planPackage({ ...options(fake, policy), registry });
+
+    expect(result).toEqual({
+      status: "skipped",
+      reason: "not-found",
+      detail: "descendant sha256:bad-a of root sha256:index failed to resolve",
+    });
   });
 });

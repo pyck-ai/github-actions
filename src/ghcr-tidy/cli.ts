@@ -9,6 +9,8 @@ import {
   type RegistryOctokit,
 } from "../core/registry/index.js";
 import { createPackagesClient, createRegistryReader } from "./adapters.js";
+import { createLimiter } from "./limiter.js";
+import { createCachingRegistryReader } from "./resolve-cache.js";
 import { applyMutator, type Mutator } from "./mutator.js";
 import { grantApply, nodePlanFileSystem, type PlanFileSystem } from "./apply-capability.js";
 import { githubIssueBreaker, breakerRegressionSink, type Breaker } from "./breaker.js";
@@ -79,6 +81,26 @@ const EXIT_INFRA = 3;
 const EXIT_SAFETY = 4;
 
 const DEFAULT_MANIFEST_PATH = ".ghcr-tidy.yaml";
+/**
+ * `--jobs`' default: ONE shared bound on real registry HTTP concurrency
+ * for the whole run (see `limiter.ts`'s doc on why one shared limiter, not
+ * one pool per dimension multiplied against another). It governs both how
+ * many packages `runPlanning` processes at once (`runPool` below) AND,
+ * via the same-sized limiter wrapped around the registry reader in
+ * {@link buildRegistryAdapters}, how many per-tag/per-BFS-node requests
+ * the planning core (`roots.ts`, `reachability.ts`) may have in flight at
+ * once — across every package, not per package, so this stays the actual
+ * ceiling on concurrent requests hitting `ghcr.io` regardless of how many
+ * packages or BFS levels are logically "active" at once.
+ *
+ * 4, matching `imgverify/cli.ts`'s own `--jobs` default for the same
+ * reason it gives there: GHCR applies SECONDARY rate limits to bursts
+ * (see this project's incident notes on `flutter-rfw`/`baseimages`), so
+ * the fan-out this change adds within a single package (previously fully
+ * serial: one HEAD per tag, one fetch per BFS node) must stay bounded
+ * rather than firing every tag/every frontier node for every package at
+ * once. `--jobs 1` recovers the fully serial behaviour this replaces.
+ */
 const DEFAULT_JOBS = 4;
 
 function errorMessage(error: unknown): string {
@@ -286,6 +308,8 @@ export interface CliDeps {
   clock?: Clock;
   planFs?: PlanFileSystem;
   journal?: Journal;
+  /** Per-package progress line sink for `runPlanning` — see that function's doc. Defaults to `process.stderr.write`; tests inject a collector instead of asserting against real stderr. */
+  progress?: (line: string) => void;
 }
 
 const systemClock: Clock = { now: () => new Date() };
@@ -301,13 +325,35 @@ function requireToken(env: NodeJS.ProcessEnv): string {
   return token;
 }
 
-/** Builds the real, network-backed `RegistryReader`/`PackagesClient` pair for `plan`/`apply`, resolving GHCR bearer tokens per configured package via a shared token cache (one exchange per package, not per manifest resolution). */
+/**
+ * Builds the real, network-backed `RegistryReader`/`PackagesClient` pair
+ * for `plan`/`apply`, resolving GHCR bearer tokens per configured package
+ * via a shared token cache (one exchange per package, not per manifest
+ * resolution).
+ *
+ * The raw registry reader is wrapped in exactly two decorators, in this
+ * order:
+ *
+ * 1. {@link createCachingRegistryReader} (outermost — checked first): a
+ *    digest already resolved anywhere in this run, for this package, is
+ *    served from memory with no HTTP call and no limiter slot consumed.
+ * 2. {@link createLimiter}, sized {@link DEFAULT_JOBS}/`--jobs`: every
+ *    cache MISS queues behind this ONE shared gate, so the planning
+ *    core's newly-concurrent per-tag and per-BFS-node fan-out
+ *    (`roots.ts`, `reachability.ts`) — now fired freely with no limit of
+ *    its own — still hits `ghcr.io` with no more than `jobs` requests in
+ *    flight at any moment, for the whole run, not per package.
+ *
+ * This is the ONLY place either decorator is applied: `planPackage` and
+ * everything it calls stay unaware that concurrency is bounded at all.
+ */
 function buildRegistryAdapters(
   token: string,
   owner: string,
   registryOwner: string,
   entries: readonly ManifestPackageEntry[],
   octokit: RegistryOctokit,
+  jobs: number,
 ): {
   registry: RegistryReader;
   packages: PackagesClient;
@@ -324,13 +370,19 @@ function buildRegistryAdapters(
   }
 
   const tokenCache = createInMemoryTokenCache();
-  const registry = createRegistryReader(async (rp) => {
+  const rawRegistry = createRegistryReader(async (rp) => {
     const name = pathToName.get(rp);
     if (!name) {
       throw new Error(`no configured package maps to registry path ${rp}`);
     }
     return getRegistryToken(token, name, { cache: tokenCache });
   });
+  const limit = createLimiter(jobs);
+  const limitedRegistry: RegistryReader = {
+    listTags: (p) => limit(() => rawRegistry.listTags(p)),
+    resolve: (p, ref) => limit(() => rawRegistry.resolve(p, ref)),
+  };
+  const registry = createCachingRegistryReader(limitedRegistry);
   const packages = createPackagesClient(octokit);
   return { registry, packages, pathFor };
 }
@@ -340,7 +392,35 @@ interface PlanRunResult {
   plan: Plan;
 }
 
-/** Plans every selected package, then assembles a persisted {@link Plan} (`apply`-ready) from whichever of them came back `"planned"`. Concurrency bounded by `--jobs` (default {@link DEFAULT_JOBS}), matching `imgverify/cli.ts`'s target-verification pool. */
+/** One line per {@link PackagePlanResult}, terse enough for {@link runPlanning}'s per-package progress lines — NOT the multi-line detail `formatPlanSummary` prints at the end of a run. */
+function progressOutcomeSummary(result: PackagePlanResult): string {
+  switch (result.status) {
+    case "nothing-to-do":
+      return "nothing to do";
+    case "skipped":
+      return `SKIPPED (${result.reason})`;
+    case "planned":
+      return `${String(result.deleteCount)} to delete in ${String(result.groups.length)} group(s)`;
+  }
+}
+
+/**
+ * Plans every selected package, then assembles a persisted {@link Plan}
+ * (`apply`-ready) from whichever of them came back `"planned"`.
+ * Concurrency bounded by `--jobs` (default {@link DEFAULT_JOBS}), matching
+ * `imgverify/cli.ts`'s target-verification pool.
+ *
+ * Emits one terse progress line via `progress` when each package STARTS
+ * and another when it FINISHES (with its result and elapsed time) — a
+ * multi-package run against a real registry is dominated by HTTP round
+ * trips per package and can legitimately take minutes; with no output at
+ * all in between, that is indistinguishable from a hang. `progress`
+ * defaults to `process.stderr.write` (not stdout: stdout is reserved for
+ * `formatPlanSummary`'s final report and, when `--out` is not used, is
+ * the only machine-parseable-adjacent output this CLI produces — progress
+ * lines must never get mixed into it) and is injectable purely so tests
+ * do not have to assert against real stderr.
+ */
 async function runPlanning(
   manifest: Manifest,
   entries: readonly ManifestPackageEntry[],
@@ -348,27 +428,44 @@ async function runPlanning(
   packagesClient: PackagesClient,
   clock: Clock,
   jobs: number,
+  progress: (line: string) => void = (line) => {
+    process.stderr.write(line);
+  },
 ): Promise<PlanRunResult> {
-  const outcomes = await runPool(entries, jobs, async (entry): Promise<PackagePlanOutcome> => {
-    const policy = resolvePolicy(entry, manifest);
-    const result = await planPackage({
-      org: manifest.owner,
-      registryOwner: manifest.owner,
-      packageName: entry.match,
-      registry,
-      packages: packagesClient,
-      clock,
-      policy: {
-        retention: {
-          protectedTagPatterns: policy.protectedTagPatterns,
-          keepLast: policy.keepLast,
-          keepDays: policy.keepDays,
+  const total = entries.length;
+  const outcomes = await runPool(
+    entries,
+    jobs,
+    async (entry, index): Promise<PackagePlanOutcome> => {
+      const n = index + 1;
+      progress(`[ghcr-tidy] (${String(n)}/${String(total)}) planning ${entry.match}...\n`);
+      const startedAt = Date.now();
+
+      const policy = resolvePolicy(entry, manifest);
+      const result = await planPackage({
+        org: manifest.owner,
+        registryOwner: manifest.owner,
+        packageName: entry.match,
+        registry,
+        packages: packagesClient,
+        clock,
+        policy: {
+          retention: {
+            protectedTagPatterns: policy.protectedTagPatterns,
+            keepLast: policy.keepLast,
+            keepDays: policy.keepDays,
+          },
+          graceDays: policy.graceDays,
         },
-        graceDays: policy.graceDays,
-      },
-    });
-    return { entry, result };
-  });
+      });
+
+      const elapsedMs = Date.now() - startedAt;
+      progress(
+        `[ghcr-tidy] (${String(n)}/${String(total)}) ${entry.match}: ${progressOutcomeSummary(result)} (${String(elapsedMs)}ms)\n`,
+      );
+      return { entry, result };
+    },
+  );
 
   const packages = outcomes
     .filter((o): o is PackagePlanOutcome & { result: PlannedPlan } => o.result.status === "planned")
@@ -441,7 +538,14 @@ async function runPlanCommand(args: ParsedArgs, deps: CliDeps): Promise<number> 
   } else {
     const token = requireToken(process.env);
     const octokit = createOctokit(token);
-    const adapters = buildRegistryAdapters(token, manifest.owner, registryOwner, entries, octokit);
+    const adapters = buildRegistryAdapters(
+      token,
+      manifest.owner,
+      registryOwner,
+      entries,
+      octokit,
+      jobs,
+    );
     registry = deps.registry ?? adapters.registry;
     packagesClient = deps.packages ?? adapters.packages;
   }
@@ -453,6 +557,7 @@ async function runPlanCommand(args: ParsedArgs, deps: CliDeps): Promise<number> 
     packagesClient,
     clock,
     jobs,
+    deps.progress,
   );
 
   process.stdout.write(`${formatPlanSummary(outcomes)}\n`);
@@ -536,6 +641,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
       registryOwner,
       entries,
       octokit as RegistryOctokit,
+      jobs,
     );
     registry = adapters.registry;
     packagesClient = adapters.packages;
@@ -572,6 +678,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
     packagesClient,
     clock,
     jobs,
+    deps.progress,
   );
   process.stdout.write(`${formatPlanSummary(outcomes)}\n`);
 

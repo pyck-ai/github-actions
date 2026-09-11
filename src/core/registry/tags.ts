@@ -47,6 +47,21 @@ export type ListRegistryTagsOptions = RequestWithRetryOptions;
  * partial view of the registry and silently under-protects (or, worse,
  * under-deletes-then-corrects-later) whatever tags fall past the first page.
  *
+ * GHCR's `Link` header is ORIGIN-RELATIVE (verified live 2026-09-11 against
+ * `ghcr.io/v2/pyck-ai/baseimages/agent/tags/list`:
+ * `link: </v2/pyck-ai/baseimages/agent/tags/list?last=...&n=...>; rel="next"`
+ * — no scheme or host), per the OCI distribution spec's own pagination
+ * example. `parseNextLink` returns that raw value verbatim, so it MUST be
+ * resolved against the previous request's URL before being fetched:
+ * passing a bare path straight to `fetch` throws (`TypeError: Failed to
+ * parse URL`), which `requestWithRetry` catches and reports as
+ * `"network-error"` on every retry — indistinguishable from a real network
+ * failure, but 100% reproducible for any package with more than one page
+ * of tags (i.e. the moment pagination is actually exercised) and NOT
+ * something retrying helps with. This was the exact cause of
+ * `baseimages/agent`'s `network-error` in production: it has >100 tags,
+ * `rover` (1 tag, no pagination) did not hit it.
+ *
  * Classifies the observed status the same way {@link resolveManifest} does,
  * so a caller building ghcr-tidy's LIVE_ROOTS can distinguish a genuine
  * 404 (package has no tags endpoint — unusual, but not the same as "zero
@@ -89,7 +104,11 @@ export async function listRegistryTags(
       parsed = {};
     }
     tags.push(...(parsed.tags ?? []));
-    url = parseNextLink(outcome.headers.get("link"));
+    const next = parseNextLink(outcome.headers.get("link"));
+    // Resolve against the URL just fetched: `next` is ORIGIN-RELATIVE in
+    // practice (see this function's doc), but `new URL` also accepts an
+    // already-absolute `next` unchanged, so this is correct either way.
+    url = next !== undefined ? new URL(next, url).toString() : undefined;
   }
 
   return { status: "success", tags };

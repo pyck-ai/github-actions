@@ -51,6 +51,31 @@ describe("listRegistryTags", () => {
     );
   });
 
+  it("resolves an origin-relative Link: rel=next (GHCR's actual production format)", async () => {
+    // Regression test for the real bug: GHCR returns a path-only Link
+    // header (`</v2/owner/pkg/tags/list?...>`, no scheme/host), verified
+    // live against ghcr.io. Passing that straight to `fetch` throws, which
+    // `requestWithRetry` reports as `network-error` — this must not
+    // happen; the relative URL must be resolved against the page just
+    // fetched before the next request is made.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        fakeResponse(200, JSON.stringify({ tags: ["a", "b"] }), {
+          link: '</v2/owner/pkg/tags/list?n=100&last=b>; rel="next"',
+        }),
+      )
+      .mockResolvedValueOnce(fakeResponse(200, JSON.stringify({ tags: ["c"] })));
+
+    const result = await listRegistryTags("owner/pkg", "tok", { fetchImpl, sleep: vi.fn() });
+
+    expect(result).toEqual({ status: "success", tags: ["a", "b", "c"] });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      "https://ghcr.io/v2/owner/pkg/tags/list?n=100&last=b",
+    );
+  });
+
   it("returns not-found for a 404", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(fakeResponse(404));
 

@@ -60,6 +60,30 @@ describe("createRegistryReader", () => {
     }
   });
 
+  it("listTags follows an origin-relative Link header end to end (GHCR's real format)", async () => {
+    // See `core/registry/tags.ts`'s doc: GHCR's Link header is
+    // origin-relative in production. This exercises that through the real
+    // adapter wiring, not just the core function in isolation.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        fakeResponse(200, JSON.stringify({ tags: ["a"] }), {
+          link: '</v2/pyck-ai/baseimages/agent/tags/list?n=100&last=a>; rel="next"',
+        }),
+      )
+      .mockResolvedValueOnce(fakeResponse(200, JSON.stringify({ tags: ["b"] })));
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl as unknown as typeof fetch;
+    try {
+      const reader = createRegistryReader(() => Promise.resolve("tok"));
+      const tags = await reader.listTags(path);
+      expect(tags).toEqual(["a", "b"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("resolve passes the registry path and reference straight through to resolveManifest", async () => {
     const body = JSON.stringify({ mediaType: "application/vnd.oci.image.manifest.v1+json" });
     const fetchImpl = vi

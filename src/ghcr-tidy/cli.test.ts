@@ -221,6 +221,32 @@ describe("plan subcommand", () => {
     expect(parsed.packages[0]?.groups[0]?.root.digest).toBe(digest("sha256:garbage"));
   });
 
+  it("emits a start and finish progress line per package via CliDeps.progress, and never writes them to stdout", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+
+    const stdoutLogs: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      stdoutLogs.push(String(chunk));
+      return true;
+    });
+    const progressLines: string[] = [];
+
+    const exitCode = await runCommand(
+      ["plan", "--manifest", manifestPath],
+      baseDeps(fake, { progress: (line) => progressLines.push(line) }),
+    );
+    stdoutSpy.mockRestore();
+
+    expect(exitCode).toBe(0);
+    expect(progressLines.some((l) => /planning widget\.\.\./.test(l))).toBe(true);
+    expect(progressLines.some((l) => /widget: .*\(\d+ms\)/.test(l))).toBe(true);
+    // Progress must never leak into stdout, which is reserved for the
+    // human-readable summary (and is the only output at all when --out
+    // is not used).
+    expect(stdoutLogs.join("")).not.toMatch(/planning widget/);
+  });
+
   it("is the default subcommand (no subcommand token)", async () => {
     const manifestPath = await writeManifest(VALID_MANIFEST);
     const fake = widgetWorld();
@@ -264,7 +290,16 @@ describe("plan subcommand", () => {
     expect(exitCode).toBe(1);
   });
 
-  it("exits 3 (infrastructure) when the registry throws an unexpected error", async () => {
+  it("exits 1 (findings), not 3, when listTags itself fails — the package is SKIPPED, not the whole run aborted", async () => {
+    // This was the production incident: `listTags` throwing (a real
+    // `network-error`, or anything else — see `roots.ts`'s doc) used to
+    // propagate all the way out of `runCommand` uncaught, aborting the
+    // ENTIRE plan/apply over one package's transient registry error while
+    // sibling packages already in flight under `--jobs` kept running to
+    // completion in the background regardless of the process having
+    // already reported its result. `buildLiveRoots` now catches this and
+    // fails only the one affected package closed, like any other
+    // fail-closed reason.
     const manifestPath = await writeManifest(VALID_MANIFEST);
     const throwingRegistry: RegistryReader = {
       listTags: () => Promise.reject(new Error("simulated network failure")),
@@ -272,6 +307,26 @@ describe("plan subcommand", () => {
     };
     // Same reasoning as above: a non-empty version listing is required for
     // planPackage to ever reach the registry at all.
+    const fakePackages = new FakeGhcr();
+    fakePackages.addVersion(version(1, "sha256:live", "2026-09-01T00:00:00.000Z"));
+    const exitCode = await runCommand(["plan", "--manifest", manifestPath], {
+      registry: throwingRegistry,
+      packages: fakePackages.packagesClient(),
+      clock: CLOCK,
+    });
+    expect(exitCode).toBe(1);
+  });
+
+  it("exits 3 (infrastructure) when the registry throws an unexpected error that is NOT a tag-listing failure", async () => {
+    // `resolve()` throwing (as opposed to returning a typed non-success
+    // result, which is all a real adapter ever does) is not a case
+    // `roots.ts`/`reachability.ts` catch — it is exactly the "truly
+    // unexpected" case `runCommand`'s outer catch exists for.
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const throwingRegistry: RegistryReader = {
+      listTags: () => Promise.resolve([tag("latest")]),
+      resolve: () => Promise.reject(new Error("simulated unexpected failure")),
+    };
     const fakePackages = new FakeGhcr();
     fakePackages.addVersion(version(1, "sha256:live", "2026-09-01T00:00:00.000Z"));
     const exitCode = await runCommand(["plan", "--manifest", manifestPath], {

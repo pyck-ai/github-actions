@@ -125,7 +125,7 @@ export async function planPackage(options: PlanPackageOptions): Promise<PackageP
     return {
       status: "skipped",
       reason: liveRootsResult.reason,
-      detail: `tag "${liveRootsResult.tag}" failed to resolve`,
+      detail: liveRootsResult.detail,
     };
   }
   const { roots, rootChildren } = liveRootsResult;

@@ -12544,6 +12544,21 @@ function parseNextLink(header) {
  * partial view of the registry and silently under-protects (or, worse,
  * under-deletes-then-corrects-later) whatever tags fall past the first page.
  *
+ * GHCR's `Link` header is ORIGIN-RELATIVE (verified live 2026-09-11 against
+ * `ghcr.io/v2/pyck-ai/baseimages/agent/tags/list`:
+ * `link: </v2/pyck-ai/baseimages/agent/tags/list?last=...&n=...>; rel="next"`
+ * — no scheme or host), per the OCI distribution spec's own pagination
+ * example. `parseNextLink` returns that raw value verbatim, so it MUST be
+ * resolved against the previous request's URL before being fetched:
+ * passing a bare path straight to `fetch` throws (`TypeError: Failed to
+ * parse URL`), which `requestWithRetry` catches and reports as
+ * `"network-error"` on every retry — indistinguishable from a real network
+ * failure, but 100% reproducible for any package with more than one page
+ * of tags (i.e. the moment pagination is actually exercised) and NOT
+ * something retrying helps with. This was the exact cause of
+ * `baseimages/agent`'s `network-error` in production: it has >100 tags,
+ * `rover` (1 tag, no pagination) did not hit it.
+ *
  * Classifies the observed status the same way {@link resolveManifest} does,
  * so a caller building ghcr-tidy's LIVE_ROOTS can distinguish a genuine
  * 404 (package has no tags endpoint — unusual, but not the same as "zero
@@ -12575,7 +12590,11 @@ async function listRegistryTags(registryPath, token, options = {}) {
             parsed = {};
         }
         tags.push(...(parsed.tags ?? []));
-        url = parseNextLink(outcome.headers.get("link"));
+        const next = parseNextLink(outcome.headers.get("link"));
+        // Resolve against the URL just fetched: `next` is ORIGIN-RELATIVE in
+        // practice (see this function's doc), but `new URL` also accepts an
+        // already-absolute `next` unchanged, so this is correct either way.
+        url = next !== undefined ? new URL(next, url).toString() : undefined;
     }
     return { status: "success", tags };
 }
@@ -12663,6 +12682,112 @@ function createPackagesClient(octokit) {
                 reportedTags: v.tags.map((t) => tag(t)),
             }));
         },
+    };
+}
+
+;// CONCATENATED MODULE: ./src/ghcr-tidy/limiter.ts
+/**
+ * A bounded concurrency gate: `limit(fn)` queues `fn` and runs it only
+ * once fewer than `limit` calls are currently in flight through THIS
+ * limiter. Unlike a fixed-size worker pool over a known array (see
+ * `cli.ts`'s `runPool`), this has no notion of "items" — arbitrary,
+ * differently-shaped async work from anywhere can share one limiter.
+ *
+ * This is what actually bounds registry HTTP concurrency for ghcr-tidy
+ * (see `cli.ts`'s `--jobs` wiring): the planning core (`roots.ts`,
+ * `reachability.ts`) fires its independent per-tag/per-BFS-node requests
+ * with `Promise.all` and no limit of its own — deliberately, so it stays
+ * pure set-arithmetic-plus-I/O with no concurrency policy baked in — and
+ * relies on the `RegistryReader` it was given already being wrapped by a
+ * limiter sized to `--jobs`. One shared limiter, applied once at the
+ * registry-adapter boundary, means concurrency stays additive (bounded by
+ * `--jobs` HTTP requests in flight at any moment, across every package and
+ * every BFS frontier at once) rather than multiplying together with
+ * whatever other pool (e.g. the cross-package one) happens to also be
+ * live — two independently-sized pools nested inside each other would
+ * bound total concurrency to their PRODUCT, not either one's own limit.
+ */
+function createLimiter(limit) {
+    if (!Number.isInteger(limit) || limit < 1) {
+        throw new Error(`limiter concurrency must be a positive integer, got ${String(limit)}`);
+    }
+    let active = 0;
+    const queue = [];
+    function schedule() {
+        if (active >= limit) {
+            return;
+        }
+        const run = queue.shift();
+        if (!run) {
+            return;
+        }
+        active += 1;
+        run();
+    }
+    return function withLimit(fn) {
+        return new Promise((resolve, reject) => {
+            queue.push(() => {
+                fn().then((value) => {
+                    active -= 1;
+                    resolve(value);
+                    schedule();
+                }, (error) => {
+                    active -= 1;
+                    reject(error);
+                    schedule();
+                });
+            });
+            schedule();
+        });
+    };
+}
+
+;// CONCATENATED MODULE: ./src/ghcr-tidy/resolve-cache.ts
+/**
+ * Decorates a {@link RegistryReader} so that within one run, the same
+ * `(path, ref)` pair is never sent to the underlying registry twice — and
+ * two callers racing on the SAME digest (e.g. two keep-roots whose BFS
+ * frontiers both reach a shared platform manifest in the same tick, now
+ * that `reachability.ts` resolves a frontier level concurrently) share one
+ * in-flight request instead of issuing duplicates.
+ *
+ * Keyed on the raw reference actually sent to the registry (a {@link Tag}
+ * or a {@link Digest}), not on the digest a resolution turns OUT to be:
+ * resolving a tag is exactly the tag -> digest lookup itself, so it can
+ * never be skipped just because some other tag happens to already be
+ * known to point at the same digest. What this DOES eliminate is the
+ * common case this model produces constantly: the same DIGEST reached
+ * from more than one place — a child shared by several roots (already
+ * partly handled by `reachability.ts`'s own `reachable`/`rootChildren`
+ * bookkeeping) or a manifest fetched once as a BFS child and later found
+ * again as an unrelated live root.
+ *
+ * Scoped per `path` implicitly (the key includes it), so it is safe to
+ * share ONE cache across every package in a run: a digest is
+ * content-addressed, but manifest storage in GHCR is per-repository, so a
+ * digest resolved successfully under one package's path says nothing
+ * about whether it exists under a different package's path.
+ *
+ * Does not cache `listTags` — the tag list is read exactly once per
+ * package already (`roots.ts` is `buildLiveRoots`'s only caller besides
+ * `verify.ts`'s snapshotting, and those are different logical reads at
+ * different times), so there is nothing to de-duplicate there.
+ */
+function createCachingRegistryReader(registry) {
+    const cache = new Map();
+    function cachedResolve(path, ref) {
+        const key = `${path}\u0000${ref}`;
+        const existing = cache.get(key);
+        if (existing !== undefined) {
+            return existing;
+        }
+        const promise = registry.resolve(path, ref);
+        cache.set(key, promise);
+        return promise;
+    }
+    return {
+        listTags: (path) => registry.listTags(path),
+        resolve: cachedResolve,
     };
 }
 
@@ -13550,17 +13675,51 @@ function skipReasonFor(resolution) {
  * be computable at all, so this function fails the WHOLE package closed
  * (see the `plan.ts` module doc) on the first tag that does not resolve
  * with a `"success"` status — there is no smaller safe unit than "we do
- * not know what this tag points at".
+ * not know what this tag points at". Listing the tags in the first place
+ * is held to the same standard: {@link RegistryReader.listTags} has no
+ * failure channel of its own (it throws — see `adapters.ts`'s doc), and a
+ * thrown listing failure is caught here and turned into the identical
+ * `"failed"` outcome, so a package whose tag list cannot even be read is
+ * SKIPPED like any other fail-closed package, never left to propagate an
+ * uncaught exception out of the whole run (that used to abort the entire
+ * `plan`/`apply` invocation over ONE package's transient registry error,
+ * while sibling packages already in flight kept running to completion in
+ * the background regardless — see `cli.ts`'s `--jobs` doc for why that
+ * mattered in practice).
+ *
+ * Every tag is resolved CONCURRENTLY (`Promise.all`) rather than one at a
+ * time — this function itself imposes no concurrency limit; the
+ * `RegistryReader` it is given is expected to already bound real HTTP
+ * concurrency (see `limiter.ts`/`resolve-cache.ts` and `cli.ts`'s
+ * `--jobs` wiring). Results are kept indexed by the tag list's own order
+ * so that, if more than one tag fails, the FIRST one in list order is
+ * always what gets reported — independent of which network round trip
+ * happens to finish first — keeping the emitted skip reason
+ * deterministic regardless of concurrency (see `plan.test.ts`'s
+ * determinism-under-concurrency test).
  */
 async function buildLiveRoots(path, registry) {
-    const tags = await registry.listTags(path);
+    let tags;
+    try {
+        tags = await registry.listTags(path);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { status: "failed", reason: "transient", detail: `failed to list tags: ${message}` };
+    }
+    const resolutions = await Promise.all(tags.map((t) => registry.resolve(path, t)));
     const tagsByDigest = new Map();
     const rootChildren = new Map();
-    for (const t of tags) {
-        const resolution = await registry.resolve(path, t);
+    for (const [i, t] of tags.entries()) {
+        const resolution = resolutions[i];
+        // Always defined: `resolutions` was built from `tags` via `.map`, so
+        // it has exactly `tags.length` entries in the same order.
+        if (resolution === undefined) {
+            throw new Error("unreachable: resolutions and tags must be the same length");
+        }
         const reason = skipReasonFor(resolution);
         if (reason !== undefined) {
-            return { status: "failed", reason, tag: t };
+            return { status: "failed", reason, detail: `tag "${t}" failed to resolve` };
         }
         if (resolution.status !== "success") {
             // Unreachable: skipReasonFor returns undefined only for "success".
@@ -13608,6 +13767,27 @@ async function buildLiveRoots(path, registry) {
  * failed digest, so it cannot know whether anything downstream of it is
  * reachable. The distinct root/failedDigest in the result exists purely
  * for diagnostics.
+ *
+ * Each BFS level (the current `frontier`, de-duplicated) is resolved
+ * CONCURRENTLY (`Promise.all`), not one node at a time — this is usually
+ * where most of a package's fan-out actually lives (a multi-arch index's
+ * platform + attestation children, all siblings in one level). Like
+ * `roots.ts`'s per-tag resolution, this function imposes no concurrency
+ * limit of its own; the `RegistryReader` it is given is expected to
+ * already bound real HTTP concurrency (`limiter.ts`, `cli.ts`'s `--jobs`).
+ * Levels themselves stay sequential (a node's children are only knowable
+ * once the node itself has resolved), and roots are still walked one at a
+ * time in `keepRoots`' own order — de-duplication against the shared
+ * `reachable` set is exactly as it was before, just checked once per
+ * level up front instead of node-by-node as each resolve returns, so
+ * concurrent siblings never race each other into resolving the same
+ * digest twice.
+ *
+ * When more than one node in a level fails, the FIRST one in the level's
+ * (de-duplicated, order-preserving) order is always what gets reported —
+ * independent of which network round trip happens to finish first — so
+ * the emitted skip reason is deterministic regardless of concurrency (see
+ * `plan.test.ts`'s determinism-under-concurrency test).
  */
 async function computeReachability(path, keepRoots, rootChildren, registry, options = {}) {
     const nodeCap = options.nodeCap ?? 10_000;
@@ -13624,31 +13804,59 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
             if (depth > depthCap) {
                 throw new Error(`reachability walk rooted at ${root} exceeded the depth cap (${String(depthCap)})`);
             }
-            const next = [];
+            // De-duplicate the level up front (a digest can appear more than
+            // once in one frontier — e.g. two parents at the same level sharing
+            // a child) so concurrent resolution below never issues two requests
+            // for the same digest, and order is preserved for deterministic
+            // failure reporting.
+            const distinctFrontier = [];
+            const seenThisLevel = new Set();
             for (const d of frontier) {
-                if (reachable.has(d)) {
+                if (reachable.has(d) || seenThisLevel.has(d)) {
                     continue;
                 }
+                seenThisLevel.add(d);
+                distinctFrontier.push(d);
+            }
+            for (const d of distinctFrontier) {
                 if (reachable.size >= nodeCap) {
                     throw new Error(`reachability walk exceeded the node cap (${String(nodeCap)})`);
                 }
-                let children;
+                // Reserved up front (before any resolve completes) so the node
+                // cap above is checked against an accurate count even though the
+                // resolves below run concurrently.
+                reachable.add(d);
+            }
+            const resolved = await Promise.all(distinctFrontier.map(async (d) => {
                 const known = rootChildren.get(d);
                 if (known !== undefined) {
-                    children = known;
+                    return { kind: "known", children: known };
+                }
+                return { kind: "resolved", resolution: await registry.resolve(path, d) };
+            }));
+            const next = [];
+            for (const [i, d] of distinctFrontier.entries()) {
+                const outcome = resolved[i];
+                // Always defined: `resolved` was built from `distinctFrontier`
+                // via `.map`, so it has exactly `distinctFrontier.length` entries
+                // in the same order.
+                if (outcome === undefined) {
+                    throw new Error("unreachable: resolved and distinctFrontier must be the same length");
+                }
+                let children;
+                if (outcome.kind === "known") {
+                    children = outcome.children;
                 }
                 else {
-                    const resolution = await registry.resolve(path, d);
-                    const reason = skipReasonFor(resolution);
+                    const reason = skipReasonFor(outcome.resolution);
                     if (reason !== undefined) {
                         return { status: "failed", reason, root, failedDigest: d };
                     }
-                    if (resolution.status !== "success") {
+                    if (outcome.resolution.status !== "success") {
                         throw new Error("unreachable: non-success resolution without a skip reason");
                     }
-                    children = resolution.children.map((c) => digest(c.digest));
+                    children = outcome.resolution.children.map((c) => digest(c.digest));
                 }
-                reachable.add(d);
                 edges.set(d, children);
                 next.push(...children);
             }
@@ -13807,7 +14015,7 @@ async function planPackage(options) {
         return {
             status: "skipped",
             reason: liveRootsResult.reason,
-            detail: `tag "${liveRootsResult.tag}" failed to resolve`,
+            detail: liveRootsResult.detail,
         };
     }
     const { roots, rootChildren } = liveRootsResult;
@@ -14427,6 +14635,8 @@ function classifyApplyExit(plan, result) {
 
 
 
+
+
 /**
  * `ghcr-tidy` — the CLI entrypoint wiring the pure planning core
  * (`plan.ts`), the apply path (`apply-capability.ts`, `apply.ts`,
@@ -14468,6 +14678,26 @@ const EXIT_CONFIG = 2;
 const EXIT_INFRA = 3;
 const EXIT_SAFETY = 4;
 const DEFAULT_MANIFEST_PATH = ".ghcr-tidy.yaml";
+/**
+ * `--jobs`' default: ONE shared bound on real registry HTTP concurrency
+ * for the whole run (see `limiter.ts`'s doc on why one shared limiter, not
+ * one pool per dimension multiplied against another). It governs both how
+ * many packages `runPlanning` processes at once (`runPool` below) AND,
+ * via the same-sized limiter wrapped around the registry reader in
+ * {@link buildRegistryAdapters}, how many per-tag/per-BFS-node requests
+ * the planning core (`roots.ts`, `reachability.ts`) may have in flight at
+ * once — across every package, not per package, so this stays the actual
+ * ceiling on concurrent requests hitting `ghcr.io` regardless of how many
+ * packages or BFS levels are logically "active" at once.
+ *
+ * 4, matching `imgverify/cli.ts`'s own `--jobs` default for the same
+ * reason it gives there: GHCR applies SECONDARY rate limits to bursts
+ * (see this project's incident notes on `flutter-rfw`/`baseimages`), so
+ * the fan-out this change adds within a single package (previously fully
+ * serial: one HEAD per tag, one fetch per BFS node) must stay bounded
+ * rather than firing every tag/every frontier node for every package at
+ * once. `--jobs 1` recovers the fully serial behaviour this replaces.
+ */
 const DEFAULT_JOBS = 4;
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
@@ -14633,8 +14863,29 @@ function requireToken(env) {
     }
     return token;
 }
-/** Builds the real, network-backed `RegistryReader`/`PackagesClient` pair for `plan`/`apply`, resolving GHCR bearer tokens per configured package via a shared token cache (one exchange per package, not per manifest resolution). */
-function buildRegistryAdapters(token, owner, registryOwner, entries, octokit) {
+/**
+ * Builds the real, network-backed `RegistryReader`/`PackagesClient` pair
+ * for `plan`/`apply`, resolving GHCR bearer tokens per configured package
+ * via a shared token cache (one exchange per package, not per manifest
+ * resolution).
+ *
+ * The raw registry reader is wrapped in exactly two decorators, in this
+ * order:
+ *
+ * 1. {@link createCachingRegistryReader} (outermost — checked first): a
+ *    digest already resolved anywhere in this run, for this package, is
+ *    served from memory with no HTTP call and no limiter slot consumed.
+ * 2. {@link createLimiter}, sized {@link DEFAULT_JOBS}/`--jobs`: every
+ *    cache MISS queues behind this ONE shared gate, so the planning
+ *    core's newly-concurrent per-tag and per-BFS-node fan-out
+ *    (`roots.ts`, `reachability.ts`) — now fired freely with no limit of
+ *    its own — still hits `ghcr.io` with no more than `jobs` requests in
+ *    flight at any moment, for the whole run, not per package.
+ *
+ * This is the ONLY place either decorator is applied: `planPackage` and
+ * everything it calls stay unaware that concurrency is bounded at all.
+ */
+function buildRegistryAdapters(token, owner, registryOwner, entries, octokit, jobs) {
     const pathToName = new Map();
     const pathFor = (p) => {
         const rp = registryPathFor(registryOwner, p);
@@ -14645,19 +14896,58 @@ function buildRegistryAdapters(token, owner, registryOwner, entries, octokit) {
         pathFor(entry.match);
     }
     const tokenCache = createInMemoryTokenCache();
-    const registry = createRegistryReader(async (rp) => {
+    const rawRegistry = createRegistryReader(async (rp) => {
         const name = pathToName.get(rp);
         if (!name) {
             throw new Error(`no configured package maps to registry path ${rp}`);
         }
         return getRegistryToken(token, name, { cache: tokenCache });
     });
+    const limit = createLimiter(jobs);
+    const limitedRegistry = {
+        listTags: (p) => limit(() => rawRegistry.listTags(p)),
+        resolve: (p, ref) => limit(() => rawRegistry.resolve(p, ref)),
+    };
+    const registry = createCachingRegistryReader(limitedRegistry);
     const packages = createPackagesClient(octokit);
     return { registry, packages, pathFor };
 }
-/** Plans every selected package, then assembles a persisted {@link Plan} (`apply`-ready) from whichever of them came back `"planned"`. Concurrency bounded by `--jobs` (default {@link DEFAULT_JOBS}), matching `imgverify/cli.ts`'s target-verification pool. */
-async function runPlanning(manifest, entries, registry, packagesClient, clock, jobs) {
-    const outcomes = await runPool(entries, jobs, async (entry) => {
+/** One line per {@link PackagePlanResult}, terse enough for {@link runPlanning}'s per-package progress lines — NOT the multi-line detail `formatPlanSummary` prints at the end of a run. */
+function progressOutcomeSummary(result) {
+    switch (result.status) {
+        case "nothing-to-do":
+            return "nothing to do";
+        case "skipped":
+            return `SKIPPED (${result.reason})`;
+        case "planned":
+            return `${String(result.deleteCount)} to delete in ${String(result.groups.length)} group(s)`;
+    }
+}
+/**
+ * Plans every selected package, then assembles a persisted {@link Plan}
+ * (`apply`-ready) from whichever of them came back `"planned"`.
+ * Concurrency bounded by `--jobs` (default {@link DEFAULT_JOBS}), matching
+ * `imgverify/cli.ts`'s target-verification pool.
+ *
+ * Emits one terse progress line via `progress` when each package STARTS
+ * and another when it FINISHES (with its result and elapsed time) — a
+ * multi-package run against a real registry is dominated by HTTP round
+ * trips per package and can legitimately take minutes; with no output at
+ * all in between, that is indistinguishable from a hang. `progress`
+ * defaults to `process.stderr.write` (not stdout: stdout is reserved for
+ * `formatPlanSummary`'s final report and, when `--out` is not used, is
+ * the only machine-parseable-adjacent output this CLI produces — progress
+ * lines must never get mixed into it) and is injectable purely so tests
+ * do not have to assert against real stderr.
+ */
+async function runPlanning(manifest, entries, registry, packagesClient, clock, jobs, progress = (line) => {
+    process.stderr.write(line);
+}) {
+    const total = entries.length;
+    const outcomes = await runPool(entries, jobs, async (entry, index) => {
+        const n = index + 1;
+        progress(`[ghcr-tidy] (${String(n)}/${String(total)}) planning ${entry.match}...\n`);
+        const startedAt = Date.now();
         const policy = resolvePolicy(entry, manifest);
         const result = await planPackage({
             org: manifest.owner,
@@ -14675,6 +14965,8 @@ async function runPlanning(manifest, entries, registry, packagesClient, clock, j
                 graceDays: policy.graceDays,
             },
         });
+        const elapsedMs = Date.now() - startedAt;
+        progress(`[ghcr-tidy] (${String(n)}/${String(total)}) ${entry.match}: ${progressOutcomeSummary(result)} (${String(elapsedMs)}ms)\n`);
         return { entry, result };
     });
     const packages = outcomes
@@ -14740,11 +15032,11 @@ async function runPlanCommand(args, deps) {
     else {
         const token = requireToken(process.env);
         const octokit = createOctokit(token);
-        const adapters = buildRegistryAdapters(token, manifest.owner, registryOwner, entries, octokit);
+        const adapters = buildRegistryAdapters(token, manifest.owner, registryOwner, entries, octokit, jobs);
         registry = deps.registry ?? adapters.registry;
         packagesClient = deps.packages ?? adapters.packages;
     }
-    const { outcomes, plan } = await runPlanning(manifest, entries, registry, packagesClient, clock, jobs);
+    const { outcomes, plan } = await runPlanning(manifest, entries, registry, packagesClient, clock, jobs, deps.progress);
     process.stdout.write(`${formatPlanSummary(outcomes)}\n`);
     if (args.out !== undefined) {
         const fs = deps.planFs ?? nodePlanFileSystem();
@@ -14803,7 +15095,7 @@ async function runApplyCommand(args, deps) {
         // token/octokit are guaranteed defined here: needsOctokit is true
         // whenever this branch is reached (deps.registry or deps.packages
         // missing implies needsOctokit).
-        const adapters = buildRegistryAdapters(token, manifest.owner, registryOwner, entries, octokit);
+        const adapters = buildRegistryAdapters(token, manifest.owner, registryOwner, entries, octokit, jobs);
         registry = adapters.registry;
         packagesClient = adapters.packages;
     }
@@ -14827,7 +15119,7 @@ async function runApplyCommand(args, deps) {
             ...(args.journal !== undefined && { journalPath: args.journal }),
         });
     }
-    const { outcomes, plan } = await runPlanning(manifest, entries, registry, packagesClient, clock, jobs);
+    const { outcomes, plan } = await runPlanning(manifest, entries, registry, packagesClient, clock, jobs, deps.progress);
     process.stdout.write(`${formatPlanSummary(outcomes)}\n`);
     const fs = deps.planFs ?? nodePlanFileSystem();
     const outPath = external_node_path_default().resolve(args.out);

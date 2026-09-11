@@ -10,7 +10,7 @@ export type BuildLiveRootsResult =
       /** Direct children of every live root (kept or not), as a free side effect of resolving each tag — reused by the reachability walk and by deletion-group building so neither has to re-resolve a root. */
       rootChildren: ReadonlyMap<Digest, readonly Digest[]>;
     }
-  | { status: "failed"; reason: SkipReason; tag: Tag };
+  | { status: "failed"; reason: SkipReason; detail: string };
 
 /**
  * Builds `LIVE_ROOTS = image(TAGMAP)` by listing the registry's own tags
@@ -33,22 +33,56 @@ export type BuildLiveRootsResult =
  * be computable at all, so this function fails the WHOLE package closed
  * (see the `plan.ts` module doc) on the first tag that does not resolve
  * with a `"success"` status — there is no smaller safe unit than "we do
- * not know what this tag points at".
+ * not know what this tag points at". Listing the tags in the first place
+ * is held to the same standard: {@link RegistryReader.listTags} has no
+ * failure channel of its own (it throws — see `adapters.ts`'s doc), and a
+ * thrown listing failure is caught here and turned into the identical
+ * `"failed"` outcome, so a package whose tag list cannot even be read is
+ * SKIPPED like any other fail-closed package, never left to propagate an
+ * uncaught exception out of the whole run (that used to abort the entire
+ * `plan`/`apply` invocation over ONE package's transient registry error,
+ * while sibling packages already in flight kept running to completion in
+ * the background regardless — see `cli.ts`'s `--jobs` doc for why that
+ * mattered in practice).
+ *
+ * Every tag is resolved CONCURRENTLY (`Promise.all`) rather than one at a
+ * time — this function itself imposes no concurrency limit; the
+ * `RegistryReader` it is given is expected to already bound real HTTP
+ * concurrency (see `limiter.ts`/`resolve-cache.ts` and `cli.ts`'s
+ * `--jobs` wiring). Results are kept indexed by the tag list's own order
+ * so that, if more than one tag fails, the FIRST one in list order is
+ * always what gets reported — independent of which network round trip
+ * happens to finish first — keeping the emitted skip reason
+ * deterministic regardless of concurrency (see `plan.test.ts`'s
+ * determinism-under-concurrency test).
  */
 export async function buildLiveRoots(
   path: RegistryPath,
   registry: RegistryReader,
 ): Promise<BuildLiveRootsResult> {
-  const tags = await registry.listTags(path);
+  let tags: readonly Tag[];
+  try {
+    tags = await registry.listTags(path);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: "failed", reason: "transient", detail: `failed to list tags: ${message}` };
+  }
+
+  const resolutions = await Promise.all(tags.map((t) => registry.resolve(path, t)));
 
   const tagsByDigest = new Map<Digest, Set<Tag>>();
   const rootChildren = new Map<Digest, readonly Digest[]>();
 
-  for (const t of tags) {
-    const resolution = await registry.resolve(path, t);
+  for (const [i, t] of tags.entries()) {
+    const resolution = resolutions[i];
+    // Always defined: `resolutions` was built from `tags` via `.map`, so
+    // it has exactly `tags.length` entries in the same order.
+    if (resolution === undefined) {
+      throw new Error("unreachable: resolutions and tags must be the same length");
+    }
     const reason = skipReasonFor(resolution);
     if (reason !== undefined) {
-      return { status: "failed", reason, tag: t };
+      return { status: "failed", reason, detail: `tag "${t}" failed to resolve` };
     }
     if (resolution.status !== "success") {
       // Unreachable: skipReasonFor returns undefined only for "success".
