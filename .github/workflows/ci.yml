@@ -1,0 +1,144 @@
+name: ci
+run-name: CI
+
+# Runs on every pull request and on every push to main so branch protection
+# always has a fresh status check to gate on.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs for the same ref (PR head or main) — nothing here
+# publishes anything, so an in-flight run can always be safely replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# No default token scope. Every job below declares exactly what it needs.
+permissions: {}
+
+jobs:
+  lint:
+    # Only needs to read the checked-out source to run eslint/prettier.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+  typecheck:
+    # Only needs to read the checked-out source to run tsc --noEmit.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc -p tsconfig.json --noEmit
+
+  test:
+    # Only needs to read the checked-out source to run the test suite.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+  build:
+    # Only needs to read the checked-out source; this job never writes
+    # anything back to the repo, it only diffs the rebuild against what
+    # is already committed.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # The bundled-action distribution model (see repo README) commits the
+      # ncc-bundled output under dist/ so consuming workflows can reference
+      # this repo's actions by SHA with no registry fetch at run time. If the
+      # committed dist/ ever drifts from source, a pinned consumer silently
+      # runs stale code with no error anywhere — this is the single worst
+      # failure mode of that pattern, so CI rebuilds the bundles from a clean
+      # checkout and fails on any difference, tracked or untracked.
+      - name: Rebuild bundles and check dist/ is up to date
+        run: |
+          npm run bundle
+          if ! git diff --exit-code -- dist/; then
+            echo "::error::dist/ is stale — run \"npm run bundle\" and commit the result" >&2
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain -- dist/)" ]; then
+            echo "::error::dist/ has untracked output — run \"npm run bundle\" and commit the result" >&2
+            exit 1
+          fi
+
+  # Aggregate check for branch protection: a single required status that
+  # fails if any of the jobs above failed, was cancelled, or was skipped.
+  gate:
+    if: always()
+    needs: [lint, typecheck, test, build]
+    # Only inspects job results from the GitHub context; touches no repo
+    # content and no packages.
+    permissions: {}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all required jobs succeeded
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::one or more required jobs did not succeed"
+            exit 1
+          fi

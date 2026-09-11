@@ -1,0 +1,131 @@
+name: release
+run-name: Release
+
+# Fires on any pushed tag matching v* (v0.1.0, v1.2.3, ...). Publishing only,
+# never releasing: this workflow does not create a GitHub Release and does
+# not move or retag anything.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Keyed on the tag ref so two different tag pushes can publish concurrently,
+# but a re-push of the same tag (e.g. after deleting and recreating it)
+# queues behind any run already in flight instead of racing it. Never
+# cancel a run here: it may already be mid-publish to the registry, and an
+# interrupted `npm publish` is exactly the kind of half-done state this
+# workflow exists to avoid.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# No default token scope. Every job below declares exactly what it needs.
+permissions: {}
+
+# Deliberately ubuntu-latest, not self-hosted. The self-hosted ARC pool runs
+# an image built by pyck-ai/github-runner, which itself consumes this repo's
+# tooling (imgverify/ghcr-tidy/ghcr-audit). If publishing a fix to that
+# tooling could only run on that pool, a bad release could wedge the org
+# with no way to publish the fix that unwedges it. This workflow is the
+# break-glass path and must not depend on the thing it may need to repair.
+
+jobs:
+  verify-tag:
+    # Only needs to read package.json at the tagged commit.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify tag matches package.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::pushed tag ${GITHUB_REF_NAME} does not match package.json version ${pkg_version}" >&2
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches package.json version ${pkg_version}"
+
+  verify:
+    # Only needs to read the checked-out source to lint/typecheck/test/build.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Same drift check as ci.yml (see the comment there): a release must
+      # never publish or bundle-reference a dist/ that doesn't match the
+      # tagged source.
+      - name: Rebuild bundles and check dist/ is up to date
+        run: |
+          npm run bundle
+          if ! git diff --exit-code -- dist/; then
+            echo "::error::dist/ is stale for this tag — run \"npm run bundle\" and commit the result before retagging" >&2
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain -- dist/)" ]; then
+            echo "::error::dist/ has untracked output — run \"npm run bundle\" and commit the result before retagging" >&2
+            exit 1
+          fi
+
+  publish:
+    needs: [verify-tag, verify]
+    # Needs to read the tagged source and write published package versions
+    # to GitHub Packages; nothing else.
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          registry-url: 'https://npm.pkg.github.com'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish package(s) to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if node -p "Boolean(require('./package.json').workspaces)" | grep -q true; then
+            echo "package.json declares workspaces — publishing each workspace"
+            npm publish --workspaces --access public
+          else
+            echo "package.json declares no workspaces — publishing the single root package"
+            npm publish --access public
+          fi

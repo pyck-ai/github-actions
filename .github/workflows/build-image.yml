@@ -1,0 +1,354 @@
+name: build-image
+
+# Reusable single-image build/verify/publish workflow.
+#
+# Shape (must not be weakened): discover -> build (push BY DIGEST, no tags)
+# -> verify (pulls that digest) -> publish (applies tags) -> gate. The
+# property being protected: a bad image never gets the chance to be
+# reachable by a floating tag. Do not add a mode/input that allows tagging
+# before verify completes.
+#
+# Triggers stay in the caller (schedule / workflow_dispatch / pull_request) —
+# a shared workflow must not own the cron, since the offset encodes a real
+# dependency on when an upstream image publishes.
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: >-
+          Container registry + namespace to build args resolve against and
+          to push images to (e.g. ghcr.io/pyck-ai). Exported as the
+          REGISTRY env var consumed by the bake file.
+        type: string
+        required: false
+        default: ghcr.io/pyck-ai
+      builder-name:
+        description: >-
+          Name for the buildx builder instance created for this run. Keeps
+          concurrent builds on the same runner from colliding on a shared
+          default builder.
+        type: string
+        required: true
+      bake-targets:
+        description: >-
+          Optional override for the bake targets to build, as a JSON array
+          string (e.g. '["debian"]'). If unset, the target list is
+          discovered dynamically from `docker buildx bake --print`, which is
+          the preferred path so a new variant is picked up without touching
+          this workflow.
+        type: string
+        required: false
+        default: ''
+      verify-command:
+        description: >-
+          Shell command run in the verify job, given a merged digests.json
+          via --digests. Parameterised so callers can move from today's
+          `task verify` to a future verification tool without this workflow
+          changing.
+        type: string
+        required: false
+        default: task verify
+      runs-on:
+        description: >-
+          Runner label used for every job in this workflow.
+        type: string
+        required: false
+        default: self-hosted
+      timeout-minutes:
+        description: >-
+          Per-job timeout in minutes, applied to build/verify/publish.
+        type: number
+        required: false
+        default: 60
+
+# Cancel any in-progress build for the same ref when a newer one is
+# triggered.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Read the target list from the bake file (unless overridden) so a new
+  # variant is picked up by the build matrix without touching CI.
+  discover:
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: read # required to checkout the calling repo
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+      bakeargs-set: ${{ steps.targets.outputs.bakeargs-set }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read targets and build args from bake file
+        id: targets
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          BAKE_TARGETS_OVERRIDE: ${{ inputs.bake-targets }}
+        run: |
+          set -a && source buildargs.conf && set +a
+          print=$(REGISTRY="$REGISTRY" docker buildx bake --print)
+          {
+            if [ -n "$BAKE_TARGETS_OVERRIDE" ]; then
+              echo "targets=$BAKE_TARGETS_OVERRIDE"
+            else
+              echo "targets=$(jq -c '[.target | keys[]]' <<<"$print")"
+            fi
+            echo 'bakeargs-set<<EOF'
+            grep -v '^#' buildargs.conf | grep -v '^\s*$' | sed 's/^/*.args./'
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              # On PRs, disable cache export so an unmerged (possibly broken) bump can't
+              # poison the registry build cache that scheduled builds rely on.
+              echo '*.cache-to='
+            fi
+            # Push every build by digest only, on every trigger — never a floating
+            # or version tag directly. Tags are applied afterwards by the `publish`
+            # job, once `verify` has confirmed the pushed digest is good, so a bad
+            # image never gets the chance to be reachable by `latest`. The repo to
+            # push to is derived from each target's first tag (e.g. .../foo:latest).
+            jq -rn --argjson p "$print" '
+              $p.target
+              | to_entries[]
+              | .key as $k
+              | (.value.tags[0] | sub(":[^/]+$"; "")) as $repo
+              | ($k + ".tags="),
+                ($k + ".output=type=image,name=" + $repo + ",push-by-digest=true,name-canonical=true,push=true")'
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+  build:
+    needs: [discover]
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read # required to checkout the calling repo
+      packages: write # required to push images/digests to ghcr.io
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.discover.outputs.targets) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Load build args
+        run: grep -v '^#' buildargs.conf | grep -v '^\s*$' >> $GITHUB_ENV
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4
+
+      - name: Set up buildx builder
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          name: ${{ inputs.builder-name }}
+          driver-opts: network=host
+          buildkitd-flags: --allow-insecure-entitlement=network.host
+
+      # Needed both to pull the base image and to push the result; no image in
+      # this build comes from Docker Hub, so there is no Docker Hub login here.
+      - name: Log in to the Container registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: bake
+        uses: docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b # v7
+        with:
+          targets: ${{ matrix.target }}
+          # Refresh the base image so a scheduled rebuild actually picks up a new
+          # floating base tag instead of a stale local one.
+          pull: true
+          # Always false: `push: true` maps to `--set *.output=type=registry`,
+          # which would collide with the per-target `<target>.output=type=image,...`
+          # that `discover` always emits (push-by-digest, every trigger, including
+          # scheduled/manual runs). Letting that `set` override be the sole writer
+          # of `output` avoids depending on unclear pattern-vs-exact-key precedence
+          # in buildx.
+          push: false
+          set: ${{ needs.discover.outputs.bakeargs-set }}
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          # Keep provenance out of the METADATA JSON only; the image itself still
+          # gets its provenance attestation. Buildx embeds the full SLSA predicate
+          # per target, and a multi-platform target's JSON can be large enough to
+          # blow the step's env var out (Linux caps a single env var at
+          # MAX_ARG_STRLEN = 128KB); the next step reads METADATA through the
+          # environment. See docker/bake-action#239 and #135, and
+          # pyck-ai/baseimages' build-images.yml which hit this for real.
+          BUILDX_METADATA_PROVENANCE: disabled
+
+      # Recorded so `verify` can pull this exact digest (not whatever a
+      # floating tag happens to point at) and `publish` can apply tags to it
+      # once verify passes. One JSON file per matrix target, merged
+      # downstream via an artifact handshake — not job outputs, because
+      # matrix outputs are last-writer-wins and would silently corrupt digest
+      # tracking if a variant is added.
+      - name: Export digest
+        env:
+          METADATA: ${{ steps.bake.outputs.metadata }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          jq -e 'to_entries
+                 | map(select(.key != "buildx.build.warnings"
+                              and (.value["containerimage.digest"]? != null)))
+                 | map({key: .key, value: .value["containerimage.digest"]})
+                 | from_entries
+                 | if length == 0 then error("no digests in bake metadata") else . end' \
+            <<<"$METADATA" > "$RUNNER_TEMP/digests/$TARGET.json"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.target }}
+          path: ${{ runner.temp }}/digests/${{ matrix.target }}.json
+          retention-days: 1
+
+  # Verify the EXACT digest `build` pushed — a real pre-tag gate rather than a
+  # post-publish smoke test. `build` pushed by digest only (no tag moved) and
+  # uploaded that digest as an artifact; this job downloads it, pulls the image
+  # by its recorded digest, and runs the caller's verify-command against it.
+  # Tags are applied afterwards by `publish`, which only runs once this job
+  # succeeds — so a bad image never has a chance to be reachable by a
+  # floating tag.
+  #
+  # Caveat: a multi-arch target's `docker pull` on the recorded digest only
+  # fetches the manifest for the puller's own platform (amd64, since
+  # self-hosted runners here are amd64). So this verifies the amd64 half
+  # only — any arm64 half is published unverified. `--load` cannot load a
+  # multi-arch result at all; pulling the real pushed digest is strictly
+  # better than a fresh single-platform rebuild (it's the actual pushed
+  # artifact) but does not close this platform gap. See the same note in
+  # pyck-ai/baseimages' verify.sh.
+  verify:
+    needs: [build]
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read # required to checkout the calling repo
+      packages: read # required to pull the pushed digest for verification
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Merge digests
+        run: jq -s 'add' digests/*.json > digests.json
+
+      - name: Verify pushed image
+        env:
+          REGISTRY: ${{ inputs.registry }}
+        run: ${{ inputs.verify-command }} --digests digests.json
+
+  # Apply the floating/version tags now that `verify` has confirmed the pushed
+  # digest is good. Skipped on PRs: PR builds are pushed by digest only for
+  # inspection and must never move a tag that scheduled/manual runs own.
+  publish:
+    needs: [discover, verify]
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read # required to checkout the calling repo
+      packages: write # required to apply tags via imagetools create
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Merge digests
+        run: jq -s 'add' digests/*.json > digests.json
+
+      - name: Apply tags
+        env:
+          REGISTRY: ${{ inputs.registry }}
+        run: |
+          set -a && source buildargs.conf && set +a
+          print=$(docker buildx bake --print | jq -c '.target')
+          rc=0
+          while IFS=$'\t' read -r target tags; do
+            d=$(jq -r --arg t "$target" '.[$t] // empty' digests.json)
+            if [ -z "$d" ]; then echo "::error::no digest recorded for $target"; rc=1; continue; fi
+            IFS=',' read -ra tl <<<"$tags"
+            # Derive the repo the same way discover's jq does
+            # (sub(":[^/]+$"; "")) so the two agree on registries with a port.
+            # Do not substitute bash ${x%:*} for this reason.
+            repo=$(sed 's/:[^/]*$//' <<<"${tl[0]}")
+            # Assert the source is a multi-arch index rather than passing
+            # --prefer-index=false: every target here is assumed to inherit a
+            # shared multi-platform config, so the source IS an index and
+            # `imagetools create` does a cheap carbon copy. If a target ever
+            # became single-platform, --prefer-index=false would silently
+            # publish a bare manifest; failing loudly here is correct instead.
+            if ! docker buildx imagetools inspect --raw "${repo}@${d}" \
+                 | jq -e '.mediaType|test("index|manifest.list")' >/dev/null; then
+              echo "::error::$target digest is not a multi-arch index: ${repo}@${d}"; rc=1; continue
+            fi
+            args=(); for t in "${tl[@]}"; do args+=(-t "$t"); done
+            # Accumulate failures rather than aborting on the first error, so a
+            # re-run converges in one pass. imagetools create from a recorded
+            # digest is idempotent.
+            docker buildx imagetools create "${args[@]}" "${repo}@${d}" || rc=1
+          done < <(jq -r 'to_entries[] | select((.value.tags//[])|length>0) | "\(.key)\t\(.value.tags|join(","))"' <<<"$print")
+          exit $rc
+
+  # Single aggregate gate for the branch-protection required status check.
+  #
+  # Renaming this job breaks every consumer: four repos' branch-protection
+  # required checks reference the name "gate" directly. Do not rename it
+  # without updating every caller's required-check configuration in the same
+  # change.
+  #
+  # The build matrix can't be required directly: its targets are discovered
+  # dynamically, and a matrix job skipped via a failed `needs` reports a bare
+  # context that a required check treats as passing. This job has a stable
+  # name, runs even when upstream jobs fail (if: always()), and fails unless
+  # every one of them succeeded.
+  gate:
+    needs: [discover, build, verify, publish]
+    if: always()
+    runs-on: ${{ inputs.runs-on }}
+    permissions: {} # aggregation only; no API calls needed
+    steps:
+      - name: Verify all jobs succeeded
+        run: |
+          results="${{ needs.discover.result }} ${{ needs.build.result }} ${{ needs.verify.result }}"
+          for r in $results; do
+            [ "$r" = "success" ] || { echo "A job did not succeed: $results"; exit 1; }
+          done
+          # `publish` is intentionally skipped on PRs (if: github.event_name !=
+          # 'pull_request'), so it must be accepted as either "success" or
+          # "skipped".
+          case "${{ needs.publish.result }}" in
+            success|skipped) ;;
+            *) echo "publish did not succeed: ${{ needs.publish.result }}"; exit 1 ;;
+          esac
+          echo "All jobs succeeded."

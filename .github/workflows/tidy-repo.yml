@@ -1,0 +1,134 @@
+name: tidy-repo
+
+# Reusable housekeeping workflow: delete old workflow runs, close stale
+# issues/PRs, and delete stale branches. Callers own the trigger (schedule /
+# workflow_dispatch) — see the "Triggers stay in the caller" rule in this
+# repo's README; a shared workflow must not own the cron because the cron
+# offset encodes a real dependency on when the calling repo's own upstream
+# publishes.
+#
+# Jobs are chained via `needs:` (not parallel) deliberately, to avoid hitting
+# GitHub API rate limits — preserve that ordering if this workflow changes.
+
+on:
+  workflow_call:
+    inputs:
+      dry_run:
+        description: >-
+          If true, report what would be deleted/closed without making any
+          change. Passed through to each job's dry-run/debug-only flag.
+        type: boolean
+        required: false
+        default: false
+      workflows-retain-days:
+        description: >-
+          How many days of workflow run history to keep. Runs older than this
+          are deleted (at least 1 run per workflow is always kept).
+        type: number
+        required: false
+        default: 30
+      issues-retain-days:
+        description: >-
+          How many days of inactivity before an open issue is marked stale.
+        type: number
+        required: false
+        default: 30
+      issues-close-days:
+        description: >-
+          How many days after being marked stale before a stale issue is
+          closed.
+        type: number
+        required: false
+        default: 7
+      prs-retain-days:
+        description: >-
+          How many days of inactivity before an open pull request is marked
+          stale. Draft PRs are exempt.
+        type: number
+        required: false
+        default: 30
+      prs-close-days:
+        description: >-
+          How many days after being marked stale before a stale pull request
+          is closed.
+        type: number
+        required: false
+        default: 7
+      branches-retain-days:
+        description: >-
+          Delete branches with no commit activity in this many days (closed
+          PR branches included). Branches with an open PR are excluded.
+        type: number
+        required: false
+        default: 90
+
+# Never cancel a running maintenance job — partial cleanup is worse than no
+# cleanup.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  # Delete workflow runs older than workflows-retain-days, keeping at least 1
+  # per workflow.
+  clean-old-workflow-runs:
+    name: Delete old workflow runs
+    runs-on: self-hosted
+    permissions:
+      actions: write # required to delete workflow runs
+    steps:
+      - uses: Mattraks/delete-workflow-runs@b3018382ca039b53d238908238bd35d1fb14f8ee # v2.1.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: ${{ inputs.workflows-retain-days }}
+          keep_minimum_runs: 1
+          dry_run: ${{ inputs.dry_run }}
+          check_branch_existence: false
+          check_pullrequest_exist: false
+
+  # Mark issues and PRs stale after retain-days of inactivity and close them
+  # close-days later. Draft PRs are exempt. Runs after workflow cleanup to
+  # space out API calls.
+  clean-stale-issues-and-prs:
+    name: Close stale issues and PRs
+    needs: clean-old-workflow-runs
+    runs-on: self-hosted
+    permissions:
+      pull-requests: write # required to label/close issues and PRs
+    steps:
+      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          days-before-issue-stale: ${{ inputs.issues-retain-days }}
+          days-before-issue-close: ${{ inputs.issues-close-days }}
+          close-issue-message: 'Closing due to inactivity for more than ${{ inputs.issues-retain-days }} days.'
+          stale-issue-label: 'stale'
+          days-before-pr-stale: ${{ inputs.prs-retain-days }}
+          days-before-pr-close: ${{ inputs.prs-close-days }}
+          close-pr-message: 'Closing due to inactivity for more than ${{ inputs.prs-retain-days }} days.'
+          stale-pr-label: 'stale'
+          exempt-draft-pr: true
+          delete-branch: false
+          operations-per-run: 100
+          debug-only: ${{ inputs.dry_run }}
+
+  # Delete branches with no commits in the last branches-retain-days days.
+  # Runs after stale PR closure so recently-closed PR branches are eligible
+  # immediately.
+  clean-stale-branches:
+    name: Delete stale branches
+    needs: clean-stale-issues-and-prs
+    runs-on: self-hosted
+    permissions:
+      contents: write # required to delete branches
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-tags: true
+      - uses: beatlabs/delete-old-branches-action@4eeeb8740ff8b3cb310296ddd6b43c3387734588 # v0.0.11
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          date: '${{ inputs.branches-retain-days }} days ago'
+          dry_run: '${{ inputs.dry_run }}'
+          delete_tags: false
+          exclude_open_pr_branches: true
