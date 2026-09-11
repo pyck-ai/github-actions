@@ -624,7 +624,7 @@ describe("runCommand — --jobs concurrency", () => {
     return makeFakeCli({
       pull: async (ref) => {
         const target = /\/([^/:@]+)@/.exec(ref)?.[1];
-        await delay(target !== undefined ? DELAYS_MS[target] ?? 0 : 0);
+        await delay(target !== undefined ? (DELAYS_MS[target] ?? 0) : 0);
         pullOrder.push(target ?? ref);
       },
       run: async () => ({ output: "", exitCode: 0, timedOut: false }),
