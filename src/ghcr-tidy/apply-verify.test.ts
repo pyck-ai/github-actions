@@ -66,7 +66,12 @@ describe("applyPlan — post-apply verification: clean apply", () => {
       .setTag(tag("latest"), digest("sha256:live"))
       .setManifest(digest("sha256:live"), {})
       .setManifest(digest("sha256:garbage"), {});
-    fake.addVersion({ id: 1, digest: digest("sha256:garbage"), createdAt: new Date(), reportedTags: [] });
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
 
     const { mutator, deletedVersionIds } = fake.mutator();
     const { sink, incidents } = memoryRegressionSink();
@@ -91,7 +96,12 @@ describe("applyPlan — post-apply verification: regression by disappearance", (
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
     // The plan mistakenly deletes the live tag's own digest.
-    fake.addVersion({ id: 1, digest: digest("sha256:live"), createdAt: new Date(), reportedTags: [] });
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:live"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
     fake.setDeleteSideEffect(1, () => fake.setManifest(digest("sha256:live"), { notFound: true }));
 
     const { mutator, attemptedVersionIds } = fake.mutator();
@@ -112,9 +122,7 @@ describe("applyPlan — post-apply verification: regression by disappearance", (
     expect(result.abortedFor).toEqual({
       kind: "regression",
       packageName: pkgA,
-      tags: [
-        expect.objectContaining({ tag: tag("latest"), stillResolves: false }) as unknown,
-      ],
+      tags: [expect.objectContaining({ tag: tag("latest"), stillResolves: false }) as unknown],
     });
     expect(incidents).toHaveLength(1);
     expect(incidents[0]?.packageName).toBe(pkgA);
@@ -130,7 +138,12 @@ describe("applyPlan — post-apply verification: regression by digest change", (
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
     fake.setManifest(digest("sha256:other"), {});
-    fake.addVersion({ id: 1, digest: digest("sha256:garbage"), createdAt: new Date(), reportedTags: [] });
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
     fake.setManifest(digest("sha256:garbage"), {});
     // Deleting unrelated garbage somehow leaves the tag repointed — simulates a planner/registry model bug.
     fake.setDeleteSideEffect(1, () => fake.setTag(tag("latest"), digest("sha256:other")));
@@ -214,7 +227,12 @@ describe("applyPlan — post-apply verification: pre-existing damage", () => {
     fake.setTag(tag("already-broken"), digest("sha256:hollow"));
     fake.setManifest(digest("sha256:hollow"), { notFound: true });
     fake.setManifest(digest("sha256:garbage"), {});
-    fake.addVersion({ id: 1, digest: digest("sha256:garbage"), createdAt: new Date(), reportedTags: [] });
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
 
     const { mutator, deletedVersionIds } = fake.mutator();
     const { sink, incidents } = memoryRegressionSink();
@@ -238,7 +256,12 @@ describe("applyPlan — post-apply verification: pre-snapshot failure", () => {
   it("treats every broken post tag as a regression under the strict posture, even though the break might have predated this run", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
-    fake.addVersion({ id: 1, digest: digest("sha256:live"), createdAt: new Date(), reportedTags: [] });
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:live"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
     fake.setDeleteSideEffect(1, () => fake.setManifest(digest("sha256:live"), { notFound: true }));
 
     const { mutator, attemptedVersionIds } = fake.mutator();
@@ -267,7 +290,12 @@ describe("applyPlan — post-apply verification: pre-flight canary", () => {
     const fake = new FakeGhcr();
     // No canary tag/manifest set up at all — canary resolution 404s.
     fake.setManifest(digest("sha256:garbage"), {});
-    fake.addVersion({ id: 1, digest: digest("sha256:garbage"), createdAt: new Date(), reportedTags: [] });
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
 
     const { mutator, attemptedVersionIds } = fake.mutator();
     const { sink, incidents } = memoryRegressionSink();
