@@ -10727,7 +10727,11 @@ async function runRunCommand(args, deps) {
             hadCheckFailure = true;
         }
     }
-    const exitCode = hadInfraError ? EXIT_INFRA_ERROR : hadCheckFailure ? EXIT_CHECK_FAILURE : EXIT_OK;
+    const exitCode = hadInfraError
+        ? EXIT_INFRA_ERROR
+        : hadCheckFailure
+            ? EXIT_CHECK_FAILURE
+            : EXIT_OK;
     if (args.json !== undefined) {
         await (0,promises_namespaceObject.writeFile)(external_node_path_default().resolve(args.json), JSON.stringify({ targets: reports, exitCode }, null, 2));
     }

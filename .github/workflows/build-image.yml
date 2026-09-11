@@ -39,21 +39,21 @@ on:
           this workflow.
         type: string
         required: false
-        default: ''
+        default: ""
       verify-command:
-          description: >-
-            Shell command run in the verify job. The job appends
-            `--digests digests.json`, so this must name a command that accepts
-            that flag directly. Parameterised so callers can move to the
-            TypeScript verification tool without this workflow changing.
-          type: string
-          required: false
-          # NOT `task verify`. go-task treats a trailing `--digests x` as its
-          # own flag and exits 2 printing usage without running the task; with
-          # `--` it forwards the flag to the BUILD step instead, where bake
-          # rejects it (exit 201). Both were measured. It fails closed rather
-          # than passing vacuously, but it never verifies anything either.
-          default: ./verify.sh
+        description: >-
+          Shell command run in the verify job. The job appends
+          `--digests digests.json`, so this must name a command that accepts
+          that flag directly. Parameterised so callers can move to the
+          TypeScript verification tool without this workflow changing.
+        type: string
+        required: false
+        # NOT `task verify`. go-task treats a trailing `--digests x` as its
+        # own flag and exits 2 printing usage without running the task; with
+        # `--` it forwards the flag to the BUILD step instead, where bake
+        # rejects it (exit 201). Both were measured. It fails closed rather
+        # than passing vacuously, but it never verifies anything either.
+        default: ./verify.sh
       runs-on:
         description: >-
           Runner label used for every job in this workflow.

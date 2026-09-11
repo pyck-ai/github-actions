@@ -7,7 +7,7 @@ run-name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 # Keyed on the tag ref so two different tag pushes can publish concurrently,
 # but a re-push of the same tag (e.g. after deleting and recreating it)
@@ -62,7 +62,7 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: 'npm'
+          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
@@ -110,7 +110,7 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          registry-url: 'https://npm.pkg.github.com'
+          registry-url: "https://npm.pkg.github.com"
 
       - name: Install dependencies
         run: npm ci

@@ -1,1 +1,0 @@
-{"version":3,"file":"status.d.ts","sourceRoot":"","sources":["file:///home/mkrupp/src/pyck/github-actions/src/registry/status.ts"],"names":[],"mappings":"AAAA;;;;;;GAMG;AACH,MAAM,MAAM,WAAW,GAAG,SAAS,GAAG,WAAW,GAAG,WAAW,GAAG,cAAc,GAAG,eAAe,CAAC;AAEnG,0DAA0D;AAC1D,wBAAgB,cAAc,CAAC,MAAM,EAAE,MAAM,GAAG,WAAW,CAW1D;AAED,2DAA2D;AAC3D,wBAAgB,iBAAiB,CAAC,MAAM,EAAE,MAAM,GAAG,OAAO,CAEzD"}

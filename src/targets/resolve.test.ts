@@ -58,9 +58,7 @@ describe("deriveRepoFromTag", () => {
   });
 
   it("handles a tag with dots and dashes", () => {
-    expect(deriveRepoFromTag("ghcr.io/pyck-ai/agent:claude-2.1.268")).toBe(
-      "ghcr.io/pyck-ai/agent",
-    );
+    expect(deriveRepoFromTag("ghcr.io/pyck-ai/agent:claude-2.1.268")).toBe("ghcr.io/pyck-ai/agent");
   });
 });
 

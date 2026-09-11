@@ -254,7 +254,11 @@ describe("runCommand — run subcommand, exit-code matrix (no docker daemon)", (
 
   it("exit 1 — a check fails, image is otherwise fine", async () => {
     const cli = makeFakeCli({
-      run: async (): Promise<DockerExecResult> => ({ output: "go\n", exitCode: 0, timedOut: false }),
+      run: async (): Promise<DockerExecResult> => ({
+        output: "go\n",
+        exitCode: 0,
+        timedOut: false,
+      }),
     });
     const exitCode = await runCommand(baseArgv(), { cli });
     expect(exitCode).toBe(1);
@@ -326,12 +330,14 @@ targets:
   });
 
   it("exit 3 — digest mode with no digest recorded for a target", async () => {
-    await writeFile(path.join(dir, "digests.json"), JSON.stringify({ "some-other-target": "sha256:aaa" }));
-    const cli = makeFakeCli();
-    const exitCode = await runCommand(
-      baseArgv(["--digests", path.join(dir, "digests.json")]),
-      { cli },
+    await writeFile(
+      path.join(dir, "digests.json"),
+      JSON.stringify({ "some-other-target": "sha256:aaa" }),
     );
+    const cli = makeFakeCli();
+    const exitCode = await runCommand(baseArgv(["--digests", path.join(dir, "digests.json")]), {
+      cli,
+    });
     expect(exitCode).toBe(3);
   });
 });
@@ -348,7 +354,9 @@ describe("runCommand — digest mode", () => {
 
   it("derives the repo from the target's first tag with a regex, not naive splitting — registry with a port", async () => {
     await writeFile(path.join(dir, ".imgverify.yaml"), PORT_MANIFEST_YAML);
-    const bakePrint = bakePrintJson({ img: { tags: ["host:5000/img:latest", "host:5000/img:1.0"] } });
+    const bakePrint = bakePrintJson({
+      img: { tags: ["host:5000/img:latest", "host:5000/img:1.0"] },
+    });
     await writeFile(path.join(dir, "bake-print.json"), bakePrint);
     await writeFile(path.join(dir, "digests.json"), JSON.stringify({ img: "sha256:deadbeef" }));
 

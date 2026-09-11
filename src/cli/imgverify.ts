@@ -251,7 +251,9 @@ async function loadBakeTargets(
     try {
       content = await readFile(bakePrintPath, "utf8");
     } catch (error) {
-      throw new BakeError(`could not read --bake-print file ${bakePrintPath}: ${errorMessage(error)}`);
+      throw new BakeError(
+        `could not read --bake-print file ${bakePrintPath}: ${errorMessage(error)}`,
+      );
     }
     return parseBakePrint(content);
   }
@@ -306,7 +308,10 @@ async function loadDigests(digestsFlag: string): Promise<Record<string, string>>
  * hardcoded default) is the one case this heuristic gets wrong; documented
  * here rather than silently assumed.
  */
-function timeoutOverrideExec(timeoutMs: number | undefined): { exec: ExecFn; execBinary: ExecBinaryFn } {
+function timeoutOverrideExec(timeoutMs: number | undefined): {
+  exec: ExecFn;
+  execBinary: ExecBinaryFn;
+} {
   if (timeoutMs === undefined) {
     return { exec: spawnExec, execBinary: spawnExecBinary };
   }
@@ -314,12 +319,15 @@ function timeoutOverrideExec(timeoutMs: number | undefined): { exec: ExecFn; exe
     requested === DOCKER_CLI_DEFAULT_TIMEOUT_MS ? timeoutMs : requested;
   return {
     exec: (execArgs, opts) => spawnExec(execArgs, { timeoutMs: resolve(opts.timeoutMs) }),
-    execBinary: (execArgs, opts) => spawnExecBinary(execArgs, { timeoutMs: resolve(opts.timeoutMs) }),
+    execBinary: (execArgs, opts) =>
+      spawnExecBinary(execArgs, { timeoutMs: resolve(opts.timeoutMs) }),
   };
 }
 
 function printTargetHeader(resolved: ResolvedTarget): void {
-  process.stdout.write(`\n${resolved.target} — ${resolved.ref} (platform: ${resolved.architecture})\n`);
+  process.stdout.write(
+    `\n${resolved.target} — ${resolved.ref} (platform: ${resolved.architecture})\n`,
+  );
 }
 
 async function runValidateCommand(args: ParsedArgs): Promise<number> {
@@ -336,7 +344,10 @@ async function runValidateCommand(args: ParsedArgs): Promise<number> {
   const bakePrintPath = path.resolve(args.bakePrint);
   const content = await readFile(bakePrintPath, "utf8");
   const bakeTargets = parseBakePrint(content);
-  resolveTargets(loaded.manifest, bakeTargets.map((t) => t.name));
+  resolveTargets(
+    loaded.manifest,
+    bakeTargets.map((t) => t.name),
+  );
 
   process.stdout.write(`manifest OK — matched ${String(bakeTargets.length)} bake target(s)\n`);
   return EXIT_OK;
@@ -390,7 +401,10 @@ async function runRunCommand(args: ParsedArgs, deps: CliDeps): Promise<number> {
   // Match validation runs against the FULL set of known bake targets, not
   // the --target-filtered subset — a typo'd `match` glob must be caught
   // even on a run that only exercises one target via --target.
-  const resolvedChecks = resolveTargets(loaded.manifest, bakeTargets.map((t) => t.name));
+  const resolvedChecks = resolveTargets(
+    loaded.manifest,
+    bakeTargets.map((t) => t.name),
+  );
 
   let selectedTargets = bakeTargets;
   if (args.targets.length > 0) {
@@ -468,7 +482,11 @@ async function runRunCommand(args: ParsedArgs, deps: CliDeps): Promise<number> {
     }
   }
 
-  const exitCode = hadInfraError ? EXIT_INFRA_ERROR : hadCheckFailure ? EXIT_CHECK_FAILURE : EXIT_OK;
+  const exitCode = hadInfraError
+    ? EXIT_INFRA_ERROR
+    : hadCheckFailure
+      ? EXIT_CHECK_FAILURE
+      : EXIT_OK;
 
   if (args.json !== undefined) {
     await writeFile(

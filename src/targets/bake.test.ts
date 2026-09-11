@@ -52,7 +52,12 @@ describe("parseBakePrint", () => {
 });
 
 function fakeExec(
-  result: Partial<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> = {},
+  result: Partial<{
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    timedOut: boolean;
+  }> = {},
 ): BakeExecFn {
   return vi.fn(async () => ({
     stdout: "",

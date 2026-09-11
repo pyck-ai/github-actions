@@ -14,14 +14,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "bundle": "npm run bundle:registry && npm run bundle:imgverify",
+    "bundle": "npm run bundle:registry && npm run bundle:imgverify && npm run bundle:prune",
     "bundle:registry": "ncc build src/registry/index.ts -o dist/registry",
     "bundle:imgverify": "ncc build src/cli/imgverify.ts -o dist/imgverify",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "bundle:prune": "find dist \\( -name '*.d.ts' -o -name '*.d.ts.map' \\) -delete"
   },
   "dependencies": {
     "@octokit/core": "^6.1.2",
