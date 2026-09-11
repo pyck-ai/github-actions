@@ -30,7 +30,9 @@ in your own workflow instead. `tidy-repo.yml` additionally wants
 - **`imgverify`** — manifest-driven image verification. A repo declares its
   checks in `.imgverify.yaml`; the tool resolves bake targets, pulls or inspects
   each image, and runs them. Twelve check kinds, no shell escape hatch.
-- **`ghcr-tidy`** — GHCR retention. Not yet implemented.
+- **`ghcr-tidy`** — GHCR retention. Read-only planning core so far: it computes
+  the delete set (registry-rooted keep set, reachability, grace window) and can
+  emit a plan, but ships no mutator — nothing can issue a DELETE yet.
 - **`ghcr-audit`** — registry integrity checks. Not yet implemented.
 
 ```sh
@@ -50,6 +52,7 @@ failures, so a broken environment is never reported as a broken image.
 .github/workflows/   this repo's CI, plus the reusable workflows it publishes
 .github/actions/     composite actions, each with its own bundle
 src/core/            shared: registry API client, reporting
+src/ghcr-tidy/       that tool's internals
 src/imgverify/       that tool's internals
 ```
 

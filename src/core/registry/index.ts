@@ -21,6 +21,13 @@ export {
 } from "./manifest.js";
 
 export {
+  parseNextLink,
+  listRegistryTags,
+  type ListTagsResult,
+  type ListRegistryTagsOptions,
+} from "./tags.js";
+
+export {
   RegistryAuthError,
   createInMemoryTokenCache,
   getRegistryToken,
