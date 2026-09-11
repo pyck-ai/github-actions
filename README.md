@@ -34,8 +34,14 @@ in your own workflow instead. `tidy-repo.yml` additionally wants
   keep set, reachability, grace window), emits a plan, and applies it. Applying
   requires a persisted plan re-validated via a capability gate (`grantApply`);
   deletion runs as groups (parent first, a failed parent abandons its group) and
-  is only reachable through a `Mutator`. Not yet wired to a CLI or action, so
-  nothing can invoke it from CI yet.
+  is only reachable through a `Mutator`. After each package's deletions it
+  verifies the registry directly — snapshotting every tag before and after
+  (from the registry's own tag list, interleaved per package, not batched),
+  checking each tag still resolves, to the same digest, with its full manifest
+  closure intact, and aborting the run on any regression. A pre-flight canary
+  on a known-good tag distinguishes a bad registry day from damage the run
+  caused; damage confirmed broken before the run is reported separately. Not
+  yet wired to a CLI or action, so nothing can invoke it from CI yet.
 - **`ghcr-audit`** — registry integrity checks. Not yet implemented.
 
 ```sh

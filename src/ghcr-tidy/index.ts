@@ -87,7 +87,23 @@ export {
   EXIT_APPLY_SAFETY,
   type ApplyOptions,
   type ApplyResult,
+  type ApplyAbortReason,
+  type VerificationOptions,
   type PackageApplyResult,
   type GroupApplyResult,
   type MemberApplyOutcome,
 } from "./apply.js";
+
+export {
+  snapshotPackage,
+  checkCanary,
+  compareSnapshots,
+  memoryRegressionSink,
+  type ResolveState,
+  type TagSnapshot,
+  type RegressedTag,
+  type CompareSnapshotsResult,
+  type CompareSnapshotsOptions,
+  type RegressionIncident,
+  type RegressionSink,
+} from "./verify.js";

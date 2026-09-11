@@ -1,12 +1,39 @@
 import type { PackageName } from "../core/registry/package-name.js";
-import type { Digest } from "./domain.js";
+import { registryPathFor, type Digest, type RegistryPath, type Tag } from "./domain.js";
 import {
   assertGroupsAreWellFormed,
   type Plan,
   type PersistedDeletionGroup,
+  type PersistedGroupMember,
 } from "./persisted-plan.js";
 import type { Journal, MutationTarget } from "./journal.js";
 import type { Mutator } from "./mutator.js";
+import type { RegistryReader } from "./ports.js";
+import {
+  checkCanary,
+  compareSnapshots,
+  snapshotPackage,
+  type RegressedTag,
+  type RegressionSink,
+  type TagSnapshot,
+} from "./verify.js";
+
+/**
+ * Wires post-apply verification (`verify.ts`) into `applyPlan`. Entirely
+ * OPTIONAL: omitting it reproduces the pre-verification behaviour exactly
+ * (nothing snapshots the registry, nothing can abort for a regression) —
+ * every existing caller and test that does not pass it is unaffected.
+ * When present, `applyPlan` runs the pre-flight canary once before the
+ * very first deletion, and snapshots + verifies each package
+ * immediately after that package's own deletions, aborting the whole run
+ * before the next package is touched — see this module's `applyPlan` doc.
+ */
+export interface VerificationOptions {
+  readonly registry: RegistryReader;
+  /** One known-good, already-published tag resolved end to end before any deletion, to distinguish "the read path is broken today" from "this run broke something". Need not belong to any package in the plan. */
+  readonly canary: { readonly path: RegistryPath; readonly tag: Tag };
+  readonly sink: RegressionSink;
+}
 
 export interface ApplyOptions {
   /**
@@ -18,6 +45,7 @@ export interface ApplyOptions {
    */
   readonly budget: number;
   readonly journal?: Journal;
+  readonly verification?: VerificationOptions;
 }
 
 export type MemberApplyOutcome =
@@ -54,11 +82,30 @@ export interface PackageApplyResult {
   readonly groups: readonly GroupApplyResult[];
 }
 
+/**
+ * Why `applyPlan` stopped before processing the entire plan, when
+ * verification is enabled. `"canary-failed"` means nothing was deleted at
+ * all. `"regression"` means every package up to and including
+ * `packageName` was fully processed (its deletions already happened) and
+ * `packageName`'s own deletions are exactly `regression.tags[*]`'s
+ * `precedingDeletions` — every package AFTER it in plan order was never
+ * touched.
+ */
+export type ApplyAbortReason =
+  | { readonly kind: "canary-failed" }
+  | {
+      readonly kind: "regression";
+      readonly packageName: PackageName;
+      readonly tags: readonly RegressedTag[];
+    };
+
 export interface ApplyResult {
   readonly packages: readonly PackageApplyResult[];
   /** Total delete-version calls actually made across every package/group, regardless of outcome. */
   readonly attempted: number;
   readonly remainingBudget: number;
+  /** Set only when verification aborted the run early — see {@link ApplyAbortReason}. */
+  readonly abortedFor?: ApplyAbortReason;
 }
 
 function isSuccess(
@@ -162,6 +209,31 @@ async function applyGroup(
   };
 }
 
+/** Every member across `groups` that was actually deleted (success, including a 404-as-already-gone) — what {@link RegressionIncident.precedingDeletions} reports for a package. */
+function deletedMembers(groups: readonly GroupApplyResult[]): PersistedGroupMember[] {
+  const out: PersistedGroupMember[] = [];
+  for (const g of groups) {
+    for (const m of g.members) {
+      if (m.result === "deleted" || m.result === "already-gone") {
+        out.push({ digest: m.digest, versionId: m.versionId });
+      }
+    }
+  }
+  return out;
+}
+
+/** Snapshots `path`, translating a thrown/rejected read (e.g. `listTags` itself failing) into the strict-posture `preSnapshotFailed` signal `compareSnapshots` needs, rather than letting it propagate and abort the run for a reason indistinguishable from a real regression. */
+async function trySnapshot(
+  path: RegistryPath,
+  registry: RegistryReader,
+): Promise<{ snapshot: ReadonlyMap<Tag, TagSnapshot>; failed: boolean }> {
+  try {
+    return { snapshot: await snapshotPackage(path, registry), failed: false };
+  } catch {
+    return { snapshot: new Map(), failed: true };
+  }
+}
+
 /**
  * Applies `plan` group by group, package by package, in the plan's own
  * order. Enforces {@link assertGroupsAreWellFormed} BEFORE any mutation —
@@ -173,6 +245,18 @@ async function applyGroup(
  * actually ATTEMPTED once it finishes (which can be less than the
  * group's full size if it was abandoned partway through — the unspent
  * remainder is available to later groups).
+ *
+ * When `options.verification` is set: the pre-flight canary is resolved
+ * once, before this function's very first deletion, and a canary failure
+ * aborts before touching anything. Each package is then snapshotted from
+ * the registry's own tag list immediately BEFORE its deletions begin and
+ * again immediately AFTER they finish (interleaved, never batched to the
+ * end of the run — see this module's and `verify.ts`'s docs for why: a
+ * regression from an early package must not be masked by continuing to
+ * apply a plan whose underlying model has just been shown to be wrong).
+ * A regression aborts the WHOLE run before the next package is started;
+ * every package already processed keeps its result, every package after
+ * it is never touched.
  */
 export async function applyPlan(
   plan: Plan,
@@ -181,11 +265,38 @@ export async function applyPlan(
 ): Promise<ApplyResult> {
   assertGroupsAreWellFormed(plan);
 
+  const verification = options.verification;
+  if (verification) {
+    const canaryOk = await checkCanary(
+      verification.canary.path,
+      verification.canary.tag,
+      verification.registry,
+    );
+    if (!canaryOk) {
+      return {
+        packages: [],
+        attempted: 0,
+        remainingBudget: options.budget,
+        abortedFor: { kind: "canary-failed" },
+      };
+    }
+  }
+
   let remainingBudget = options.budget;
   let totalAttempted = 0;
   const packages: PackageApplyResult[] = [];
 
   for (const pkgPlan of plan.packages) {
+    let preSnapshot: ReadonlyMap<Tag, TagSnapshot> | undefined;
+    let preSnapshotFailed = false;
+    let registryPath: RegistryPath | undefined;
+    if (verification) {
+      registryPath = registryPathFor(plan.org, pkgPlan.packageName);
+      const pre = await trySnapshot(registryPath, verification.registry);
+      preSnapshot = pre.snapshot;
+      preSnapshotFailed = pre.failed;
+    }
+
     const groups: GroupApplyResult[] = [];
     for (const group of pkgPlan.groups) {
       const { result, attempted } = await applyGroup(
@@ -200,6 +311,36 @@ export async function applyPlan(
       totalAttempted += attempted;
     }
     packages.push({ packageName: pkgPlan.packageName, groups });
+
+    if (verification && registryPath) {
+      // A post-snapshot read failure gets exactly the same "unknown"
+      // treatment as any other unresolved tag (see `verify.ts`'s
+      // `ResolveState` doc) rather than throwing: an infrastructure
+      // hiccup reading the registry back is not evidence of a
+      // regression, but it also cannot be silently waved through, so it
+      // still runs through the same strict `compareSnapshots` predicate.
+      const post = await trySnapshot(registryPath, verification.registry);
+      const { regressions } = compareSnapshots(preSnapshot ?? new Map(), post.snapshot, {
+        preSnapshotFailed,
+      });
+      if (regressions.length > 0) {
+        await verification.sink.record({
+          packageName: pkgPlan.packageName,
+          tags: regressions,
+          precedingDeletions: deletedMembers(groups),
+        });
+        return {
+          packages,
+          attempted: totalAttempted,
+          remainingBudget,
+          abortedFor: {
+            kind: "regression",
+            packageName: pkgPlan.packageName,
+            tags: regressions,
+          },
+        };
+      }
+    }
   }
 
   return { packages, attempted: totalAttempted, remainingBudget };
@@ -227,8 +368,19 @@ export const EXIT_APPLY_SAFETY = 4;
  * group was abandoned because the registry itself rejected a delete):
  * `4` means "the run itself did not do its job", `1` means "the run did
  * its job and the registry said no to part of it".
+ *
+ * `result.abortedFor` (a canary failure, or a post-apply regression) is
+ * ALSO `4`, checked first: a regression can leave `result.attempted > 0`
+ * (the aborting package's own deletions already happened), which would
+ * otherwise fall through to the `1`/`0` logic below and understate what
+ * went wrong — verification catching a wrong model is exactly the same
+ * severity as the zero-mutation guard below it, not merely "some deletes
+ * failed".
  */
 export function classifyApplyExit(plan: Plan, result: ApplyResult): number {
+  if (result.abortedFor) {
+    return EXIT_APPLY_SAFETY;
+  }
   const groupCount = totalGroupCount(plan);
   if (groupCount > 0 && result.attempted === 0) {
     return EXIT_APPLY_SAFETY;

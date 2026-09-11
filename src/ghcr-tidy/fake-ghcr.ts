@@ -101,6 +101,24 @@ export class FakeGhcr {
   }
 
   /**
+   * A callback run the moment `deleteVersion(versionId)` SUCCEEDS
+   * (`"deleted"`, not `"already-gone"` or a fault) — the mechanism for
+   * post-apply-verification tests to mutate `registryTags`/`manifests`
+   * (e.g. `notFound`/`transient` a digest, or repoint a tag) so that
+   * mutation lands exactly between `applyPlan`'s pre- and post-apply
+   * snapshots, mirroring how a real deletion changes what the registry
+   * subsequently resolves. Deliberately keyed on the numeric `versionId`
+   * (what `deleteVersion` receives), not the digest, since that is the
+   * only identifier this fake's mutator sees.
+   */
+  readonly deleteSideEffects = new Map<number, () => void>();
+
+  setDeleteSideEffect(versionId: number, effect: () => void): this {
+    this.deleteSideEffects.set(versionId, effect);
+    return this;
+  }
+
+  /**
    * A mutating view of this fake world, matching real GHCR delete
    * semantics closely enough to exercise `apply.ts`'s group-execution
    * algorithm: deleting an id already deleted returns `"already-gone"`
@@ -135,6 +153,7 @@ export class FakeGhcr {
           );
         }
         deletedVersionIds.push(id);
+        this.deleteSideEffects.get(id)?.();
         return Promise.resolve("deleted");
       },
       deletePackage: (_pkg) => Promise.resolve("deleted"),
