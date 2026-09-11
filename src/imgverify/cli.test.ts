@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeFakeCli } from "./checks/test-helpers.js";
 import type { DockerCli, DockerExecResult } from "./docker/cli.js";
 import type { BakeExecFn } from "./targets/bake.js";
-import { parseArgv, runCommand } from "./cli.js";
+import { parseArgv, resolveArgv, runCommand, tokenizeArgs } from "./cli.js";
 
 const BUILDARGS_CONF = "FOO_VERSION=1.2.3\n";
 
@@ -92,6 +92,68 @@ describe("parseArgv", () => {
   it("sets --no-color as a boolean switch", () => {
     expect(parseArgv(["--no-color"]).args.noColor).toBe(true);
     expect(parseArgv([]).args.noColor).toBe(false);
+  });
+});
+
+describe("tokenizeArgs", () => {
+  it("splits plain whitespace-separated tokens", () => {
+    expect(tokenizeArgs("run --digests digests.json")).toEqual([
+      "run",
+      "--digests",
+      "digests.json",
+    ]);
+  });
+
+  it("keeps a single-quoted segment as one token", () => {
+    expect(tokenizeArgs("--manifest 'some path.yaml'")).toEqual(["--manifest", "some path.yaml"]);
+  });
+
+  it("keeps a double-quoted segment as one token", () => {
+    expect(tokenizeArgs('--manifest "some path.yaml"')).toEqual(["--manifest", "some path.yaml"]);
+  });
+
+  it("handles a mix of quoted and unquoted tokens", () => {
+    expect(tokenizeArgs(`run --manifest "some path.yaml" --no-color`)).toEqual([
+      "run",
+      "--manifest",
+      "some path.yaml",
+      "--no-color",
+    ]);
+  });
+
+  it("collapses repeated whitespace and drops empty tokens (build-image.yml's real doubled-space shape)", () => {
+    expect(tokenizeArgs("run  --digests digests.json")).toEqual([
+      "run",
+      "--digests",
+      "digests.json",
+    ]);
+  });
+
+  it("returns no tokens for a blank string", () => {
+    expect(tokenizeArgs("   ")).toEqual([]);
+  });
+});
+
+describe("resolveArgv", () => {
+  it("uses argv when INPUT_ARGS is undefined (plain CLI mode)", () => {
+    expect(resolveArgv({}, ["run", "--digests", "digests.json"])).toEqual([
+      "run",
+      "--digests",
+      "digests.json",
+    ]);
+  });
+
+  it("uses INPUT_ARGS when defined, tokenizing quoted segments (JS action mode)", () => {
+    expect(
+      resolveArgv({ INPUT_ARGS: 'run --manifest "some path.yaml" --digests digests.json' }, [
+        "should-be-ignored",
+      ]),
+    ).toEqual(["run", "--manifest", "some path.yaml", "--digests", "digests.json"]);
+  });
+
+  it("throws a clear error when INPUT_ARGS is defined but blank, rather than silently using no arguments", () => {
+    expect(() => resolveArgv({ INPUT_ARGS: "" }, ["ignored"])).toThrow(/args.*empty/i);
+    expect(() => resolveArgv({ INPUT_ARGS: "   " }, ["ignored"])).toThrow(/args.*empty/i);
   });
 });
 

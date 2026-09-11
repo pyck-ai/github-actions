@@ -1,12 +1,8 @@
 name: imgverify
 description: >-
   Runs the pyck-ai imgverify CLI (this action's own `dist/` bundle) against
-  a built image. A composite action rather than a bare script path so
-  consumers can pin it by commit SHA the same way they'd pin any other
-  action — the bundled JS this action runs is committed inside this same
-  action directory, so a SHA pin on the action pins the exact CLI code too.
-  See `build-image.yml`'s `verify-command` input, which this satisfies: the
-  caller appends `--digests digests.json` to whatever is configured there.
+  a built image, using the runner's bundled Node — no system `node` or
+  `setup-node` step required.
 inputs:
   args:
     description: >-
@@ -15,8 +11,5 @@ inputs:
     required: false
     default: ""
 runs:
-  using: composite
-  steps:
-    - name: Run imgverify
-      shell: bash
-      run: node "$GITHUB_ACTION_PATH/dist/index.js" ${{ inputs.args }}
+  using: node24
+  main: dist/index.js

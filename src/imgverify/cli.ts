@@ -538,9 +538,88 @@ export async function runCommand(argv: readonly string[], deps: CliDeps = {}): P
   }
 }
 
+/**
+ * Splits a single argument string (e.g. `INPUT_ARGS`'s value) into argv
+ * tokens, respecting single- and double-quoted segments so a value like
+ * `--manifest "some path.yaml"` survives intact. Deliberately NOT a naive
+ * `.split(" ")` and deliberately NOT shelled out to `/bin/sh -c` (this is
+ * exactly the shell-injection surface the JS-action conversion removes).
+ * Runs of whitespace collapse to nothing — GitHub Actions expression
+ * interpolation (see `build-image.yml`'s multi-line `args:`) routinely
+ * produces doubled spaces where an empty `${{ }}` branch resolves to `""`.
+ */
+export function tokenizeArgs(input: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let hasToken = false;
+  let quote: '"' | "'" | undefined;
+
+  for (const ch of input) {
+    if (quote !== undefined) {
+      if (ch === quote) {
+        quote = undefined;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      hasToken = true;
+      continue;
+    }
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      if (hasToken) {
+        tokens.push(current);
+        current = "";
+        hasToken = false;
+      }
+      continue;
+    }
+    current += ch;
+    hasToken = true;
+  }
+  if (hasToken) {
+    tokens.push(current);
+  }
+  return tokens;
+}
+
+/**
+ * Picks argv for the run: `INPUT_ARGS` (set by the Actions runtime for the
+ * `args` input when this module runs as a `node20` JS action) when it is
+ * DEFINED, falling back to real `process.argv` only when it is undefined —
+ * i.e. when running as the plain `imgverify` CLI. "Defined" (not
+ * "non-empty") is the signal because GitHub sets `INPUT_<NAME>` for every
+ * declared input even when the caller omits it and its declared default
+ * applies (`action.yml`'s `args` input defaults to `""`), so a caller that
+ * invokes this action directly with no `args` gets `INPUT_ARGS=""` — which
+ * must fail loudly rather than silently run with no arguments.
+ */
+export function resolveArgv(env: NodeJS.ProcessEnv, argv: readonly string[]): string[] {
+  const inputArgs = env.INPUT_ARGS;
+  if (inputArgs === undefined) {
+    return [...argv];
+  }
+  if (inputArgs.trim() === "") {
+    throw new UsageError(
+      "the `args` input is empty — pass a subcommand and flags (e.g. `run --digests digests.json`)",
+    );
+  }
+  return tokenizeArgs(inputArgs);
+}
+
 /* c8 ignore start -- process wiring, exercised via runCommand in tests */
 async function mainEntry(): Promise<void> {
-  const exitCode = await runCommand(process.argv.slice(2));
+  let argv: string[];
+  try {
+    argv = resolveArgv(process.env, process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${errorMessage(error)}\n`);
+    process.exitCode = EXIT_CONFIG_ERROR;
+    return;
+  }
+  const exitCode = await runCommand(argv);
   process.exitCode = exitCode;
 }
 
