@@ -81,12 +81,22 @@ on:
         required: false
         default: 60
 
-# Cancel any in-progress build for the same ref when a newer one is
-# triggered.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+# NO top-level `concurrency:` here, deliberately. Do not add one.
+#
+# Inside a called workflow, `github.workflow` resolves to the CALLING
+# workflow's name, not this file's. So a `concurrency` block here computes
+# the same group the caller's own block computes, and GitHub refuses to let
+# a workflow wait on a group its own caller already holds:
+#
+#   Canceling since a deadlock was detected for concurrency group
+#   'build-refs/heads/main' between a top level workflow and 'build'
+#
+# The run dies in seconds with zero jobs, so nothing builds and nothing is
+# published. Declaring concurrency in both files is not redundant, it is
+# fatal, and every caller that sensibly declares its own would hit it.
+#
+# Concurrency therefore belongs to the caller, which also lets each repo
+# choose its own cancel-in-progress semantics. See README.
 jobs:
   # Read the target list from the bake file (unless overridden) so a new
   # variant is picked up by the build matrix without touching CI.

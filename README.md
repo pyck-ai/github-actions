@@ -17,6 +17,14 @@ Pin by commit SHA. `build-image.yml` builds by digest, verifies the pushed
 digest, and only then applies tags — a failed verification means no tag ever
 moves.
 
+**The caller owns `concurrency:`.** Neither reusable workflow declares one, and
+neither should: inside a called workflow `github.workflow` resolves to the
+*calling* workflow's name, so a block in both files computes the same group and
+GitHub kills the run outright — "a deadlock was detected for concurrency group
+... between a top level workflow and ...", zero jobs, nothing built. Declare it
+in your own workflow instead. `tidy-repo.yml` additionally wants
+`cancel-in-progress: false`, because a half-finished cleanup is worse than none.
+
 ## Tools
 
 - **`imgverify`** — manifest-driven image verification. A repo declares its

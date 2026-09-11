@@ -62,12 +62,18 @@ on:
         required: false
         default: 90
 
-# Never cancel a running maintenance job — partial cleanup is worse than no
-# cleanup.
-concurrency:
-  group: ${{ github.workflow }}
-  cancel-in-progress: false
-
+# NO top-level `concurrency:` here, deliberately. Do not add one.
+#
+# Inside a called workflow, `github.workflow` resolves to the CALLING
+# workflow's name, so a block here computes the same group the caller's own
+# block computes, and GitHub kills the run rather than let it wait on a
+# group its caller already holds ("a deadlock was detected for concurrency
+# group ... between a top level workflow and ..."). Zero jobs run.
+#
+# Concurrency belongs to the caller. What this workflow DOES require of it:
+# never cancel a maintenance run in progress, because a half-finished
+# cleanup is worse than none. Callers should therefore set
+# `cancel-in-progress: false` on whatever group they declare. See README.
 jobs:
   # Delete workflow runs older than workflows-retain-days, keeping at least 1
   # per workflow.
