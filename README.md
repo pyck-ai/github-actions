@@ -1,6 +1,6 @@
 # @pyck-ai/github-actions
 
-Shared CI tooling for the pyck-ai org: reusable workflows, composite actions, and
+Shared CI tooling for the pyck-ai org: reusable workflows, actions, and
 the CLIs behind them. Replaces ~1850 lines of bash that had been copy-pasted
 across `baseimages`, `github-runner` and `flutter-rfw`, where fixes reached one
 copy and silently never reached the others.
@@ -12,6 +12,8 @@ copy and silently never reached the others.
 | Container build pipeline | `pyck-ai/github-actions/.github/workflows/build-image.yml@<sha>` |
 | Repo housekeeping        | `pyck-ai/github-actions/.github/workflows/tidy-repo.yml@<sha>`   |
 | Image verification       | `pyck-ai/github-actions/.github/actions/verify-image@<sha>`      |
+| GHCR retention           | `pyck-ai/github-actions/.github/workflows/tidy-ghcr.yml@<sha>`   |
+| GHCR retention CLI step  | `pyck-ai/github-actions/.github/actions/ghcr-tidy@<sha>`         |
 
 Pin by commit SHA. `build-image.yml` builds by digest, verifies the pushed
 digest, and only then applies tags — a failed verification means no tag ever
@@ -22,8 +24,9 @@ neither should: inside a called workflow `github.workflow` resolves to the
 _calling_ workflow's name, so a block in both files computes the same group and
 GitHub kills the run outright — "a deadlock was detected for concurrency group
 ... between a top level workflow and ...", zero jobs, nothing built. Declare it
-in your own workflow instead. `tidy-repo.yml` additionally wants
-`cancel-in-progress: false`, because a half-finished cleanup is worse than none.
+in your own workflow instead. `tidy-repo.yml` and `tidy-ghcr.yml` additionally
+want `cancel-in-progress: false`, because a half-finished cleanup (deletions
+attempted, budget partially spent) is worse than none.
 
 ## Tools
 
@@ -85,7 +88,7 @@ failures, so a broken environment is never reported as a broken image.
 
 ```
 .github/workflows/   this repo's CI, plus the reusable workflows it publishes
-.github/actions/     composite actions, each with its own bundle
+.github/actions/     actions, each with its own bundle
 src/core/            shared: registry API client, reporting
 src/ghcr-tidy/       that tool's internals
 src/imgverify/       that tool's internals
@@ -99,7 +102,7 @@ it ships to consumers share one flat directory.
 
 ```sh
 npm install && npm test
-npm run bundle   # ncc -> .github/actions/verify-image/dist/ (committed)
+npm run bundle   # ncc -> .github/actions/{verify-image,ghcr-tidy}/dist/ (committed)
 ```
 
 **After changing anything under `src/`, run `npm run bundle` and commit the

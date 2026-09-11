@@ -1,0 +1,170 @@
+name: tidy-ghcr
+
+# Reusable GHCR retention workflow: wraps the `ghcr-tidy` CLI (see the
+# `ghcr-tidy` entry in this repo's README for the model it implements —
+# reachability-based delete set, grace window, breaker, volume alarm, canary
+# and post-apply verification). Callers own the trigger (schedule /
+# workflow_dispatch) — see tidy-repo.yml's header for the same rule and why
+# a shared workflow must not own the cron.
+#
+# This workflow only PUBLISHES the capability. Nothing in this repo wires it
+# into a consumer or arms a schedule; rollout is a deliberate, separate step
+# per consuming repo.
+
+on:
+  workflow_call:
+    inputs:
+      apply:
+        description: >-
+          If true, actually delete planned versions. If false (the
+          default), only plan and report — nothing is deleted. On a
+          `schedule` trigger the `inputs` context is EMPTY and this default
+          does not apply (see the `apply-effective` step below for how
+          that is handled); dispatch runs use this value directly.
+        type: boolean
+        required: false
+        default: false
+      budget:
+        description: >-
+          Maximum number of version-deletion attempts this run may make
+          (required for `apply` to do anything; ignored for plan-only
+          runs). Same "schedule inputs are empty" caveat as `apply` — see
+          the `apply-effective` step.
+        type: number
+        required: false
+        default: 200
+      package:
+        description: >-
+          Restrict this run to one configured package (matches a
+          `packages[].match` entry in the manifest). Empty means every
+          configured package.
+        type: string
+        required: false
+        default: ""
+      manifest:
+        description: Path to the `.ghcr-tidy.yaml` config manifest in the caller's repo.
+        type: string
+        required: false
+        default: .ghcr-tidy.yaml
+      baseline:
+        description: >-
+          Trailing baseline for the volume alarm: `apply` refuses to run
+          when the plan deletes more than a configurable multiple (see the
+          CLI's own default) of this many versions. Leave unset to disable
+          the volume alarm for this call.
+        type: number
+        required: false
+
+# NO top-level `concurrency:` here, deliberately — see tidy-repo.yml's
+# identical comment and this repo's README. Inside a called workflow
+# `github.workflow` resolves to the CALLING workflow's name, so a block
+# here computes the same group the caller's own block computes and GitHub
+# kills the run with zero jobs. Concurrency belongs to the caller, which
+# should set `cancel-in-progress: false` — a half-finished prune (deletions
+# attempted, budget partially spent) is worse than none.
+jobs:
+  tidy:
+    name: Plan / apply GHCR retention
+    runs-on: self-hosted
+    # `contents: read` to check out the caller's manifest.
+    # `packages: read` to plan (list versions, read manifests) for every
+    # configured package via GITHUB_TOKEN.
+    # `issues: write` because the breaker (mandatory on the apply path —
+    # see ghcr-tidy/breaker.ts) opens/comments on a labelled issue in THIS
+    # repo (the caller) the moment post-apply verification finds a
+    # regression, and checks for that issue before every apply run.
+    # `packages: write` is NOT listed here: GITHUB_TOKEN cannot delete
+    # packages regardless of scope (GitHub Packages has no "delete" grant
+    # for the default token). Deleting requires GHCR_ADMIN_TOKEN — see the
+    # "Deleting packages needs a PAT" step below.
+    permissions:
+      contents: read
+      packages: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # On a `schedule` event the `inputs` context is EMPTY (not merely
+      # defaulted) — GitHub does not evaluate `workflow_call` input
+      # defaults for schedule-triggered runs of the CALLER, so
+      # `inputs.apply` and `inputs.budget` read as empty string there, and
+      # `${{ inputs.apply || 'true' }}`-style fallback COERCES an explicit
+      # `apply: false` dispatch into `true` — false is falsy in Actions
+      # expressions, so `||` treats it exactly like "unset". Each
+      # expression below tests `github.event_name == 'schedule'` directly
+      # instead of ever treating an empty/false input as "use the
+      # default"; only a genuine `schedule` run gets the hardcoded
+      # schedule defaults, and only a real dispatch input is trusted
+      # otherwise.
+      - name: Resolve effective apply/budget
+        id: effective
+        run: |
+          echo "apply=${{ github.event_name == 'schedule' || inputs.apply == true }}" >> "$GITHUB_OUTPUT"
+          echo "budget=${{ (github.event_name == 'schedule' && 200) || inputs.budget }}" >> "$GITHUB_OUTPUT"
+
+      # Deleting packages needs `delete:packages`, a scope GITHUB_TOKEN can
+      # never carry (see the job's `permissions:` comment above). Prefer a
+      # PAT supplied by the caller as `secrets.GHCR_ADMIN_TOKEN`; fall back
+      # to GITHUB_TOKEN for plan-only runs (and so `validate`/`plan` work
+      # with zero extra setup in a consumer). If `apply` is requested with
+      # no admin token configured, fail loudly here rather than let the
+      # CLI's own `apply` fail deep inside a delete attempt with the
+      # budget partially spent.
+      - name: Select registry token
+        id: token
+        env:
+          GHCR_ADMIN_TOKEN: ${{ secrets.GHCR_ADMIN_TOKEN }}
+        run: |
+          if [ -n "$GHCR_ADMIN_TOKEN" ]; then
+            echo "token=$GHCR_ADMIN_TOKEN" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.effective.outputs.apply }}" = "true" ]; then
+            echo "::error::apply was requested but no secrets.GHCR_ADMIN_TOKEN is configured — GITHUB_TOKEN cannot delete packages (no delete:packages scope). Add a PAT with that scope as GHCR_ADMIN_TOKEN in the caller's repo/org secrets." >&2
+            exit 1
+          else
+            echo "token=${{ secrets.GITHUB_TOKEN }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Plan
+        if: steps.effective.outputs.apply != 'true'
+        uses: $/.github/actions/ghcr-tidy
+        with:
+          args: >-
+            plan
+            --manifest ${{ inputs.manifest }}
+            --out ghcr-tidy-plan.json
+            --journal ghcr-tidy-journal.ndjson
+            ${{ inputs.package != '' && format('--package {0}', inputs.package) || '' }}
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Apply
+        if: steps.effective.outputs.apply == 'true'
+        uses: $/.github/actions/ghcr-tidy
+        with:
+          args: >-
+            apply --apply
+            --budget ${{ steps.effective.outputs.budget }}
+            --manifest ${{ inputs.manifest }}
+            --out ghcr-tidy-plan.json
+            --journal ghcr-tidy-journal.ndjson
+            --breaker-repo ${{ github.repository }}
+            ${{ inputs.baseline != '' && format('--baseline {0}', inputs.baseline) || '' }}
+            ${{ inputs.package != '' && format('--package {0}', inputs.package) || '' }}
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+
+      # Uploaded `if: always()` so a failed, aborted, or breaker-tripped run
+      # still leaves its forensic record — the plan shows exactly what was
+      # decided and the journal shows exactly what was attempted, which is
+      # what a human needs to diagnose a trip without re-running anything.
+      - name: Upload plan and journal
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ghcr-tidy-plan-${{ github.run_id }}
+          path: |
+            ghcr-tidy-plan.json
+            ghcr-tidy-journal.ndjson
+          if-no-files-found: ignore
+          retention-days: 30

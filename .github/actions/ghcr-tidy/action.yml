@@ -1,0 +1,16 @@
+name: ghcr-tidy
+description: >-
+  Runs the pyck-ai ghcr-tidy CLI (this action's own `dist/` bundle) to plan
+  and/or apply GHCR retention, using the runner's bundled Node — no system
+  `node` or `setup-node` step required.
+inputs:
+  args:
+    description: >-
+      Arguments passed straight through to `ghcr-tidy` (e.g.
+      `plan --manifest .ghcr-tidy.yaml --out plan.json` or
+      `apply --apply --budget 200 --out plan.json --journal journal.ndjson`).
+    required: false
+    default: ""
+runs:
+  using: node24
+  main: dist/index.js
