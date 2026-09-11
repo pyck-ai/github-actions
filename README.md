@@ -22,7 +22,6 @@ moves.
 - **`imgverify`** — manifest-driven image verification. A repo declares its
   checks in `.imgverify.yaml`; the tool resolves bake targets, pulls or inspects
   each image, and runs them. Twelve check kinds, no shell escape hatch.
-  See [`examples/baseimages.imgverify.yaml`](examples/baseimages.imgverify.yaml).
 - **`ghcr-tidy`** — GHCR retention. Not yet implemented.
 - **`ghcr-audit`** — registry integrity checks. Not yet implemented.
 
@@ -44,8 +43,6 @@ failures, so a broken environment is never reported as a broken image.
 .github/actions/     composite actions, each with its own bundle
 src/core/            shared: registry API client, reporting
 src/imgverify/       that tool's internals
-examples/            fixture manifests
-tools/oracle/        bash-vs-TypeScript equivalence harness
 ```
 
 GitHub requires reusable workflows to sit directly in `.github/workflows/` and
