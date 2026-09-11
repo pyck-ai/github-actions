@@ -19,7 +19,7 @@ moves.
 
 **The caller owns `concurrency:`.** Neither reusable workflow declares one, and
 neither should: inside a called workflow `github.workflow` resolves to the
-*calling* workflow's name, so a block in both files computes the same group and
+_calling_ workflow's name, so a block in both files computes the same group and
 GitHub kills the run outright — "a deadlock was detected for concurrency group
 ... between a top level workflow and ...", zero jobs, nothing built. Declare it
 in your own workflow instead. `tidy-repo.yml` additionally wants
