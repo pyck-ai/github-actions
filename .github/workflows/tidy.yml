@@ -1,0 +1,44 @@
+name: tidy
+run-name: Tidy repo
+
+# Dogfoods this repo's own reusable housekeeping workflow: delete old
+# workflow runs, close stale issues/PRs, and delete stale branches. Every
+# consumer of tidy-repo.yml wires it up like this; the provider should too.
+on:
+  schedule:
+    # Daily. Neither ci.yml nor release.yml (nor any other workflow in this
+    # repo) declares a `schedule:` trigger, so there is nothing to collide
+    # with here — this slot is picked purely to avoid the round-hour stampede
+    # of crons that fire across GitHub at :00.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+# Required by tidy-repo.yml's own contract (see its header comment and this
+# repo's README): the callee deliberately declares no concurrency block of
+# its own, because inside a called workflow `github.workflow` resolves to
+# the CALLER's name — a duplicate block would compute the same group and
+# GitHub would kill the run with zero jobs. `cancel-in-progress: false`
+# because a half-finished cleanup is worse than none.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  tidy:
+    name: Tidy repo
+    uses: ./.github/workflows/tidy-repo.yml
+    # Union of the permissions tidy-repo.yml's three jobs declare:
+    # clean-old-workflow-runs needs actions: write,
+    # clean-stale-issues-and-prs needs pull-requests: write,
+    # clean-stale-branches needs contents: write.
+    permissions:
+      actions: write
+      pull-requests: write
+      contents: write
+    secrets: inherit
+    # No inputs: the declared defaults (30-day workflow-run retention,
+    # 30/7-day issue and PR stale/close, 90-day branch retention) suit a
+    # small, young, public repo. Renovate branches close their own PRs on
+    # merge/superseding, so 90 days of inactivity before deletion is not
+    # tight; and 30/7-day stale handling gives outside contributors a fair
+    # window before an issue or PR gets closed. Not overridden.
