@@ -10416,6 +10416,18 @@ const EXIT_CONFIG_ERROR = 2;
 const EXIT_INFRA_ERROR = 3;
 const DEFAULT_MANIFEST_PATH = ".imgverify.yaml";
 const DEFAULT_BUILDARGS_PATH = "buildargs.conf";
+/**
+ * `--jobs`' default: bounded concurrency for target verification. Pulling
+ * multi-GB images dominates a real run's wall time (measured: ~130s of
+ * pull gaps vs ~75s of check execution across 15 targets in
+ * pyck-ai/baseimages run 34623780843), so overlapping pulls is the whole
+ * point — but a self-hosted runner has finite network/disk, so the fan-out
+ * must stay bounded rather than launching all targets at once. 4 is a
+ * starting point that overlaps enough pulls to matter without saturating a
+ * single runner's link; `--jobs 1` recovers today's fully serial behaviour
+ * exactly.
+ */
+const DEFAULT_JOBS = 4;
 /** `docker/cli.ts`'s `DockerCli` hardcodes this as its own per-operation default — see `--timeout-ms`'s handling in {@link runCommand}. */
 const DOCKER_CLI_DEFAULT_TIMEOUT_MS = 120_000;
 function errorMessage(error) {
@@ -10488,6 +10500,18 @@ function parseArgv(argv) {
                     throw new UsageError(`--timeout-ms must be a positive number, got "${raw}"`);
                 }
                 args.timeoutMs = parsed;
+                break;
+            }
+            case "--jobs": {
+                const raw = nextValue();
+                if (!/^-?\d+$/.test(raw)) {
+                    throw new UsageError(`--jobs must be a positive integer, got "${raw}"`);
+                }
+                const parsed = Number(raw);
+                if (parsed <= 0) {
+                    throw new UsageError(`--jobs must be a positive integer, got "${raw}"`);
+                }
+                args.jobs = parsed;
                 break;
             }
             case "--no-color":
@@ -10615,8 +10639,97 @@ function timeoutOverrideExec(timeoutMs) {
         execBinary: (execArgs, opts) => spawnExecBinary(execArgs, { timeoutMs: resolve(opts.timeoutMs) }),
     };
 }
-function printTargetHeader(resolved) {
-    process.stdout.write(`\n${resolved.target} — ${resolved.ref} (platform: ${resolved.architecture})\n`);
+function targetHeader(resolved) {
+    return `\n${resolved.target} — ${resolved.ref} (platform: ${resolved.architecture})\n`;
+}
+/**
+ * Runs `worker` over `items` with at most `limit` concurrently in flight,
+ * writing each result to `results[i]` at its ORIGINAL index — a small
+ * hand-rolled bounded pool rather than a dependency, since the only shape
+ * needed is "N workers pull from a shared cursor". Deliberately not
+ * `Promise.all(items.map(worker))`: that fans out unboundedly, and these
+ * workers are multi-GB `docker pull`s where an unbounded fan-out on one
+ * runner would thrash network and disk (see `DEFAULT_JOBS`'s doc comment).
+ *
+ * Completion order is NOT the same as index order — that is the whole
+ * point of running concurrently — but because every result lands in its
+ * own reserved slot, `results` always comes back in the original,
+ * deterministic `items` order regardless of which worker finished first.
+ * Callers rely on this to keep console/JSON output ordering identical to
+ * the fully serial (`--jobs 1`) implementation.
+ */
+async function runPool(items, limit, worker) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+    async function runNext() {
+        for (;;) {
+            const i = nextIndex;
+            nextIndex += 1;
+            if (i >= items.length) {
+                return;
+            }
+            const item = items[i];
+            if (item === undefined) {
+                continue;
+            }
+            results[i] = await worker(item, i);
+        }
+    }
+    const workerCount = Math.min(limit, items.length);
+    await Promise.all(Array.from({ length: workerCount }, () => runNext()));
+    return results;
+}
+/**
+ * Resolves and verifies a single target, mirroring the old inline loop
+ * body exactly but returning its console output as a string instead of
+ * writing it — so {@link runPool} can run many of these concurrently while
+ * the caller still flushes output in the original deterministic order.
+ */
+async function verifyTarget(target, ctx) {
+    const { cli, digests, resolvedChecks, manifestDir, color } = ctx;
+    let resolved;
+    try {
+        resolved =
+            digests !== undefined
+                ? await resolveDigestTarget(cli, target, digests)
+                : await resolveLocalTarget(cli, target);
+    }
+    catch (error) {
+        return {
+            output: `\n${target.name}: ${errorMessage(error)}\n`,
+            hadInfraError: true,
+            hadCheckFailure: false,
+        };
+    }
+    let output = targetHeader(resolved);
+    const checks = resolvedChecks.get(target.name) ?? [];
+    const results = [];
+    let hardError;
+    for (let idx = 0; idx < checks.length; idx += 1) {
+        const check = checks[idx];
+        if (check === undefined) {
+            continue;
+        }
+        try {
+            const result = await executeCheck(check, idx, {
+                cli,
+                image: resolved.ref,
+                manifestDir,
+            });
+            results.push(result);
+        }
+        catch (error) {
+            hardError = error;
+            break;
+        }
+    }
+    if (hardError !== undefined) {
+        output += `  ${errorMessage(hardError)}\n`;
+        return { output, hadInfraError: true, hadCheckFailure: false };
+    }
+    output += `${formatConsoleReport(results, { color })}\n`;
+    const report = buildJsonReport(target.name, resolved.ref, results);
+    return { output, report, hadInfraError: false, hadCheckFailure: report.summary.failed > 0 };
 }
 async function runValidateCommand(args) {
     const loaded = await loadManifest(args);
@@ -10679,54 +10792,31 @@ async function runRunCommand(args, deps) {
         cli = createDockerCli(exec, execBinary);
     }
     const color = !args.noColor;
+    const jobs = args.jobs ?? DEFAULT_JOBS;
+    // Verified concurrently (bounded by `jobs`), but `runPool` guarantees
+    // `outcomes` comes back in `selectedTargets`' original order regardless
+    // of completion order — so flushing it in a plain sequential loop below
+    // reproduces the fully serial implementation's output byte-for-byte.
+    const outcomes = await runPool(selectedTargets, jobs, (target) => verifyTarget(target, {
+        cli,
+        digests,
+        resolvedChecks,
+        manifestDir: loaded.manifestDir,
+        color,
+    }));
     const reports = [];
     let hadInfraError = false;
     let hadCheckFailure = false;
-    for (const target of selectedTargets) {
-        let resolved;
-        try {
-            resolved =
-                digests !== undefined
-                    ? await resolveDigestTarget(cli, target, digests)
-                    : await resolveLocalTarget(cli, target);
-        }
-        catch (error) {
+    for (const outcome of outcomes) {
+        process.stdout.write(outcome.output);
+        if (outcome.hadInfraError) {
             hadInfraError = true;
-            process.stdout.write(`\n${target.name}: ${errorMessage(error)}\n`);
-            continue;
         }
-        printTargetHeader(resolved);
-        const checks = resolvedChecks.get(target.name) ?? [];
-        const results = [];
-        let hardError;
-        for (let idx = 0; idx < checks.length; idx += 1) {
-            const check = checks[idx];
-            if (check === undefined) {
-                continue;
-            }
-            try {
-                const result = await executeCheck(check, idx, {
-                    cli,
-                    image: resolved.ref,
-                    manifestDir: loaded.manifestDir,
-                });
-                results.push(result);
-            }
-            catch (error) {
-                hardError = error;
-                break;
-            }
-        }
-        if (hardError !== undefined) {
-            hadInfraError = true;
-            process.stdout.write(`  ${errorMessage(hardError)}\n`);
-            continue;
-        }
-        process.stdout.write(`${formatConsoleReport(results, { color })}\n`);
-        const report = buildJsonReport(target.name, resolved.ref, results);
-        reports.push(report);
-        if (report.summary.failed > 0) {
+        if (outcome.hadCheckFailure) {
             hadCheckFailure = true;
+        }
+        if (outcome.report !== undefined) {
+            reports.push(outcome.report);
         }
     }
     const exitCode = hadInfraError

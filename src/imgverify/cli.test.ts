@@ -77,6 +77,18 @@ describe("parseArgv", () => {
     expect(() => parseArgv(["--timeout-ms", "abc"])).toThrow(/--timeout-ms/);
   });
 
+  it("parses --jobs as a positive integer", () => {
+    expect(parseArgv(["--jobs", "3"]).args.jobs).toBe(3);
+    expect(parseArgv(["--jobs", "1"]).args.jobs).toBe(1);
+  });
+
+  it("rejects --jobs 0, a negative --jobs, and a non-integer --jobs as CONFIG errors", () => {
+    expect(() => parseArgv(["--jobs", "0"])).toThrow(/--jobs/);
+    expect(() => parseArgv(["--jobs", "-1"])).toThrow(/--jobs/);
+    expect(() => parseArgv(["--jobs", "abc"])).toThrow(/--jobs/);
+    expect(() => parseArgv(["--jobs", "3.5"])).toThrow(/--jobs/);
+  });
+
   it("parses --platform (for later rejection by runCommand)", () => {
     expect(parseArgv(["--platform", "linux/amd64"]).args.platform).toBe("linux/amd64");
   });
@@ -161,6 +173,15 @@ describe("runCommand — --platform", () => {
   it("rejects --platform with 'not implemented', exit 2", async () => {
     const exitCode = await runCommand(["--platform", "linux/amd64,linux/arm64"]);
     expect(exitCode).toBe(2);
+  });
+});
+
+describe("runCommand — --jobs validation", () => {
+  it("exits 2 (config error), same path as other bad CLI input, for 0/-1/non-integer --jobs", async () => {
+    for (const bad of ["0", "-1", "abc", "3.5"]) {
+      const exitCode = await runCommand(["--jobs", bad, "--digests", "digests.json"]);
+      expect(exitCode).toBe(2);
+    }
   });
 });
 
@@ -545,5 +566,177 @@ describe("runCommand — --json report file", () => {
     };
     expect(written.exitCode).toBe(0);
     expect(written.targets).toHaveLength(2);
+  });
+});
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+describe("runCommand — --jobs concurrency", () => {
+  let dir: string;
+  // Deliberately reverse-ordered vs. the manifest/bake-print declaration
+  // order below (t-slow, t-fast, t-medium) so pulls finish in the OPPOSITE
+  // order from how targets are declared — the out-of-order shape the
+  // determinism guarantee has to survive.
+  const DELAYS_MS: Record<string, number> = { "t-slow": 40, "t-fast": 5, "t-medium": 20 };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "imgverify-"));
+    await writeFile(path.join(dir, "buildargs.conf"), BUILDARGS_CONF);
+    await writeFile(path.join(dir, ".imgverify.yaml"), MANIFEST_YAML);
+    const bakePrint = bakePrintJson({
+      "t-slow": { tags: ["ghcr.io/x/t-slow:latest"] },
+      "t-fast": { tags: ["ghcr.io/x/t-fast:latest"] },
+      "t-medium": { tags: ["ghcr.io/x/t-medium:latest"] },
+    });
+    await writeFile(path.join(dir, "bake-print.json"), bakePrint);
+    await writeFile(
+      path.join(dir, "digests.json"),
+      JSON.stringify({
+        "t-slow": "sha256:aaa1",
+        "t-fast": "sha256:aaa2",
+        "t-medium": "sha256:aaa3",
+      }),
+    );
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function baseArgv(extra: string[] = []): string[] {
+    return [
+      "run",
+      "--manifest",
+      path.join(dir, ".imgverify.yaml"),
+      "--buildargs",
+      path.join(dir, "buildargs.conf"),
+      "--bake-print",
+      path.join(dir, "bake-print.json"),
+      "--digests",
+      path.join(dir, "digests.json"),
+      ...extra,
+    ];
+  }
+
+  /** `docker pull repo@digest` — delays by target (parsed out of the ref) so different targets finish in a controllable, non-declaration order. */
+  function delayingCli(pullOrder: string[]): DockerCli {
+    return makeFakeCli({
+      pull: async (ref) => {
+        const target = /\/([^/:@]+)@/.exec(ref)?.[1];
+        await delay(target !== undefined ? DELAYS_MS[target] ?? 0 : 0);
+        pullOrder.push(target ?? ref);
+      },
+      run: async () => ({ output: "", exitCode: 0, timedOut: false }),
+    });
+  }
+
+  it("out-of-order pull completion still flushes console output in the original target order (the critical determinism property)", async () => {
+    const pullOrder: string[] = [];
+    const cli = delayingCli(pullOrder);
+    const chunks: string[] = [];
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk: string | Uint8Array) => {
+        chunks.push(String(chunk));
+        return true;
+      });
+
+    const exitCode = await runCommand(baseArgv(["--jobs", "3"]), { cli });
+    write.mockRestore();
+
+    expect(exitCode).toBe(0);
+    // Sanity check that this test actually exercises out-of-order
+    // completion — if pulls happened to finish in declaration order, the
+    // ordering assertion below would be trivially true and prove nothing.
+    expect(pullOrder).toEqual(["t-fast", "t-medium", "t-slow"]);
+
+    const headerOrder = chunks
+      .filter((chunk) => chunk.includes(" — ghcr.io"))
+      .map((chunk) => /^\n(\S+) —/.exec(chunk)?.[1]);
+    expect(headerOrder).toEqual(["t-slow", "t-fast", "t-medium"]);
+  });
+
+  it("--jobs 1 produces byte-identical output to concurrent (--jobs 4) verification for the same inputs", async () => {
+    async function collect(extra: string[]): Promise<{ exitCode: number; output: string }> {
+      const pullOrder: string[] = [];
+      const cli = delayingCli(pullOrder);
+      const chunks: string[] = [];
+      const write = vi
+        .spyOn(process.stdout, "write")
+        .mockImplementation((chunk: string | Uint8Array) => {
+          chunks.push(String(chunk));
+          return true;
+        });
+      const exitCode = await runCommand(baseArgv(extra), { cli });
+      write.mockRestore();
+      return { exitCode, output: chunks.join("") };
+    }
+
+    const serial = await collect(["--jobs", "1"]);
+    const concurrent = await collect(["--jobs", "4"]);
+
+    expect(serial.exitCode).toBe(0);
+    expect(concurrent.exitCode).toBe(0);
+    expect(concurrent.output).toBe(serial.output);
+  });
+
+  it("a failing target (infra error) does not abort the others — all are attempted and reported", async () => {
+    const cli = makeFakeCli({
+      pull: async (ref) => {
+        if (ref.startsWith("ghcr.io/x/t-fast@")) {
+          throw new Error("pull failed");
+        }
+      },
+      run: async () => ({ output: "", exitCode: 0, timedOut: false }),
+    });
+    const jsonPath = path.join(dir, "out.json");
+    const exitCode = await runCommand(baseArgv(["--jobs", "3", "--json", jsonPath]), { cli });
+
+    expect(exitCode).toBe(3);
+    const { readFile } = await import("node:fs/promises");
+    const written = JSON.parse(await readFile(jsonPath, "utf8")) as {
+      targets: { target: string }[];
+    };
+    expect(written.targets.map((t) => t.target).sort()).toEqual(["t-medium", "t-slow"]);
+  });
+
+  it("exit code 1 (check failure) is unchanged under concurrent verification", async () => {
+    const cli = makeFakeCli({
+      pull: async () => undefined,
+      run: async () => ({ output: "go\n", exitCode: 0, timedOut: false }),
+    });
+    const exitCode = await runCommand(baseArgv(["--jobs", "3"]), { cli });
+    expect(exitCode).toBe(1);
+  });
+
+  it("exit code 3 (infra error) is unchanged under concurrent verification", async () => {
+    const cli = makeFakeCli({
+      pull: async () => {
+        throw new Error("boom");
+      },
+    });
+    const exitCode = await runCommand(baseArgv(["--jobs", "3"]), { cli });
+    expect(exitCode).toBe(3);
+  });
+
+  it("bounds concurrency to --jobs: no more than N pulls are ever in flight simultaneously", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const cli = makeFakeCli({
+      pull: async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await delay(15);
+        inFlight -= 1;
+      },
+      run: async () => ({ output: "", exitCode: 0, timedOut: false }),
+    });
+
+    const exitCode = await runCommand(baseArgv(["--jobs", "2"]), { cli });
+
+    expect(exitCode).toBe(0);
+    // 3 targets, --jobs 2: exactly two workers can be pulling at once.
+    expect(maxInFlight).toBe(2);
   });
 });
