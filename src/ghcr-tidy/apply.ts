@@ -6,9 +6,15 @@ import {
   type PersistedDeletionGroup,
   type PersistedGroupMember,
 } from "./persisted-plan.js";
+import type { Breaker, TrippedState } from "./breaker.js";
 import type { Journal, MutationTarget } from "./journal.js";
 import type { Mutator } from "./mutator.js";
 import type { RegistryReader } from "./ports.js";
+import {
+  checkVolumeAlarm,
+  type VolumeAlarmDecision,
+  type VolumeAlarmOptions,
+} from "./volume-alarm.js";
 import {
   checkCanary,
   compareSnapshots,
@@ -46,6 +52,23 @@ export interface ApplyOptions {
   readonly budget: number;
   readonly journal?: Journal;
   readonly verification?: VerificationOptions;
+  /**
+   * The circuit breaker (`breaker.ts`). Checked BEFORE any mutation and
+   * before the pre-flight canary — a tripped breaker refuses to perform
+   * ANY mutation, unconditionally, regardless of `verification` being
+   * set. Omitting this reproduces pre-breaker behaviour exactly (nothing
+   * can ever refuse to run for this reason), same as `verification`
+   * being optional.
+   */
+  readonly breaker?: Breaker;
+  /**
+   * The volume alarm (`volume-alarm.ts`). Checked once, after the
+   * breaker and before the canary, against the plan's total planned
+   * deletion count — see {@link plannedDeletionCount}. Omitting this
+   * disables the check entirely, same as omitting `options.baseline`
+   * within it.
+   */
+  readonly volumeAlarm?: VolumeAlarmOptions;
 }
 
 export type MemberApplyOutcome =
@@ -83,21 +106,33 @@ export interface PackageApplyResult {
 }
 
 /**
- * Why `applyPlan` stopped before processing the entire plan, when
- * verification is enabled. `"canary-failed"` means nothing was deleted at
- * all. `"regression"` means every package up to and including
- * `packageName` was fully processed (its deletions already happened) and
- * `packageName`'s own deletions are exactly `regression.tags[*]`'s
- * `precedingDeletions` — every package AFTER it in plan order was never
- * touched.
+ * Why `applyPlan` stopped before processing the entire plan.
+ * `"breaker-tripped"` and `"volume-alarm"` mean nothing was attempted at
+ * all — checked before anything else, including the canary.
+ * `"canary-failed"` (when verification is enabled) also means nothing
+ * was deleted at all. `"regression"` means every package up to and
+ * including `packageName` was fully processed (its deletions already
+ * happened) and `packageName`'s own deletions are exactly
+ * `regression.tags[*]`'s `precedingDeletions` — every package AFTER it
+ * in plan order was never touched.
  */
 export type ApplyAbortReason =
+  | { readonly kind: "breaker-tripped"; readonly state: TrippedState }
+  | { readonly kind: "volume-alarm"; readonly decision: VolumeAlarmDecision }
   | { readonly kind: "canary-failed" }
   | {
       readonly kind: "regression";
       readonly packageName: PackageName;
       readonly tags: readonly RegressedTag[];
     };
+
+/** Total number of individual version deletions this plan would attempt across every package and group, budget permitting — what the volume alarm (`volume-alarm.ts`) compares against its baseline. */
+export function plannedDeletionCount(plan: Plan): number {
+  return plan.packages.reduce(
+    (sum, p) => sum + p.groups.reduce((s, g) => s + g.members.length, 0),
+    0,
+  );
+}
 
 export interface ApplyResult {
   readonly packages: readonly PackageApplyResult[];
@@ -264,6 +299,30 @@ export async function applyPlan(
   options: ApplyOptions,
 ): Promise<ApplyResult> {
   assertGroupsAreWellFormed(plan);
+
+  if (options.breaker) {
+    const tripped = await options.breaker.isTripped();
+    if (tripped) {
+      return {
+        packages: [],
+        attempted: 0,
+        remainingBudget: options.budget,
+        abortedFor: { kind: "breaker-tripped", state: tripped },
+      };
+    }
+  }
+
+  if (options.volumeAlarm) {
+    const decision = checkVolumeAlarm(plannedDeletionCount(plan), options.volumeAlarm);
+    if (!decision.allowed) {
+      return {
+        packages: [],
+        attempted: 0,
+        remainingBudget: options.budget,
+        abortedFor: { kind: "volume-alarm", decision },
+      };
+    }
+  }
 
   const verification = options.verification;
   if (verification) {

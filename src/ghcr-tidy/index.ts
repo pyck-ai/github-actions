@@ -82,6 +82,7 @@ export {
   applyPlan,
   classifyApplyExit,
   totalGroupCount,
+  plannedDeletionCount,
   EXIT_APPLY_OK,
   EXIT_APPLY_MUTATION_FAILURE,
   EXIT_APPLY_SAFETY,
@@ -93,6 +94,26 @@ export {
   type GroupApplyResult,
   type MemberApplyOutcome,
 } from "./apply.js";
+
+export {
+  memoryBreaker,
+  githubIssueBreaker,
+  breakerRegressionSink,
+  BREAKER_ISSUE_TITLE,
+  BREAKER_ISSUE_LABEL,
+  type Breaker,
+  type TrippedState,
+  type IssuesRequestable,
+} from "./breaker.js";
+
+export { formatIncidentReport, type IncidentReportOptions } from "./incident-report.js";
+
+export {
+  checkVolumeAlarm,
+  DEFAULT_VOLUME_ALARM_MULTIPLE,
+  type VolumeAlarmOptions,
+  type VolumeAlarmDecision,
+} from "./volume-alarm.js";
 
 export {
   snapshotPackage,

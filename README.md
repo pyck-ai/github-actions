@@ -40,8 +40,15 @@ in your own workflow instead. `tidy-repo.yml` additionally wants
   checking each tag still resolves, to the same digest, with its full manifest
   closure intact, and aborting the run on any regression. A pre-flight canary
   on a known-good tag distinguishes a bad registry day from damage the run
-  caused; damage confirmed broken before the run is reported separately. Not
-  yet wired to a CLI or action, so nothing can invoke it from CI yet.
+  caused; damage confirmed broken before the run is reported separately. A
+  post-apply regression also opens a labelled issue with a cold-read incident
+  report and trips a circuit breaker: every later run checks that issue before
+  touching anything (including the canary) and refuses all deletions while it
+  is open. The breaker has no reset in code — a human closes the issue to
+  clear it. A volume alarm additionally refuses to apply when the plan deletes
+  more than a configurable multiple (default 3) of a caller-supplied trailing
+  baseline. Not yet wired to a CLI or action, so nothing can invoke it from
+  CI yet.
 - **`ghcr-audit`** — registry integrity checks. Not yet implemented.
 
 ```sh
