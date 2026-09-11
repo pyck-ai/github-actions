@@ -30,9 +30,12 @@ in your own workflow instead. `tidy-repo.yml` additionally wants
 - **`imgverify`** — manifest-driven image verification. A repo declares its
   checks in `.imgverify.yaml`; the tool resolves bake targets, pulls or inspects
   each image, and runs them. Twelve check kinds, no shell escape hatch.
-- **`ghcr-tidy`** — GHCR retention. Read-only planning core so far: it computes
-  the delete set (registry-rooted keep set, reachability, grace window) and can
-  emit a plan, but ships no mutator — nothing can issue a DELETE yet.
+- **`ghcr-tidy`** — GHCR retention. It computes the delete set (registry-rooted
+  keep set, reachability, grace window), emits a plan, and applies it. Applying
+  requires a persisted plan re-validated via a capability gate (`grantApply`);
+  deletion runs as groups (parent first, a failed parent abandons its group) and
+  is only reachable through a `Mutator`. Not yet wired to a CLI or action, so
+  nothing can invoke it from CI yet.
 - **`ghcr-audit`** — registry integrity checks. Not yet implemented.
 
 ```sh

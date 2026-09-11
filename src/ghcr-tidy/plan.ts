@@ -59,6 +59,16 @@ export interface PlannedPlan {
   readonly deleteCount: number;
   /** `DELETE`, grouped and ordered — see `deletion-group.ts`. */
   readonly groups: readonly DeletionGroup[];
+  /**
+   * Packages API version id for every digest in `DELETE` (i.e. every
+   * digest appearing somewhere in `groups`). The planning core itself
+   * never needs this — reachability is pure digest set arithmetic — but
+   * the apply path does: GHCR's delete-version endpoint is keyed by the
+   * numeric version id, not the digest. Kept separate from `DeletionGroup`
+   * itself so the heavily-tested digest-only shape of that type is
+   * undisturbed by an apply-only concern.
+   */
+  readonly versionIdByDigest: ReadonlyMap<Digest, number>;
 }
 
 export type PackagePlanResult = SkippedPlan | NothingToDoPlan | PlannedPlan;
@@ -169,6 +179,16 @@ export async function planPackage(options: PlanPackageOptions): Promise<PackageP
 
   assertNoSurvivingParent(deleteSet, reachable, edges);
 
+  const versionIdByDigest = new Map<Digest, number>();
+  for (const d of deleteSet) {
+    const v = versionsByDigest.get(d);
+    // Always present: deleteSet is built from `versions` itself above, so
+    // every digest in it has a matching PackageVersionRecord by construction.
+    if (v) {
+      versionIdByDigest.set(d, v.id);
+    }
+  }
+
   return {
     status: "planned",
     total: versions.length,
@@ -178,5 +198,6 @@ export async function planPackage(options: PlanPackageOptions): Promise<PackageP
     inflightCount: inflight.size,
     deleteCount: deleteSet.size,
     groups,
+    versionIdByDigest,
   };
 }

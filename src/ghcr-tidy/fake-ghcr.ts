@@ -2,6 +2,7 @@ import type { PackageName } from "../core/registry/package-name.js";
 import type { ManifestChild, ManifestResolution } from "../core/registry/manifest.js";
 import { digest, type Digest, type RegistryPath, type Tag } from "./domain.js";
 import type { PackageVersionRecord, PackagesClient, RegistryReader } from "./ports.js";
+import type { Mutator } from "./mutator.js";
 
 /**
  * A registry-side node: what {@link FakeGhcr.registry} resolves a digest
@@ -90,6 +91,70 @@ export class FakeGhcr {
         Promise.resolve([...this.packageVersions]),
     };
   }
+
+  /** Fault to inject the NEXT time `deleteVersion` is called for a given version id — see {@link mutator}. */
+  readonly deleteFaults = new Map<number, FakeDeleteFault>();
+
+  setDeleteFault(versionId: number, fault: FakeDeleteFault): this {
+    this.deleteFaults.set(versionId, fault);
+    return this;
+  }
+
+  /**
+   * A mutating view of this fake world, matching real GHCR delete
+   * semantics closely enough to exercise `apply.ts`'s group-execution
+   * algorithm: deleting an id already deleted returns `"already-gone"`
+   * (mirroring a real 404 on a second delete — this is what makes
+   * applying the same plan twice idempotent), and `setDeleteFault` lets a
+   * test make a specific digest fail with a specific outcome ONCE
+   * (`"not-found"` -> already-gone, `"last-version-conflict"` -> the
+   * undocumented 400, `"error"` -> throws, simulating anything the
+   * throttling/retry plugins gave up on, e.g. a 500).
+   */
+  mutator(): FakeMutatorHandle {
+    const deletedVersionIds: number[] = [];
+    const attemptedVersionIds: number[] = [];
+    const mutator: Mutator = {
+      deleteVersion: (_pkg, id) => {
+        attemptedVersionIds.push(id);
+        if (deletedVersionIds.includes(id)) {
+          return Promise.resolve("already-gone");
+        }
+        const fault = this.deleteFaults.get(id);
+        if (fault?.kind === "not-found") {
+          return Promise.resolve("already-gone");
+        }
+        if (fault?.kind === "last-version-conflict") {
+          return Promise.resolve("last-version-conflict");
+        }
+        if (fault?.kind === "error") {
+          return Promise.reject(
+            new Error(
+              `simulated failure (status ${String(fault.status ?? 500)}) deleting version ${String(id)}`,
+            ),
+          );
+        }
+        deletedVersionIds.push(id);
+        return Promise.resolve("deleted");
+      },
+      deletePackage: (_pkg) => Promise.resolve("deleted"),
+    };
+    return { mutator, deletedVersionIds, attemptedVersionIds };
+  }
+}
+
+/** A one-shot fault for {@link FakeGhcr.mutator}'s `deleteVersion`. */
+export type FakeDeleteFault =
+  | { readonly kind: "not-found" }
+  | { readonly kind: "last-version-conflict" }
+  | { readonly kind: "error"; readonly status?: number };
+
+export interface FakeMutatorHandle {
+  readonly mutator: Mutator;
+  /** Version ids for which `deleteVersion` returned `"deleted"`, in call order. */
+  readonly deletedVersionIds: readonly number[];
+  /** Every `deleteVersion` call made, in order, regardless of outcome. */
+  readonly attemptedVersionIds: readonly number[];
 }
 
 /** Convenience for building a `PackageVersionRecord` in tests without threading branding calls through every fixture. */
