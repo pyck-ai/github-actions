@@ -42,10 +42,14 @@ on:
         default: ""
       verify-command:
         description: >-
-          Shell command run in the verify job. The job appends
-          `--digests digests.json`, so this must name a command that accepts
-          that flag directly. Parameterised so callers can move to the
-          TypeScript verification tool without this workflow changing.
+          Shell command run in the verify job INSTEAD of the built-in
+          `$/.github/actions/verify-image` (imgverify) action. Empty
+          (the default) means "use the built-in imgverify action" — the
+          normal path for a consumer with an `.imgverify.yaml` manifest. A
+          non-empty value is an escape hatch for a consumer that has not
+          migrated to imgverify yet: the job appends `--digests
+          digests.json`, so this must name a command that accepts that flag
+          directly.
         type: string
         required: false
         # NOT `task verify`. go-task treats a trailing `--digests x` as its
@@ -53,7 +57,17 @@ on:
         # `--` it forwards the flag to the BUILD step instead, where bake
         # rejects it (exit 201). Both were measured. It fails closed rather
         # than passing vacuously, but it never verifies anything either.
-        default: ./verify.sh
+        default: ""
+      verify-manifest:
+        description: >-
+          Path to the imgverify manifest, passed through as `--manifest` to
+          the built-in verify-image action. Only used when `verify-command`
+          is empty. imgverify defaults to `.imgverify.yaml` in the working
+          directory if this is left empty, which is the calling repo's
+          checkout (the action runs with the caller's workspace as cwd).
+        type: string
+        required: false
+        default: ""
       runs-on:
         description: >-
           Runner label used for every job in this workflow.
@@ -256,7 +270,32 @@ jobs:
       - name: Merge digests
         run: jq -s 'add' digests/*.json > digests.json
 
-      - name: Verify pushed image
+      # `$/` is the self-repository reference: it resolves an action stored
+      # in THIS repository at the running commit's SHA — the same SHA as
+      # this workflow — with no separate checkout needed. Documented at
+      # https://docs.github.com/actions/using-workflows/reusing-workflows
+      # (and the composite-actions "referencing an action in the same
+      # repository" section). This means a consumer pinning
+      # build-image.yml@<sha> always gets the verify-image action from that
+      # SAME sha — the workflow and the action can never drift apart, and no
+      # self-referencing SHA needs to be hardcoded or bumped on release.
+      # `$/` is unsupported on GitHub Enterprise Server; fine here since this
+      # runs on github.com only. A relative `uses: ./...` would resolve
+      # against the CALLER's workspace instead of this repo, and `uses:`
+      # cannot take an expression, so neither alternative works here.
+      - name: Verify pushed image (built-in)
+        if: inputs.verify-command == ''
+        uses: $/.github/actions/verify-image
+        with:
+          args: >-
+            run
+            ${{ inputs.verify-manifest != '' && format('--manifest {0}', inputs.verify-manifest) || '' }}
+            --digests digests.json
+        env:
+          REGISTRY: ${{ inputs.registry }}
+
+      - name: Verify pushed image (custom command)
+        if: inputs.verify-command != ''
         env:
           REGISTRY: ${{ inputs.registry }}
         run: ${{ inputs.verify-command }} --digests digests.json
