@@ -30,25 +30,44 @@ in your own workflow instead. `tidy-repo.yml` additionally wants
 - **`imgverify`** — manifest-driven image verification. A repo declares its
   checks in `.imgverify.yaml`; the tool resolves bake targets, pulls or inspects
   each image, and runs them. Twelve check kinds, no shell escape hatch.
-- **`ghcr-tidy`** — GHCR retention. It computes the delete set (registry-rooted
-  keep set, reachability, grace window), emits a plan, and applies it. Applying
-  requires a persisted plan re-validated via a capability gate (`grantApply`);
-  deletion runs as groups (parent first, a failed parent abandons its group) and
-  is only reachable through a `Mutator`. After each package's deletions it
-  verifies the registry directly — snapshotting every tag before and after
-  (from the registry's own tag list, interleaved per package, not batched),
-  checking each tag still resolves, to the same digest, with its full manifest
-  closure intact, and aborting the run on any regression. A pre-flight canary
-  on a known-good tag distinguishes a bad registry day from damage the run
-  caused; damage confirmed broken before the run is reported separately. A
-  post-apply regression also opens a labelled issue with a cold-read incident
-  report and trips a circuit breaker: every later run checks that issue before
-  touching anything (including the canary) and refuses all deletions while it
-  is open. The breaker has no reset in code — a human closes the issue to
-  clear it. A volume alarm additionally refuses to apply when the plan deletes
-  more than a configurable multiple (default 3) of a caller-supplied trailing
-  baseline. Not yet wired to a CLI or action, so nothing can invoke it from
-  CI yet.
+- **`ghcr-tidy`** — GHCR retention, driven by a `.ghcr-tidy.yaml` config
+  manifest (closed schema: an unknown key is a hard error, because in a
+  deletion tool a silently ignored config key produces a green run that did
+  the wrong thing). Package entries carry full package names; there is no
+  repo-prefix concept to concatenate. It computes the delete set
+  (registry-rooted keep set, reachability, grace window), emits a plan, and
+  applies it. Applying requires a persisted plan re-validated via a
+  capability gate (`grantApply`); deletion runs as groups (parent first, a
+  failed parent abandons its group) and is only reachable through a
+  `Mutator`. After each package's deletions it verifies the registry directly
+  — snapshotting every tag before and after (from the registry's own tag
+  list, interleaved per package, not batched), checking each tag still
+  resolves, to the same digest, with its full manifest closure intact, and
+  aborting the run on any regression. A pre-flight canary on a known-good tag
+  distinguishes a bad registry day from damage the run caused; damage
+  confirmed broken before the run is reported separately. A post-apply
+  regression also opens a labelled issue with a cold-read incident report and
+  trips a circuit breaker: every later run checks that issue before touching
+  anything (including the canary) and refuses all deletions while it is
+  open. The breaker has no reset in code — a human closes the issue to clear
+  it. A volume alarm additionally refuses to apply when the plan deletes more
+  than a configurable multiple (default 3) of a caller-supplied trailing
+  baseline. Deletion requires three independent gestures — the `apply`
+  subcommand, an explicit `--apply` flag, and a `--budget` — and none of the
+  apply-path safety nets (breaker, canary, post-apply verification) can be
+  switched off.
+
+  ```sh
+  ghcr-tidy [plan]     # plan; plan is the default subcommand
+  ghcr-tidy validate   # manifest load + validation only
+  ghcr-tidy apply --apply --budget <n>   # apply the plan (see safety above)
+  ghcr-tidy --help
+  ```
+
+  Exit codes: `0` ok · `1` findings · `2` config error · `3` infrastructure
+  error · `4` safety (breaker tripped, volume alarm, canary failure,
+  verification regression, plan-integrity violation).
+
 - **`ghcr-audit`** — registry integrity checks. Not yet implemented.
 
 ```sh

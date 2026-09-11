@@ -1,0 +1,543 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { digest, tag } from "./domain.js";
+import { FakeGhcr, version } from "./fake-ghcr.js";
+import { memoryBreaker } from "./breaker.js";
+import { memoryJournal } from "./journal.js";
+import { parsePlan } from "./persisted-plan.js";
+import { parseArgv, resolveArgv, runCommand, tokenizeArgs, type CliDeps } from "./cli.js";
+import type { Clock } from "./ports.js";
+import type { RegistryReader } from "./ports.js";
+
+const CLOCK: Clock = { now: () => new Date("2026-09-11T00:00:00.000Z") };
+
+const VALID_MANIFEST = `
+version: 1
+owner: acme
+packages:
+  - match: widget
+`;
+
+let tmpDir: string;
+
+beforeEach(async () => {
+  tmpDir = await mkdtemp(path.join(tmpdir(), "ghcr-tidy-cli-"));
+});
+
+afterEach(async () => {
+  await rm(tmpDir, { recursive: true, force: true });
+  vi.unstubAllEnvs();
+});
+
+async function writeManifest(content: string, name = ".ghcr-tidy.yaml"): Promise<string> {
+  const p = path.join(tmpDir, name);
+  await writeFile(p, content, "utf8");
+  return p;
+}
+
+/**
+ * A fake world with one live tag ("latest", protected by the default
+ * protected-tag pattern) and one unreferenced, old garbage digest that
+ * the default retention policy plans to delete.
+ */
+function widgetWorld(): FakeGhcr {
+  const fake = new FakeGhcr();
+  fake
+    .setTag(tag("latest"), digest("sha256:live"))
+    .setManifest(digest("sha256:live"), {})
+    .setManifest(digest("sha256:garbage"), {});
+  fake.addVersion(version(1, "sha256:live", "2026-09-01T00:00:00.000Z"));
+  fake.addVersion(version(2, "sha256:garbage", "2020-01-01T00:00:00.000Z"));
+  return fake;
+}
+
+function baseDeps(fake: FakeGhcr, overrides: Partial<CliDeps> = {}): CliDeps {
+  return {
+    registry: fake.registryReader(),
+    packages: fake.packagesClient(),
+    clock: CLOCK,
+    ...overrides,
+  };
+}
+
+describe("parseArgv", () => {
+  it("defaults to the plan subcommand", () => {
+    const { subcommand } = parseArgv(["--manifest", "x.yaml"]);
+    expect(subcommand).toBe("plan");
+  });
+
+  it("recognises an explicit validate/plan/apply subcommand", () => {
+    expect(parseArgv(["validate"]).subcommand).toBe("validate");
+    expect(parseArgv(["plan"]).subcommand).toBe("plan");
+    expect(parseArgv(["apply", "--apply"]).subcommand).toBe("apply");
+  });
+
+  it("collects repeated --package flags", () => {
+    const { args } = parseArgv(["--package", "a", "--package", "b"]);
+    expect(args.packages).toEqual(["a", "b"]);
+  });
+
+  it("parses --budget/--jobs/--baseline as integers", () => {
+    const { args } = parseArgv(["--budget", "50", "--jobs", "2", "--baseline", "0"]);
+    expect(args.budget).toBe(50);
+    expect(args.jobs).toBe(2);
+    expect(args.baseline).toBe(0);
+  });
+
+  it("rejects a non-positive --budget/--jobs", () => {
+    expect(() => parseArgv(["--budget", "0"])).toThrow(/--budget/);
+    expect(() => parseArgv(["--jobs", "-1"])).toThrow(/--jobs/);
+  });
+
+  it("sets the --apply boolean flag", () => {
+    expect(parseArgv(["apply"]).args.apply).toBe(false);
+    expect(parseArgv(["apply", "--apply"]).args.apply).toBe(true);
+  });
+
+  it("rejects an unknown flag", () => {
+    expect(() => parseArgv(["--bogus"])).toThrow(/unknown flag: --bogus/);
+  });
+
+  it("rejects a flag missing its value", () => {
+    expect(() => parseArgv(["--manifest"])).toThrow(/missing value for --manifest/);
+  });
+});
+
+describe("tokenizeArgs / resolveArgv", () => {
+  it("tokenizes quoted and unquoted segments", () => {
+    expect(tokenizeArgs(`plan --manifest "some path.yaml"`)).toEqual([
+      "plan",
+      "--manifest",
+      "some path.yaml",
+    ]);
+  });
+
+  it("resolveArgv falls back to process.argv when INPUT_ARGS is undefined", () => {
+    expect(resolveArgv({}, ["plan", "--manifest", "x.yaml"])).toEqual([
+      "plan",
+      "--manifest",
+      "x.yaml",
+    ]);
+  });
+
+  it("resolveArgv uses INPUT_ARGS when defined and non-empty", () => {
+    expect(resolveArgv({ INPUT_ARGS: "validate --manifest x.yaml" }, ["ignored"])).toEqual([
+      "validate",
+      "--manifest",
+      "x.yaml",
+    ]);
+  });
+
+  it("resolveArgv throws on a defined-but-empty INPUT_ARGS", () => {
+    expect(() => resolveArgv({ INPUT_ARGS: "" }, [])).toThrow(/args.*empty/i);
+    expect(() => resolveArgv({ INPUT_ARGS: "   " }, [])).toThrow(/args.*empty/i);
+  });
+});
+
+describe("validate subcommand", () => {
+  it("exits 0 on this repository's own dogfood manifest", async () => {
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const exitCode = await runCommand([
+      "validate",
+      "--manifest",
+      path.join(repoRoot, ".ghcr-tidy.yaml"),
+    ]);
+    expect(exitCode).toBe(0);
+  });
+
+  it("exits 0 on a valid manifest", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const exitCode = await runCommand(["validate", "--manifest", manifestPath]);
+    expect(exitCode).toBe(0);
+  });
+
+  it("exits 2 on a manifest with an unknown field", async () => {
+    const manifestPath = await writeManifest(
+      "version: 1\nowner: acme\npackages: []\nbogus: true\n",
+    );
+    const exitCode = await runCommand(["validate", "--manifest", manifestPath]);
+    expect(exitCode).toBe(2);
+  });
+
+  it("exits 2 on a manifest with an invalid version", async () => {
+    const manifestPath = await writeManifest("version: 2\nowner: acme\npackages: []\n");
+    const exitCode = await runCommand(["validate", "--manifest", manifestPath]);
+    expect(exitCode).toBe(2);
+  });
+
+  it("exits 2 on a manifest with a duplicate match", async () => {
+    const manifestPath = await writeManifest(
+      "version: 1\nowner: acme\npackages:\n  - match: widget\n  - match: widget\n",
+    );
+    const exitCode = await runCommand(["validate", "--manifest", manifestPath]);
+    expect(exitCode).toBe(2);
+  });
+
+  it("exits 2 on invalid YAML", async () => {
+    const manifestPath = await writeManifest("version: [1\n");
+    const exitCode = await runCommand(["validate", "--manifest", manifestPath]);
+    expect(exitCode).toBe(2);
+  });
+
+  it("exits 2 when the manifest file does not exist", async () => {
+    const exitCode = await runCommand([
+      "validate",
+      "--manifest",
+      path.join(tmpDir, "missing.yaml"),
+    ]);
+    expect(exitCode).toBe(2);
+  });
+});
+
+describe("plan subcommand", () => {
+  it("produces the expected human-readable summary and writes a parseable plan with --out", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const outPath = path.join(tmpDir, "plan.json");
+    const fake = widgetWorld();
+
+    const logs: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      logs.push(String(chunk));
+      return true;
+    });
+
+    const exitCode = await runCommand(
+      ["plan", "--manifest", manifestPath, "--out", outPath],
+      baseDeps(fake),
+    );
+    spy.mockRestore();
+
+    expect(exitCode).toBe(0);
+    const output = logs.join("");
+    expect(output).toContain("planned 1 package(s)");
+    expect(output).toContain("1 version(s) to delete");
+    expect(output).toContain("widget");
+
+    const written = await import("node:fs/promises").then((fs) => fs.readFile(outPath, "utf8"));
+    const parsed = parsePlan(JSON.parse(written) as unknown);
+    expect(parsed.packages).toHaveLength(1);
+    expect(parsed.packages[0]?.groups[0]?.root.digest).toBe(digest("sha256:garbage"));
+  });
+
+  it("is the default subcommand (no subcommand token)", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    const exitCode = await runCommand(["--manifest", manifestPath], baseDeps(fake));
+    expect(exitCode).toBe(0);
+  });
+
+  it("restricts to the packages named by --package, and exits 2 if one matches nothing", async () => {
+    const manifestPath = await writeManifest(
+      "version: 1\nowner: acme\npackages:\n  - match: widget\n  - match: gadget\n",
+    );
+    const fake = widgetWorld();
+    fake
+      .setTag(tag("latest"), digest("sha256:live")) // gadget shares the same fake world's tags/resolve
+      .setManifest(digest("sha256:live"), {});
+
+    const exitOk = await runCommand(
+      ["plan", "--manifest", manifestPath, "--package", "widget"],
+      baseDeps(fake),
+    );
+    expect(exitOk).toBe(0);
+
+    const exitBad = await runCommand(
+      ["plan", "--manifest", manifestPath, "--package", "does-not-exist"],
+      baseDeps(fake),
+    );
+    expect(exitBad).toBe(2);
+  });
+
+  it("exits 1 (findings) when a package is skipped fail-closed", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = new FakeGhcr();
+    fake.setTag(tag("latest"), digest("sha256:live"));
+    // No manifest registered for sha256:live — it will 404 on resolve, failing the package closed.
+    // A non-empty version listing is required too: planPackage short-circuits
+    // to "nothing-to-do" (never touching the registry at all) when the
+    // Packages API reports zero versions — see plan.ts's first check.
+    fake.addVersion(version(1, "sha256:live", "2026-09-01T00:00:00.000Z"));
+
+    const exitCode = await runCommand(["plan", "--manifest", manifestPath], baseDeps(fake));
+    expect(exitCode).toBe(1);
+  });
+
+  it("exits 3 (infrastructure) when the registry throws an unexpected error", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const throwingRegistry: RegistryReader = {
+      listTags: () => Promise.reject(new Error("simulated network failure")),
+      resolve: () => Promise.reject(new Error("unused")),
+    };
+    // Same reasoning as above: a non-empty version listing is required for
+    // planPackage to ever reach the registry at all.
+    const fakePackages = new FakeGhcr();
+    fakePackages.addVersion(version(1, "sha256:live", "2026-09-01T00:00:00.000Z"));
+    const exitCode = await runCommand(["plan", "--manifest", manifestPath], {
+      registry: throwingRegistry,
+      packages: fakePackages.packagesClient(),
+      clock: CLOCK,
+    });
+    expect(exitCode).toBe(3);
+  });
+
+  it("exits 2 when GITHUB_TOKEN is not set and no registry/packages deps are supplied", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "");
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const exitCode = await runCommand(["plan", "--manifest", manifestPath]);
+    expect(exitCode).toBe(2);
+  });
+});
+
+describe("apply subcommand", () => {
+  it("refuses without --apply and mutates nothing", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(2);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+
+  it("exits 2 and mutates nothing when no breaker is configured", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "dummy-token-for-octokit-construction-only");
+    vi.stubEnv("GITHUB_REPOSITORY", "");
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    const { mutator, attemptedVersionIds } = fake.mutator();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "canary-pkg",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator }),
+    );
+
+    expect(exitCode).toBe(2);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+
+  it("exits 2 when --budget is missing", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    const { mutator } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      ["apply", "--apply", "--manifest", manifestPath, "--out", path.join(tmpDir, "plan.json")],
+      baseDeps(fake, { mutator, breaker }),
+    );
+    expect(exitCode).toBe(2);
+  });
+
+  it("exits 2 when --out is missing", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    const { mutator } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      ["apply", "--apply", "--manifest", manifestPath, "--budget", "10"],
+      baseDeps(fake, { mutator, breaker }),
+    );
+    expect(exitCode).toBe(2);
+  });
+
+  it("exits 2 when the plan has work but no canary is configured", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(2);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+
+  it("exits 0 on a clean apply with a healthy canary, journal, and breaker", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { breaker, trips } = memoryBreaker();
+    const { journal, entries } = memoryJournal(CLOCK);
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker, journal }),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(deletedVersionIds).toEqual([2]);
+    expect(trips).toEqual([]);
+    expect(entries.length).toBeGreaterThan(0);
+  });
+
+  it("exits 1 (findings) when a deletion is abandoned (registry rejects part of the plan)", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    fake.setDeleteFault(2, { kind: "error", status: 500 });
+    const { mutator } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(1);
+  });
+
+  it("exits 4 (safety) when the breaker is already tripped, and mutates nothing", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker({
+      issueNumber: 99,
+      issueUrl: "https://github.com/acme/repo/issues/99",
+    });
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(4);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+
+  it("exits 4 (safety) when the volume alarm refuses the plan", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+        "--baseline",
+        "0",
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(4);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+
+  it("skips the canary requirement when the plan has no work to do (empty packages)", async () => {
+    const manifestPath = await writeManifest("version: 1\nowner: acme\npackages: []\n");
+    const fake = new FakeGhcr();
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+});

@@ -1,0 +1,17 @@
+# ghcr-tidy config manifest for pyck-ai/github-actions itself.
+#
+# This repository publishes no container images — it is the source repo
+# for imgverify/ghcr-tidy/ghcr-audit, not a consumer of them — so it has
+# no GHCR packages of its own to prune. `packages: []` is a deliberate,
+# permanent steady state here, not a placeholder: see
+# `src/ghcr-tidy/manifest/schema.ts`'s doc comment on `Manifest.packages`
+# for why an empty list is valid (unlike `imgverify`'s manifest, where an
+# empty `checks`/`targets` array is rejected as a real bug class).
+#
+# This makes `pyck-ai/github-actions` the safest possible first consumer
+# of the tool: `ghcr-tidy plan`/`apply` against this manifest always find
+# nothing to do, by construction, while still exercising the full
+# manifest-load + validate + plan pipeline end to end.
+version: 1
+owner: pyck-ai
+packages: []
