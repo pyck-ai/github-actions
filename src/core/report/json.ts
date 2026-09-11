@@ -1,4 +1,4 @@
-import type { CheckResult } from "../checks/types.js";
+import type { CheckResult } from "../../imgverify/checks/types.js";
 
 /**
  * The machine-readable report a later equivalence oracle diffs against

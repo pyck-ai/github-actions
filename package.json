@@ -4,7 +4,7 @@
   "description": "Shared TypeScript registry core and CLI tools (imgverify, ghcr-tidy, ghcr-audit) for pyck-ai GHCR maintenance.",
   "type": "module",
   "bin": {
-    "imgverify": "dist/imgverify/index.js"
+    "imgverify": ".github/actions/verify-image/dist/index.js"
   },
   "engines": {
     "node": ">=22"
@@ -14,15 +14,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "bundle": "npm run bundle:registry && npm run bundle:imgverify && npm run bundle:prune",
-    "bundle:registry": "ncc build src/registry/index.ts -o dist/registry",
-    "bundle:imgverify": "ncc build src/cli/imgverify.ts -o dist/imgverify",
+    "bundle": "npm run bundle:imgverify && npm run bundle:prune",
+    "bundle:imgverify": "ncc build src/imgverify/cli.ts -o .github/actions/verify-image/dist",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "bundle:prune": "find dist \\( -name '*.d.ts' -o -name '*.d.ts.map' \\) -delete"
+    "bundle:prune": "find .github/actions/verify-image/dist \\( -name '*.d.ts' -o -name '*.d.ts.map' \\) -delete"
   },
   "dependencies": {
     "@octokit/core": "^6.1.2",

@@ -2,10 +2,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeFakeCli } from "../checks/test-helpers.js";
-import type { DockerCli, DockerExecResult } from "../docker/cli.js";
-import type { BakeExecFn } from "../targets/bake.js";
-import { parseArgv, runCommand } from "./imgverify.js";
+import { makeFakeCli } from "./checks/test-helpers.js";
+import type { DockerCli, DockerExecResult } from "./docker/cli.js";
+import type { BakeExecFn } from "./targets/bake.js";
+import { parseArgv, runCommand } from "./cli.js";
 
 const BUILDARGS_CONF = "FOO_VERSION=1.2.3\n";
 

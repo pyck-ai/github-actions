@@ -85,12 +85,12 @@ jobs:
       - name: Rebuild bundles and check dist/ is up to date
         run: |
           npm run bundle
-          if ! git diff --exit-code -- dist/; then
-            echo "::error::dist/ is stale for this tag — run \"npm run bundle\" and commit the result before retagging" >&2
+          if ! git diff --exit-code -- .github/actions/verify-image/dist/; then
+            echo "::error::.github/actions/verify-image/dist/ is stale for this tag — run \"npm run bundle\" and commit the result before retagging" >&2
             exit 1
           fi
-          if [ -n "$(git status --porcelain -- dist/)" ]; then
-            echo "::error::dist/ has untracked output — run \"npm run bundle\" and commit the result before retagging" >&2
+          if [ -n "$(git status --porcelain -- .github/actions/verify-image/dist/)" ]; then
+            echo "::error::.github/actions/verify-image/dist/ has untracked output — run \"npm run bundle\" and commit the result before retagging" >&2
             exit 1
           fi
 

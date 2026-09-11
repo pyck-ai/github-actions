@@ -6,28 +6,51 @@ repos) that maintain GHCR container packages. This repo hosts a shared
 registry core plus three CLI tools built on it:
 
 - `imgverify` — implemented: manifest-driven image verification, with a
-  `run`/`validate`/`buildargs` CLI (`src/cli/imgverify.ts`, bundled to
-  `dist/imgverify/`) and a companion `verify-image/` composite action.
+  `run`/`validate`/`buildargs` CLI (`src/imgverify/cli.ts`, bundled into
+  `.github/actions/verify-image/dist/`) and a companion `verify-image`
+  composite action.
 - `ghcr-tidy` — not yet implemented.
 - `ghcr-audit` — not yet implemented.
 
 ## Layout
 
 ```
+.github/
+  workflows/                CI for this repo, plus the reusable workflows
+                             it publishes (build-image.yml, tidy-repo.yml).
+                             GitHub requires workflows to live directly in
+                             `.github/workflows/` — it does not support
+                             subdirectories there — so this repo's own CI
+                             (ci.yml, release.yml) and the reusable
+                             workflows it ships to consumers are
+                             necessarily mixed in one flat directory.
+  actions/
+    verify-image/            composite GitHub Action wrapping its own
+                              dist/index.js bundle, SHA-pinnable by
+                              consumers (see "verify-image" below)
 src/
-  registry/       shared GHCR + GitHub Packages API core
-  buildargs/      imgverify: buildargs.conf parse/emit
-  manifest/       imgverify: manifest schema, parse, ${VAR} substitution, target matching
-  docker/         imgverify: docker CLI seam (inspect/run/create/export/pull/port)
-  checks/         imgverify: the twelve check-kind executors + the kind->executor registry
-  targets/        imgverify: `docker buildx bake --print` parsing + bake-target -> image-ref resolution
-  report/         imgverify: console (✓/✗) and JSON report rendering
-  cli/            imgverify: the `imgverify` CLI entrypoint (argv, orchestration, exit codes)
-verify-image/     composite GitHub Action wrapping `dist/imgverify/index.js`, SHA-pinnable by consumers
-.github/workflows/ CI (owned separately from this scaffold)
+  core/
+    registry/                shared GHCR + GitHub Packages API core
+    report/                  shared console (✓/✗) and JSON report rendering
+                              (only imgverify consumes it today, but
+                              reporting is infrastructure any future tool
+                              can reuse)
+  imgverify/
+    buildargs/                buildargs.conf parse/emit
+    manifest/                 manifest schema, parse, ${VAR} substitution, target matching
+    docker/                   docker CLI seam (inspect/run/create/export/pull/port)
+    checks/                   the twelve check-kind executors + the kind->executor registry
+    targets/                  `docker buildx bake --print` parsing + bake-target -> image-ref resolution
+    cli.ts                    the `imgverify` CLI entrypoint (argv, orchestration, exit codes)
+examples/
+  baseimages.imgverify.yaml  a fixture manifest (pyck-ai/baseimages'
+                              checks, transcribed) that the equivalence
+                              oracle (tools/oracle/) exercises this repo
+                              against — not this repo's own config
+tools/oracle/               the bash-vs-TypeScript equivalence oracle
 ```
 
-## Registry core (`src/registry/`)
+## Registry core (`src/core/registry/`)
 
 Ported from the bash, with the registry-layer logic (`request_with_retry`,
 `get_registry_token`, `github_api_paginate`, `list_versions`,
@@ -72,7 +95,7 @@ isn't given fake dependencies.
 | `targets/resolve.ts`     | Resolves a `BakeTarget` to a concrete image ref: local-tag mode (variant-suffix -> `:latest` -> first tag, then `docker inspect`) or `--digests` mode (repo derived from the first tag via regex, then `docker pull repo@digest`). Documents the multi-arch verification gap. |
 | `report/console.ts`      | The `✓`/`✗` console report, ported line-for-line from the bash's `_pass`/`_fail`/`verify_summary`.                                                                                                                                                                            |
 | `report/json.ts`         | The machine-readable per-target report an equivalence oracle diffs against.                                                                                                                                                                                                   |
-| `cli/imgverify.ts`       | The CLI entrypoint: argv parsing, manifest/buildargs loading, target discovery + resolution, check execution, and exit codes. See below.                                                                                                                                      |
+| `cli.ts`                 | The CLI entrypoint: argv parsing, manifest/buildargs loading, target discovery + resolution, check execution, and exit codes. See below.                                                                                                                                      |
 
 ### CLI usage
 
@@ -101,42 +124,46 @@ violation, a `--target` glob matching nothing); `3` INFRASTRUCTURE error
 (`bake --print` failed, an image isn't loaded locally / `docker pull`
 failed, no digest recorded for a target).
 
-### `verify-image/`
+### `verify-image`
 
-A composite action (`verify-image/action.yml`) wrapping
-`dist/imgverify/index.js`, so a consumer can pin this tool by the action's
+A composite action (`.github/actions/verify-image/action.yml`) wrapping its
+own `dist/index.js` bundle, so a consumer can pin this tool by the action's
 commit SHA the same way they'd pin any other action — the bundled JS the
-action runs is committed in this same repo, so the SHA pin covers the CLI
-code too.
+action runs lives inside the action directory itself, so the SHA pin
+covers the CLI code too. (See the "Layout" section above for why this
+lives under `.github/actions/` rather than a top-level directory.)
 
 ## Development
 
 ```sh
 npm install
 npm run build    # tsc — type-check, emit to lib/ (gitignored, not published)
-npm run bundle   # ncc — bundle registry + imgverify for CI consumption, emit to dist/ (committed)
+npm run bundle   # ncc — bundle imgverify for CI/action consumption, emit into
+                  # .github/actions/verify-image/dist/ (committed)
 npm test         # vitest
 npm run lint     # eslint
 npm run format   # prettier --write
 ```
 
-`npm run bundle` fans out to `bundle:registry` (`ncc build
-src/registry/index.ts -o dist/registry`) and `bundle:imgverify` (`ncc build
-src/cli/imgverify.ts -o dist/imgverify`), each producing a `type: module`
-`package.json` alongside its `index.js`.
+`npm run bundle` runs `bundle:imgverify` (`ncc build src/imgverify/cli.ts -o
+.github/actions/verify-image/dist`) followed by `bundle:prune`, producing a
+`type: module` `package.json` alongside `index.js`. One bundle serves both
+`npx imgverify` (via `package.json`'s `bin` field) and the `verify-image`
+action — there is no separate registry bundle: nothing executes one, since
+the CLIs import `src/core/registry/` from source.
 
-`lib/` (tsc output) and `dist/` (ncc output) are deliberately different
-directories: `dist/` is the artifact CI workflows and consuming actions
-pin to, so it is committed and CI fails if it drifts from source (see
-`ci.yml` / `release.yml`); `lib/` is a disposable type-check/build
-byproduct and stays gitignored.
+`lib/` (tsc output) and `.github/actions/verify-image/dist/` (ncc output)
+are deliberately different: the latter is the artifact CI workflows and
+consuming actions pin to, so it is committed and CI fails if it drifts from
+source (see `ci.yml` / `release.yml`); `lib/` is a disposable type-check/
+build byproduct and stays gitignored.
 
 **After changing anything under `src/`, run `npm run bundle` and commit the
-result.** `ci.yml` and `release.yml` both rebuild `dist/` from a clean
+result.** `ci.yml` and `release.yml` both rebuild the bundle from a clean
 checkout and fail the build if the rebuilt output differs from what's
-committed, or if `dist/` has untracked files — a stale committed bundle
-would mean a pinned consumer silently runs different code than the source
-it appears to match.
+committed, or if the bundle directory has untracked files — a stale
+committed bundle would mean a pinned consumer silently runs different code
+than the source it appears to match.
 
 ## Publishing
 

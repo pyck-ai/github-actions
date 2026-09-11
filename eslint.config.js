@@ -8,7 +8,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   prettier,
   {
-    ignores: ["dist/**", "lib/**", "node_modules/**", "coverage/**"],
+    ignores: [".github/actions/verify-image/dist/**", "lib/**", "node_modules/**", "coverage/**"],
   },
   {
     rules: {

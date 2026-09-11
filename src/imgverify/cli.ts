@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { emitBuildArgs, type EmitFormat } from "../buildargs/emit.js";
-import { parseBuildArgs, type BuildArgs } from "../buildargs/parse.js";
-import { executeCheck } from "../checks/index.js";
-import type { CheckResult } from "../checks/types.js";
+import { emitBuildArgs, type EmitFormat } from "./buildargs/emit.js";
+import { parseBuildArgs, type BuildArgs } from "./buildargs/parse.js";
+import { executeCheck } from "./checks/index.js";
+import type { CheckResult } from "./checks/types.js";
 import {
   createDockerCli,
   spawnExec,
@@ -12,14 +12,14 @@ import {
   type DockerCli,
   type ExecBinaryFn,
   type ExecFn,
-} from "../docker/cli.js";
-import { globMatch, resolveTargets } from "../manifest/match.js";
-import { parseManifest } from "../manifest/parse.js";
-import type { Check, Manifest } from "../manifest/schema.js";
-import { ManifestError } from "../manifest/schema.js";
-import { substituteManifest } from "../manifest/substitute.js";
-import { formatConsoleReport } from "../report/console.js";
-import { buildJsonReport, type JsonReport } from "../report/json.js";
+} from "./docker/cli.js";
+import { globMatch, resolveTargets } from "./manifest/match.js";
+import { parseManifest } from "./manifest/parse.js";
+import type { Check, Manifest } from "./manifest/schema.js";
+import { ManifestError } from "./manifest/schema.js";
+import { substituteManifest } from "./manifest/substitute.js";
+import { formatConsoleReport } from "../core/report/console.js";
+import { buildJsonReport, type JsonReport } from "../core/report/json.js";
 import {
   BakeError,
   parseBakePrint,
@@ -27,13 +27,13 @@ import {
   spawnBakeExec,
   type BakeExecFn,
   type BakeTarget,
-} from "../targets/bake.js";
+} from "./targets/bake.js";
 import {
   ResolveError,
   resolveDigestTarget,
   resolveLocalTarget,
   type ResolvedTarget,
-} from "../targets/resolve.js";
+} from "./targets/resolve.js";
 
 /**
  * `imgverify` — the CLI entrypoint wiring the pure foundation layer

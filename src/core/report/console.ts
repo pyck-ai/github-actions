@@ -1,4 +1,4 @@
-import type { CheckResult } from "../checks/types.js";
+import type { CheckResult } from "../../imgverify/checks/types.js";
 
 /**
  * The console report, ported line-for-line from the bash predecessor's

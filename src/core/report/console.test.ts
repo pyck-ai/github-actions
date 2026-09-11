@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CheckResult } from "../checks/types.js";
+import type { CheckResult } from "../../imgverify/checks/types.js";
 import { formatConsoleReport } from "./console.js";
 
 const PASS: CheckResult = { index: 0, kind: "cmd", label: "on PATH: go", verdict: "pass" };

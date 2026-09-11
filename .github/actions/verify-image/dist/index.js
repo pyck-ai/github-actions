@@ -8660,7 +8660,7 @@ const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.ur
 ;// CONCATENATED MODULE: external "node:path"
 const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 var external_node_path_default = /*#__PURE__*/__nccwpck_require__.n(external_node_path_namespaceObject);
-;// CONCATENATED MODULE: ./src/buildargs/emit.ts
+;// CONCATENATED MODULE: ./src/imgverify/buildargs/emit.ts
 /**
  * Formats a parsed {@link BuildArgs} map as one line per entry, in
  * insertion order (the order the keys appeared in the source file).
@@ -8688,7 +8688,7 @@ function emitBuildArgs(args, format) {
     }
 }
 
-;// CONCATENATED MODULE: ./src/buildargs/parse.ts
+;// CONCATENATED MODULE: ./src/imgverify/buildargs/parse.ts
 /**
  * Parser for `buildargs.conf`, the KEY=VALUE file that Docker Bake, Task,
  * and CI all read to populate Docker `ARG`s and `$GITHUB_ENV`.
@@ -8766,7 +8766,7 @@ function parseBuildArgs(content, path) {
     return result;
 }
 
-;// CONCATENATED MODULE: ./src/checks/util.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/util.ts
 
 /** Renders an `AsIdentity` for a check's label, e.g. `"default user"`, `"uid 0"`, `"uid 1001"`. */
 function asLabel(as) {
@@ -8802,7 +8802,7 @@ function resolveMounts(mounts, manifestDir) {
     }));
 }
 
-;// CONCATENATED MODULE: ./src/checks/types.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/types.ts
 function pass(index, kind, label) {
     return { index, kind, label, verdict: "pass" };
 }
@@ -8830,7 +8830,7 @@ function truncateOutput(output, maxLines = 5) {
     return [...head, `… (${String(lines.length - (maxLines - 1))} more lines)`].join(" ");
 }
 
-;// CONCATENATED MODULE: ./src/checks/cmd.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/cmd.ts
 
 
 /**
@@ -8853,7 +8853,7 @@ async function executeCmdCheck(check, index, ctx) {
         : fail(index, "cmd", label, `missing: ${missing.join(" ")}`);
 }
 
-;// CONCATENATED MODULE: ./src/docker/inspect.ts
+;// CONCATENATED MODULE: ./src/imgverify/docker/inspect.ts
 /**
  * Runs `docker inspect <ref>` and extracts the `Config` fields every check
  * kind needs. Throws if the image cannot be inspected (missing/unpullable)
@@ -8897,7 +8897,7 @@ function getEnvValue(env, name) {
     return value;
 }
 
-;// CONCATENATED MODULE: ./src/checks/configUser.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/configUser.ts
 
 
 /**
@@ -8917,7 +8917,7 @@ async function executeConfigUserCheck(check, index, ctx) {
         : fail(index, "configUser", label, `got '${config.user.length > 0 ? config.user : "<empty>"}'`);
 }
 
-;// CONCATENATED MODULE: ./src/checks/env.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/env.ts
 
 
 /**
@@ -8954,7 +8954,7 @@ async function executeEnvCheck(check, index, ctx) {
     return got === undefined ? pass(index, "env", label) : fail(index, "env", label, `got '${got}'`);
 }
 
-;// CONCATENATED MODULE: ./src/checks/exposedPort.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/exposedPort.ts
 
 
 /** New check kind (no bash predecessor): asserts `Config.ExposedPorts` contains `<port>/<protocol>`. */
@@ -8968,7 +8968,7 @@ async function executeExposedPortCheck(check, index, ctx) {
         : fail(index, "exposedPort", label, `got: ${Object.keys(config.exposedPorts).join(", ") || "<none>"}`);
 }
 
-;// CONCATENATED MODULE: ./src/checks/file.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/file.ts
 
 
 /** Ports `check_file`: path existence via `[ -e ]` inside a running container (as opposed to `imageFile`'s exported-filesystem check, the only option for scratch images). */
@@ -8986,7 +8986,7 @@ async function executeFileCheck(check, index, ctx) {
         : fail(index, "file", label, `missing: ${missing.join(" ")}`);
 }
 
-;// CONCATENATED MODULE: ./src/checks/http.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/http.ts
 
 const DEFAULT_RETRIES = 10;
 const DEFAULT_RETRY_DELAY_MS = 500;
@@ -9048,7 +9048,7 @@ async function executeHttpCheck(check, index, ctx) {
     }
 }
 
-;// CONCATENATED MODULE: ./src/docker/export.ts
+;// CONCATENATED MODULE: ./src/imgverify/docker/export.ts
 /**
  * `docker export`'s tar stream, parsed for the path listing `imageFile`
  * needs — a from-scratch tar reader rather than `tar -tf -` piped through
@@ -9182,7 +9182,7 @@ async function listImageFiles(cli, image) {
     }
 }
 
-;// CONCATENATED MODULE: ./src/checks/imageFile.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/imageFile.ts
 
 
 /**
@@ -9213,7 +9213,7 @@ async function executeImageFileCheck(check, index, ctx) {
         : fail(index, "imageFile", label, `missing: ${missing.join(" ")}`);
 }
 
-;// CONCATENATED MODULE: ./src/checks/sh.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/sh.ts
 
 
 /**
@@ -9240,7 +9240,7 @@ async function executeShCheck(check, index, ctx) {
         : fail(index, "sh", label, truncateOutput(result.output, 4));
 }
 
-;// CONCATENATED MODULE: ./src/checks/user.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/user.ts
 
 
 /**
@@ -9286,7 +9286,7 @@ async function executeUserCheck(check, index, ctx) {
     return pass(index, "user", label);
 }
 
-;// CONCATENATED MODULE: ./src/checks/version.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/version.ts
 
 /**
  * Ports `check_version`, preserving its one load-bearing looseness: an
@@ -9328,7 +9328,7 @@ async function executeVersionCheck(check, index, ctx) {
         : fail(index, "version", label, `${failures.join("; ")} — got: ${truncateOutput(output)}`);
 }
 
-;// CONCATENATED MODULE: ./src/checks/workdir.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/workdir.ts
 
 
 /**
@@ -9346,7 +9346,7 @@ async function executeWorkdirCheck(check, index, ctx) {
         : fail(index, "workdir", label, `got '${config.workdir.length > 0 ? config.workdir : "<empty>"}'`);
 }
 
-;// CONCATENATED MODULE: ./src/checks/writable.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/writable.ts
 
 
 /**
@@ -9378,7 +9378,7 @@ async function executeWritableCheck(check, index, ctx) {
         : fail(index, "writable", label, `denied: ${denied.join(" ")}`);
 }
 
-;// CONCATENATED MODULE: ./src/checks/index.ts
+;// CONCATENATED MODULE: ./src/imgverify/checks/index.ts
 
 
 
@@ -9412,7 +9412,7 @@ function executeCheck(check, index, ctx) {
 
 ;// CONCATENATED MODULE: external "node:child_process"
 const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
-;// CONCATENATED MODULE: ./src/docker/cli.ts
+;// CONCATENATED MODULE: ./src/imgverify/docker/cli.ts
 
 /**
  * The single seam between `imgverify`'s check logic and the real `docker`
@@ -9586,7 +9586,7 @@ function createDockerCli(exec = spawnExec, execBinary = spawnExecBinary) {
     };
 }
 
-;// CONCATENATED MODULE: ./src/manifest/schema.ts
+;// CONCATENATED MODULE: ./src/imgverify/manifest/schema.ts
 /**
  * `imgverify.yml` manifest schema (version 1): types plus strict structural
  * validation for the twelve check kinds an image build can declare.
@@ -9868,7 +9868,7 @@ function validateManifest(raw) {
     };
 }
 
-;// CONCATENATED MODULE: ./src/manifest/match.ts
+;// CONCATENATED MODULE: ./src/imgverify/manifest/match.ts
 
 /**
  * Glob matching and target resolution against real Docker Bake target
@@ -9926,7 +9926,7 @@ function resolveTargets(manifest, targetNames) {
 
 // EXTERNAL MODULE: ./node_modules/yaml/dist/index.js
 var dist = __nccwpck_require__(8815);
-;// CONCATENATED MODULE: ./src/manifest/parse.ts
+;// CONCATENATED MODULE: ./src/imgverify/manifest/parse.ts
 
 
 /**
@@ -9960,7 +9960,7 @@ function parseManifest(content, sourcePath) {
     }
 }
 
-;// CONCATENATED MODULE: ./src/manifest/substitute.ts
+;// CONCATENATED MODULE: ./src/imgverify/manifest/substitute.ts
 /**
  * A `${VAR}` in a manifest referenced a variable not present in
  * `buildargs.conf`. This is a ConfigError, NOT a check failure: in the
@@ -10051,7 +10051,7 @@ function substituteManifest(manifest, vars) {
     return substituteValue(manifest, vars, "manifest");
 }
 
-;// CONCATENATED MODULE: ./src/report/console.ts
+;// CONCATENATED MODULE: ./src/core/report/console.ts
 /**
  * The console report, ported line-for-line from the bash predecessor's
  * `_pass`/`_fail`/`verify_summary`: a `✓`/`✗` per check with its label,
@@ -10101,7 +10101,7 @@ function printConsoleReport(results, stream = process.stdout) {
     stream.write(`${formatConsoleReport(results, { color })}\n`);
 }
 
-;// CONCATENATED MODULE: ./src/report/json.ts
+;// CONCATENATED MODULE: ./src/core/report/json.ts
 /** Builds a {@link JsonReport} from a resolved target's check results. Pure — no I/O. */
 function buildJsonReport(target, ref, checks) {
     const total = checks.length;
@@ -10119,7 +10119,7 @@ function formatJsonReport(report) {
     return JSON.stringify(report, null, 2);
 }
 
-;// CONCATENATED MODULE: ./src/targets/bake.ts
+;// CONCATENATED MODULE: ./src/imgverify/targets/bake.ts
 
 /**
  * `docker buildx bake --print` failed to run, or its output was not the
@@ -10217,7 +10217,7 @@ async function runBakePrint(exec = spawnBakeExec, options = {}) {
     return parseBakePrint(result.stdout);
 }
 
-;// CONCATENATED MODULE: ./src/targets/resolve.ts
+;// CONCATENATED MODULE: ./src/imgverify/targets/resolve.ts
 /**
  * Resolves a bake target to the concrete image ref `imgverify` runs its
  * checks against, in one of two modes (see `imgverify.ts`'s CLI surface):
@@ -10365,7 +10365,7 @@ async function resolveDigestTarget(cli, target, digests) {
     return { target: target.name, ref, architecture: extractArchitecture(raw) };
 }
 
-;// CONCATENATED MODULE: ./src/cli/imgverify.ts
+;// CONCATENATED MODULE: ./src/imgverify/cli.ts
 
 
 

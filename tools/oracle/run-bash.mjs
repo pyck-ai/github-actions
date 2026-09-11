@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Runs every target's bash `verify.sh` against the locally pulled image
-// (see ../../.imgverify.example.yaml's doc comment for the manifest this is
+// (see ../../examples/baseimages.imgverify.yaml's doc comment for the manifest this is
 // checked against), exactly as `pyck-ai/baseimages`'s own `task verify`
 // would invoke it per-image — `set -a && . ./buildargs.conf && set +a` is
 // MANDATORY (see this repo's oracle task spec): without it the script

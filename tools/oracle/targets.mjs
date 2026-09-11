@@ -1,7 +1,7 @@
 // The 15 bake targets in `pyck-ai/baseimages`, with the info needed to invoke
 // each image's bash `verify.sh` the same way `docker/base/verify.sh <ref>
 // <variant>` etc. are invoked. Mirrors `docker-bake.hcl`'s target set and
-// `.imgverify.example.yaml`'s `match` entries.
+// `examples/baseimages.imgverify.yaml`'s `match` entries.
 //
 // `localTag` is the tag `imgverify`'s own `pickLocalTag` (targets/resolve.ts)
 // would choose for this bake target from a real `bake --print` document —
