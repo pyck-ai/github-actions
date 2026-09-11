@@ -14,6 +14,16 @@ name: build-image
 
 on:
   workflow_call:
+    secrets:
+      # Optional: enables the Docker Hub login step in `build` so callers
+      # whose Dockerfiles pull Hub base images (e.g. alpine, debian, golang,
+      # nginxinc/nginx-unprivileged) avoid anonymous-pull rate limiting. A
+      # caller that omits both simply never logs in. Names are UPPER_SNAKE so
+      # a caller's `secrets: inherit` matches them by name.
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
     inputs:
       registry:
         description: >-
@@ -33,10 +43,12 @@ on:
       bake-targets:
         description: >-
           Optional override for the bake targets to build, as a JSON array
-          string (e.g. '["debian"]'). If unset, the target list is
-          discovered dynamically from `docker buildx bake --print`, which is
-          the preferred path so a new variant is picked up without touching
-          this workflow.
+          string (e.g. '["debian"]'). Each entry becomes its own matrix
+          component (no dependency-graph grouping is applied to an override,
+          since the graph isn't consulted for it). If unset, the target list
+          is discovered dynamically from `docker buildx bake --print`, which
+          is the preferred path so a new variant is picked up without
+          touching this workflow.
         type: string
         required: false
         default: ""
@@ -121,9 +133,50 @@ jobs:
           print=$(REGISTRY="$REGISTRY" docker buildx bake --print)
           {
             if [ -n "$BAKE_TARGETS_OVERRIDE" ]; then
-              echo "targets=$BAKE_TARGETS_OVERRIDE"
+              # No dependency graph is consulted for an override: each named
+              # target becomes its own single-target component.
+              echo "targets=$(jq -c '[.[] | {name: ., targets: .}]' <<<"$BAKE_TARGETS_OVERRIDE")"
             else
-              echo "targets=$(jq -c '[.target | keys[]]' <<<"$print")"
+              # Derive the build matrix from the dependency graph instead of a
+              # flat per-target list: build an undirected adjacency list from
+              # the `target:` edges in `contexts`, label-propagate to a fixed
+              # point to find connected components, then group targets by
+              # component. A flat matrix rebuilds every dependency once per
+              # dependent (e.g. a shared base target built once per leaf that
+              # references it via `contexts = { x = "target:base" }`), and
+              # worse, each of those redundant jobs still carries the
+              # dependency's own `cache-to`, so concurrent jobs race to write
+              # the same registry cache ref — last writer wins, degrading
+              # every subsequent run in a way invisible in any single run's
+              # logs. `name` is the component's root (the target with no
+              # outgoing edges, i.e. nothing it depends on) — chosen purely so
+              # job/builder names read well; it plays no role in the grouping.
+              # Ported from pyck-ai/baseimages'
+              # .github/scripts/build-images/discover.sh.
+              echo "targets=$(jq -c '
+                .target as $t
+                | ($t | keys) as $nodes
+                | ( [ $t | to_entries[] | .key as $from
+                      | (.value.contexts // {}) | to_entries[]
+                      | select(.value | startswith("target:"))
+                      | {a:$from, b:(.value | ltrimstr("target:"))} ] ) as $edges
+                | ( reduce $edges[] as $e ({}; .[$e.a] += [$e.b] | .[$e.b] += [$e.a]) ) as $adj
+                | ( reduce $edges[] as $e ({}; .[$e.a] += 1) ) as $deps
+                | ( reduce range(0; ($nodes|length)) as $_
+                      ( ($nodes | map({key:., value:.}) | from_entries);
+                        . as $lab
+                        | reduce $nodes[] as $n ($lab;
+                            .[$n] = ([ $n, .[$n] ] + [ ($adj[$n] // [])[] | $lab[.] ] | min)) )
+                  ) as $label
+                | $nodes | group_by($label[.])
+                | map( sort as $m
+                       | { name: ([ $m[] | select(($deps[.] // 0) == 0) ] | sort | .[0] // $m[0]),
+                           # Newline-separated, NOT space-separated: docker/bake-action
+                           # takes `targets` as a multi-value input and splits it on
+                           # newlines. A space-separated list is read as one target name
+                           # and fails with "failed to find target a b c".
+                           targets: ($m | join("\n")) } )
+                | sort_by(.name)' <<<"$print")"
             fi
             echo 'bakeargs-set<<EOF'
             grep -v '^#' buildargs.conf | grep -v '^\s*$' | sed 's/^/*.args./'
@@ -137,9 +190,12 @@ jobs:
             # job, once `verify` has confirmed the pushed digest is good, so a bad
             # image never gets the chance to be reachable by `latest`. The repo to
             # push to is derived from each target's first tag (e.g. .../foo:latest).
+            # Guard against targets with no tags (e.g. a future internal-only
+            # target) so `.value.tags[0]` doesn't explode.
             jq -rn --argjson p "$print" '
               $p.target
               | to_entries[]
+              | select((.value.tags // []) | length > 0)
               | .key as $k
               | (.value.tags[0] | sub(":[^/]+$"; "")) as $repo
               | ($k + ".tags="),
@@ -154,9 +210,22 @@ jobs:
     permissions:
       contents: read # required to checkout the calling repo
       packages: write # required to push images/digests to ghcr.io
+    env:
+      # Hoisted to job level because `secrets` is not available in an `if:`
+      # expression — the conditional login step below reads this env var
+      # instead. Left unset (empty string) when the caller doesn't define the
+      # secret, e.g. github-runner, which never sets Docker Hub credentials.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
+      # These jobs push as they go (by digest), so a cancelled sibling can be
+      # interrupted after it has already pushed, leaving a half-written
+      # registry cache export behind. With many components (baseimages has
+      # 15) you also want to learn about every failure in one run rather than
+      # one failure per run. Unobservable with a single target; important at
+      # scale.
+      fail-fast: false
       matrix:
-        target: ${{ fromJson(needs.discover.outputs.targets) }}
+        component: ${{ fromJson(needs.discover.outputs.targets) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -170,12 +239,19 @@ jobs:
       - name: Set up buildx builder
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
         with:
-          name: ${{ inputs.builder-name }}
+          # Per-repo AND per-leg isolation: `builder-name` is workflow-scoped
+          # and required, so with a many-component matrix every leg would
+          # otherwise call `docker buildx create --name <same>` concurrently
+          # on the same runner — creation conflicts, buildkit contention, and
+          # setup-buildx-action's post-step `docker buildx rm` potentially
+          # tearing the builder out from under a still-running sibling leg.
+          # Suffixing with the component name keeps each leg's builder
+          # independent.
+          name: ${{ inputs.builder-name }}-${{ matrix.component.name }}
           driver-opts: network=host
           buildkitd-flags: --allow-insecure-entitlement=network.host
 
-      # Needed both to pull the base image and to push the result; no image in
-      # this build comes from Docker Hub, so there is no Docker Hub login here.
+      # Needed both to pull the base image and to push the result.
       - name: Log in to the Container registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
@@ -183,11 +259,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Optional: only some consumers (e.g. baseimages, whose Dockerfiles
+      # reference `alpine`, `debian`, `golang`, `nginxinc/nginx-unprivileged`)
+      # pull base images from Docker Hub. Anonymous pulls there are rate
+      # limited per-IP (100/6h), and with `pull: true`, two platforms, and a
+      # many-component fan-out, an unauthenticated shared self-hosted runner
+      # IP can exceed that limit — surfacing as an intermittent-looking
+      # network flake. A consumer that defines neither secret (e.g.
+      # github-runner) simply skips this step. `secrets` isn't readable in an
+      # `if:`, hence the job-level `env.DOCKERHUB_USERNAME` hop above.
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build and push
         id: bake
         uses: docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b # v7
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.component.targets }}
           # Refresh the base image so a scheduled rebuild actually picks up a new
           # floating base tag instead of a stale local one.
           pull: true
@@ -212,14 +304,17 @@ jobs:
 
       # Recorded so `verify` can pull this exact digest (not whatever a
       # floating tag happens to point at) and `publish` can apply tags to it
-      # once verify passes. One JSON file per matrix target, merged
-      # downstream via an artifact handshake — not job outputs, because
-      # matrix outputs are last-writer-wins and would silently corrupt digest
-      # tracking if a variant is added.
+      # once verify passes. One JSON file per matrix component (a component
+      # can bake multiple real bake targets; the metadata dict below is
+      # already keyed by each real target's name, so the component name here
+      # is only used to make the artifact filename unique), merged downstream
+      # via an artifact handshake — not job outputs, because matrix outputs
+      # are last-writer-wins and would silently corrupt digest tracking if a
+      # variant is added.
       - name: Export digest
         env:
           METADATA: ${{ steps.bake.outputs.metadata }}
-          TARGET: ${{ matrix.target }}
+          TARGET: ${{ matrix.component.name }}
         run: |
           mkdir -p "$RUNNER_TEMP/digests"
           jq -e 'to_entries
@@ -233,8 +328,8 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: digest-${{ matrix.target }}
-          path: ${{ runner.temp }}/digests/${{ matrix.target }}.json
+          name: digest-${{ matrix.component.name }}
+          path: ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
           retention-days: 1
 
   # Verify the EXACT digest `build` pushed — a real pre-tag gate rather than a
