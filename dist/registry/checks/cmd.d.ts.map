@@ -1,0 +1,1 @@
+{"version":3,"file":"cmd.d.ts","sourceRoot":"","sources":["file:///home/mkrupp/src/pyck/github-actions/src/checks/cmd.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,QAAQ,EAAE,MAAM,uBAAuB,CAAC;AAEtD,OAAO,EAAc,KAAK,YAAY,EAAE,KAAK,WAAW,EAAE,MAAM,YAAY,CAAC;AAE7E;;;;;GAKG;AACH,wBAAsB,eAAe,CACnC,KAAK,EAAE,QAAQ,EACf,KAAK,EAAE,MAAM,EACb,GAAG,EAAE,YAAY,GAChB,OAAO,CAAC,WAAW,CAAC,CAYtB"}

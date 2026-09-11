@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Shared TypeScript registry core and CLI tools (imgverify, ghcr-tidy, ghcr-audit) for pyck-ai GHCR maintenance.",
   "type": "module",
+  "bin": {
+    "imgverify": "dist/imgverify/index.js"
+  },
   "engines": {
     "node": ">=22"
   },
@@ -11,7 +14,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "bundle": "ncc build src/registry/index.ts -o dist/registry",
+    "bundle": "npm run bundle:registry && npm run bundle:imgverify",
+    "bundle:registry": "ncc build src/registry/index.ts -o dist/registry",
+    "bundle:imgverify": "ncc build src/cli/imgverify.ts -o dist/imgverify",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
