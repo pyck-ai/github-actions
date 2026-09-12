@@ -29,12 +29,14 @@ export {
 
 export {
   planPackage,
+  computeReachabilityToleratingBrokenRoots,
   type PlanPackageOptions,
   type PlanPolicy,
   type PackagePlanResult,
   type SkippedPlan,
   type NothingToDoPlan,
   type PlannedPlan,
+  type ReachabilityWithBrokenRootsResult,
 } from "./plan.js";
 
 export { createRegistryReader, createPackagesClient } from "./adapters.js";

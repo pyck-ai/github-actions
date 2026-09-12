@@ -130,6 +130,18 @@ interface ParsedArgs {
   registryOwner?: string;
   breakerRepo?: string;
   apply: boolean;
+  /**
+   * Opt-in remediation, OFF by default: tolerates a keep-root whose
+   * subtree contains a PROVEN not-found descendant (see
+   * `plan.ts`'s `computeReachabilityToleratingBrokenRoots`) instead of
+   * failing that package closed, and lets the proven-broken root itself
+   * fall into the ordinary DELETE set. This flag ALONE never deletes
+   * anything — `plan` never deletes, and `apply` still separately
+   * requires `--apply` (see `runApplyCommand`'s check above) — two
+   * independent gestures are required for an actual deletion, exactly as
+   * for `--apply` itself.
+   */
+  deleteBrokenRoots: boolean;
 }
 
 /**
@@ -149,7 +161,7 @@ export function parseArgv(argv: readonly string[]): { subcommand: Subcommand; ar
     rest = argv.slice(1);
   }
 
-  const args: ParsedArgs = { packages: [], apply: false };
+  const args: ParsedArgs = { packages: [], apply: false, deleteBrokenRoots: false };
   let i = 0;
   while (i < rest.length) {
     const flag = rest[i];
@@ -216,6 +228,9 @@ export function parseArgv(argv: readonly string[]): { subcommand: Subcommand; ar
         break;
       case "--apply":
         args.apply = true;
+        break;
+      case "--delete-broken-roots":
+        args.deleteBrokenRoots = true;
         break;
       default:
         throw new UsageError(`unknown flag: ${flag}`);
@@ -400,7 +415,12 @@ function progressOutcomeSummary(result: PackagePlanResult): string {
     case "skipped":
       return `SKIPPED (${result.reason})`;
     case "planned":
-      return `${String(result.deleteCount)} to delete in ${String(result.groups.length)} group(s)`;
+      return (
+        `${String(result.deleteCount)} to delete in ${String(result.groups.length)} group(s)` +
+        (result.brokenRootDigests.length > 0
+          ? `, including ${String(result.brokenRootDigests.length)} broken root(s) (proven not-found)`
+          : "")
+      );
   }
 }
 
@@ -428,6 +448,7 @@ async function runPlanning(
   packagesClient: PackagesClient,
   clock: Clock,
   jobs: number,
+  deleteBrokenRoots: boolean,
   progress: (line: string) => void = (line) => {
     process.stderr.write(line);
   },
@@ -457,6 +478,7 @@ async function runPlanning(
           },
           graceDays: policy.graceDays,
         },
+        deleteBrokenRoots,
       });
 
       const elapsedMs = Date.now() - startedAt;
@@ -498,7 +520,10 @@ function formatPlanSummary(outcomes: readonly PackagePlanOutcome[]): string {
       lines.push(
         `  ${entry.match}: ${String(result.deleteCount)} to delete in ${String(result.groups.length)} group(s) ` +
           `(live roots ${String(result.liveRootsCount)}, kept ${String(result.keepRootsCount)}, ` +
-          `reachable ${String(result.reachableCount)}, inflight ${String(result.inflightCount)})`,
+          `reachable ${String(result.reachableCount)}, inflight ${String(result.inflightCount)})` +
+          (result.brokenRootDigests.length > 0
+            ? ` — broken root(s) proven not-found: ${result.brokenRootDigests.join(", ")}`
+            : ""),
       );
     }
   }
@@ -557,6 +582,7 @@ async function runPlanCommand(args: ParsedArgs, deps: CliDeps): Promise<number> 
     packagesClient,
     clock,
     jobs,
+    args.deleteBrokenRoots,
     deps.progress,
   );
 
@@ -678,6 +704,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
     packagesClient,
     clock,
     jobs,
+    args.deleteBrokenRoots,
     deps.progress,
   );
   process.stdout.write(`${formatPlanSummary(outcomes)}\n`);

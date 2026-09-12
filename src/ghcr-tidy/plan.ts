@@ -1,8 +1,12 @@
 import type { PackageName } from "../core/registry/package-name.js";
-import { registryPathFor, type Digest } from "./domain.js";
+import { registryPathFor, type Digest, type RegistryPath } from "./domain.js";
 import { computeKeepRoots, type RetentionPolicy } from "./retain.js";
 import { buildLiveRoots } from "./roots.js";
-import { computeReachability, type ReachabilityOptions } from "./reachability.js";
+import {
+  computeReachability,
+  type ReachabilityOptions,
+  type ReachabilityResult,
+} from "./reachability.js";
 import {
   assertNoSurvivingParent,
   buildDeletionGroups,
@@ -36,6 +40,21 @@ export interface PlanPackageOptions {
   readonly clock: Clock;
   readonly policy: PlanPolicy;
   readonly reachability?: ReachabilityOptions;
+  /**
+   * Opt-in remediation for a keep-root whose subtree contains a PROVEN
+   * (confirmed 404, never transient/5xx/auth/network — see
+   * `skip-reason.ts`) not-found descendant. Default `false`, matching
+   * every existing caller: with this off, such a root fails the WHOLE
+   * package closed exactly as before (`SkippedPlan`). With this on, the
+   * proven-broken root itself is excluded from `KEEP_ROOTS`/`REACHABLE`
+   * (see {@link computeReachabilityToleratingBrokenRoots}) so the rest of
+   * the package can still be planned, and the broken root's own version
+   * falls into `DELETE` through the ordinary `ALL \ (REACHABLE union
+   * INFLIGHT)` set subtraction — still subject to `graceDays` like any
+   * other digest, and still requiring the CLI's separate `--apply` gesture
+   * to actually delete anything. See `cli.ts`'s `--delete-broken-roots`.
+   */
+  readonly deleteBrokenRoots?: boolean;
 }
 
 export interface SkippedPlan {
@@ -69,9 +88,106 @@ export interface PlannedPlan {
    * undisturbed by an apply-only concern.
    */
   readonly versionIdByDigest: ReadonlyMap<Digest, number>;
+  /**
+   * Keep-roots excluded from `REACHABLE` because their subtree contained
+   * a PROVEN not-found descendant — always empty unless
+   * `PlanPackageOptions.deleteBrokenRoots` was `true` AND at least one
+   * root actually qualified (see
+   * {@link computeReachabilityToleratingBrokenRoots}). Reporting-only:
+   * whether a broken root's digest also appears in `groups` depends
+   * entirely on the ordinary `graceDays`/`DELETE` arithmetic, exactly
+   * like any other digest.
+   */
+  readonly brokenRootDigests: readonly Digest[];
 }
 
 export type PackagePlanResult = SkippedPlan | NothingToDoPlan | PlannedPlan;
+
+export interface ReachabilityWithBrokenRootsResult {
+  readonly result: ReachabilityResult;
+  /** Roots excluded from consideration because their subtree contained a PROVEN not-found descendant. Always empty unless `deleteBrokenRoots` is `true` AND `result.status === "success"`. */
+  readonly brokenRoots: ReadonlySet<Digest>;
+}
+
+/**
+ * Wraps {@link computeReachability} to optionally tolerate a keep-root
+ * whose subtree contains a PROVEN not-found descendant (a confirmed
+ * registry 404 — see `skip-reason.ts`'s `"not-found"`; NEVER a
+ * transient/5xx/auth/network failure, which always fails closed exactly
+ * as `computeReachability` already does on its own — that distinction is
+ * `skipReasonFor`'s whole reason for existing, and this function leans on
+ * it rather than re-deriving anything).
+ *
+ * When `deleteBrokenRoots` is `false` (the default everywhere except the
+ * explicit `--delete-broken-roots` CLI opt-in — see `cli.ts`), this is a
+ * pure passthrough: exactly one `computeReachability` call, `brokenRoots`
+ * always empty, byte-identical to calling `computeReachability` directly.
+ *
+ * When `true`: on a `"not-found"` failure, the FAILING ROOT ITSELF
+ * (`result.root` — never a broader guess, never the `failedDigest` that
+ * may be several levels below it) is removed from the keep-root set and
+ * the ENTIRE walk is retried from scratch over the reduced set — each
+ * retry starts with fresh `reachable`/`edges` state (a brand-new
+ * `computeReachability` call), so a root excluded on one iteration can
+ * never leave partially-resolved data behind to contaminate a later
+ * iteration's result. This repeats until either every remaining root's
+ * subtree resolves cleanly (`"success"`, with every excluded root
+ * reported in `brokenRoots`) or a failure that does not qualify (any
+ * `"transient"` reason, or `deleteBrokenRoots` itself being `false`) is
+ * hit — at which point the WHOLE package still fails closed exactly as it
+ * always has: a broken root already found on an earlier iteration never
+ * gets "half credit" while something else remains genuinely unknown, so
+ * this function only ever returns `brokenRoots` alongside a `"success"`
+ * result, never alongside a `"failed"` one.
+ *
+ * An excluded root is not force-added to `DELETE` here or anywhere else:
+ * it is simply no longer a keep-root, so `planPackage`'s ordinary
+ * `ALL \ (REACHABLE union INFLIGHT)` set subtraction picks it up exactly
+ * like any other digest that is not reachable from anything — including
+ * still respecting `graceDays`, on the chance a "broken" root is actually
+ * an in-flight push race (the index pushed, its child not yet) rather
+ * than settled corruption.
+ */
+export async function computeReachabilityToleratingBrokenRoots(
+  path: RegistryPath,
+  keepRoots: ReadonlySet<Digest>,
+  rootChildren: ReadonlyMap<Digest, readonly Digest[]>,
+  registry: RegistryReader,
+  reachabilityOptions: ReachabilityOptions | undefined,
+  deleteBrokenRoots: boolean,
+): Promise<ReachabilityWithBrokenRootsResult> {
+  let candidateRoots = keepRoots;
+  const brokenRoots = new Set<Digest>();
+
+  for (;;) {
+    const result = await computeReachability(
+      path,
+      candidateRoots,
+      rootChildren,
+      registry,
+      reachabilityOptions,
+    );
+    if (result.status === "success") {
+      return { result, brokenRoots };
+    }
+    // Not "success": either the mode is off, the failure is not a proven
+    // not-found (transient — never tolerated regardless of the flag), or
+    // — defensively, should be unreachable in practice since
+    // `computeReachability` only ever reports a root drawn from the set
+    // it was given — the reported root is not even one still under
+    // consideration. Any of these fails the whole package closed, same
+    // as calling `computeReachability` directly, and any roots already
+    // excluded on an earlier iteration are discarded (see this
+    // function's doc: no "half credit").
+    if (!deleteBrokenRoots || result.reason !== "not-found" || !candidateRoots.has(result.root)) {
+      return { result, brokenRoots: new Set() };
+    }
+    brokenRoots.add(result.root);
+    const next = new Set(candidateRoots);
+    next.delete(result.root);
+    candidateRoots = next;
+  }
+}
 
 function mergeEdges(
   a: ReadonlyMap<Digest, readonly Digest[]>,
@@ -133,12 +249,13 @@ export async function planPackage(options: PlanPackageOptions): Promise<PackageP
   const now = clock.now();
   const keepRoots = computeKeepRoots(roots, versionsByDigest, policy.retention, now);
 
-  const reachResult = await computeReachability(
+  const { result: reachResult, brokenRoots } = await computeReachabilityToleratingBrokenRoots(
     path,
     keepRoots,
     rootChildren,
     registry,
     options.reachability,
+    options.deleteBrokenRoots ?? false,
   );
   if (reachResult.status === "failed") {
     return {
@@ -199,5 +316,6 @@ export async function planPackage(options: PlanPackageOptions): Promise<PackageP
     deleteCount: deleteSet.size,
     groups,
     versionIdByDigest,
+    brokenRootDigests: [...brokenRoots],
   };
 }

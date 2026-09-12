@@ -33,6 +33,23 @@ on:
         type: number
         required: false
         default: 200
+      delete-broken-roots:
+        description: >-
+          Opt-in remediation for a keep-root whose subtree contains a
+          PROVEN not-found descendant (a confirmed registry 404, e.g. an
+          already-garbage-collected multi-arch child) — see the
+          `ghcr-tidy` CLI's `--delete-broken-roots` flag and
+          `plan.ts`'s `computeReachabilityToleratingBrokenRoots`.
+          Deleting such a root still requires `apply: true` as well — two
+          independent gestures, same posture as `apply` itself — and this
+          input is DELIBERATELY, UNCONDITIONALLY forced off on a
+          `schedule` trigger regardless of its configured value (see the
+          `apply-effective` step below): an unattended destructive mode
+          is exactly the wrong default for a cron. `workflow_dispatch`
+          only.
+        type: boolean
+        required: false
+        default: false
       package:
         description: >-
           Restrict this run to one configured package (matches a
@@ -97,11 +114,20 @@ jobs:
       # default"; only a genuine `schedule` run gets the hardcoded
       # schedule defaults, and only a real dispatch input is trusted
       # otherwise.
-      - name: Resolve effective apply/budget
+      #
+      # `delete-broken-roots` follows the SAME pattern but with the
+      # opposite schedule default: a `schedule` run is forced to `false`
+      # unconditionally (never `inputs.delete-broken-roots`, whatever it
+      # was configured to) — see this input's own doc above for why an
+      # unattended destructive mode must never be the cron's default.
+      - name: Resolve effective apply/budget/delete-broken-roots
         id: effective
         run: |
-          echo "apply=${{ github.event_name == 'schedule' || inputs.apply == true }}" >> "$GITHUB_OUTPUT"
-          echo "budget=${{ (github.event_name == 'schedule' && 200) || inputs.budget }}" >> "$GITHUB_OUTPUT"
+          {
+            echo "apply=${{ github.event_name == 'schedule' || inputs.apply == true }}"
+            echo "budget=${{ (github.event_name == 'schedule' && 200) || inputs.budget }}"
+            echo "delete-broken-roots=${{ github.event_name != 'schedule' && inputs.delete-broken-roots == true }}"
+          } >> "$GITHUB_OUTPUT"
 
       # Deleting packages needs `delete:packages`, a scope GITHUB_TOKEN can
       # never carry (see the job's `permissions:` comment above). Prefer a
@@ -135,6 +161,7 @@ jobs:
             --out ghcr-tidy-plan.json
             --journal ghcr-tidy-journal.ndjson
             ${{ inputs.package != '' && format('--package {0}', inputs.package) || '' }}
+            ${{ steps.effective.outputs.delete-broken-roots == 'true' && '--delete-broken-roots' || '' }}
         env:
           GITHUB_TOKEN: ${{ steps.token.outputs.token }}
 
@@ -151,6 +178,7 @@ jobs:
             --breaker-repo ${{ github.repository }}
             ${{ inputs.baseline != '' && format('--baseline {0}', inputs.baseline) || '' }}
             ${{ inputs.package != '' && format('--package {0}', inputs.package) || '' }}
+            ${{ steps.effective.outputs.delete-broken-roots == 'true' && '--delete-broken-roots' || '' }}
         env:
           GITHUB_TOKEN: ${{ steps.token.outputs.token }}
 

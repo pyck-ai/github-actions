@@ -14140,6 +14140,71 @@ function assertNoSurvivingParent(deleteSet, reachable, edges) {
 
 
 const plan_MS_PER_DAY = 86_400_000;
+/**
+ * Wraps {@link computeReachability} to optionally tolerate a keep-root
+ * whose subtree contains a PROVEN not-found descendant (a confirmed
+ * registry 404 — see `skip-reason.ts`'s `"not-found"`; NEVER a
+ * transient/5xx/auth/network failure, which always fails closed exactly
+ * as `computeReachability` already does on its own — that distinction is
+ * `skipReasonFor`'s whole reason for existing, and this function leans on
+ * it rather than re-deriving anything).
+ *
+ * When `deleteBrokenRoots` is `false` (the default everywhere except the
+ * explicit `--delete-broken-roots` CLI opt-in — see `cli.ts`), this is a
+ * pure passthrough: exactly one `computeReachability` call, `brokenRoots`
+ * always empty, byte-identical to calling `computeReachability` directly.
+ *
+ * When `true`: on a `"not-found"` failure, the FAILING ROOT ITSELF
+ * (`result.root` — never a broader guess, never the `failedDigest` that
+ * may be several levels below it) is removed from the keep-root set and
+ * the ENTIRE walk is retried from scratch over the reduced set — each
+ * retry starts with fresh `reachable`/`edges` state (a brand-new
+ * `computeReachability` call), so a root excluded on one iteration can
+ * never leave partially-resolved data behind to contaminate a later
+ * iteration's result. This repeats until either every remaining root's
+ * subtree resolves cleanly (`"success"`, with every excluded root
+ * reported in `brokenRoots`) or a failure that does not qualify (any
+ * `"transient"` reason, or `deleteBrokenRoots` itself being `false`) is
+ * hit — at which point the WHOLE package still fails closed exactly as it
+ * always has: a broken root already found on an earlier iteration never
+ * gets "half credit" while something else remains genuinely unknown, so
+ * this function only ever returns `brokenRoots` alongside a `"success"`
+ * result, never alongside a `"failed"` one.
+ *
+ * An excluded root is not force-added to `DELETE` here or anywhere else:
+ * it is simply no longer a keep-root, so `planPackage`'s ordinary
+ * `ALL \ (REACHABLE union INFLIGHT)` set subtraction picks it up exactly
+ * like any other digest that is not reachable from anything — including
+ * still respecting `graceDays`, on the chance a "broken" root is actually
+ * an in-flight push race (the index pushed, its child not yet) rather
+ * than settled corruption.
+ */
+async function computeReachabilityToleratingBrokenRoots(path, keepRoots, rootChildren, registry, reachabilityOptions, deleteBrokenRoots) {
+    let candidateRoots = keepRoots;
+    const brokenRoots = new Set();
+    for (;;) {
+        const result = await computeReachability(path, candidateRoots, rootChildren, registry, reachabilityOptions);
+        if (result.status === "success") {
+            return { result, brokenRoots };
+        }
+        // Not "success": either the mode is off, the failure is not a proven
+        // not-found (transient — never tolerated regardless of the flag), or
+        // — defensively, should be unreachable in practice since
+        // `computeReachability` only ever reports a root drawn from the set
+        // it was given — the reported root is not even one still under
+        // consideration. Any of these fails the whole package closed, same
+        // as calling `computeReachability` directly, and any roots already
+        // excluded on an earlier iteration are discarded (see this
+        // function's doc: no "half credit").
+        if (!deleteBrokenRoots || result.reason !== "not-found" || !candidateRoots.has(result.root)) {
+            return { result, brokenRoots: new Set() };
+        }
+        brokenRoots.add(result.root);
+        const next = new Set(candidateRoots);
+        next.delete(result.root);
+        candidateRoots = next;
+    }
+}
 function mergeEdges(a, b) {
     const merged = new Map(a);
     for (const [k, v] of b) {
@@ -14192,7 +14257,7 @@ async function planPackage(options) {
     const { roots, rootChildren } = liveRootsResult;
     const now = clock.now();
     const keepRoots = computeKeepRoots(roots, versionsByDigest, policy.retention, now);
-    const reachResult = await computeReachability(path, keepRoots, rootChildren, registry, options.reachability);
+    const { result: reachResult, brokenRoots } = await computeReachabilityToleratingBrokenRoots(path, keepRoots, rootChildren, registry, options.reachability, options.deleteBrokenRoots ?? false);
     if (reachResult.status === "failed") {
         return {
             status: "skipped",
@@ -14239,6 +14304,7 @@ async function planPackage(options) {
         deleteCount: deleteSet.size,
         groups,
         versionIdByDigest,
+        brokenRootDigests: [...brokenRoots],
     };
 }
 
@@ -14896,7 +14962,7 @@ function parseArgv(argv) {
         subcommand = first;
         rest = argv.slice(1);
     }
-    const args = { packages: [], apply: false };
+    const args = { packages: [], apply: false, deleteBrokenRoots: false };
     let i = 0;
     while (i < rest.length) {
         const flag = rest[i];
@@ -14962,6 +15028,9 @@ function parseArgv(argv) {
                 break;
             case "--apply":
                 args.apply = true;
+                break;
+            case "--delete-broken-roots":
+                args.deleteBrokenRoots = true;
                 break;
             default:
                 throw new UsageError(`unknown flag: ${flag}`);
@@ -15091,7 +15160,10 @@ function progressOutcomeSummary(result) {
         case "skipped":
             return `SKIPPED (${result.reason})`;
         case "planned":
-            return `${String(result.deleteCount)} to delete in ${String(result.groups.length)} group(s)`;
+            return (`${String(result.deleteCount)} to delete in ${String(result.groups.length)} group(s)` +
+                (result.brokenRootDigests.length > 0
+                    ? `, including ${String(result.brokenRootDigests.length)} broken root(s) (proven not-found)`
+                    : ""));
     }
 }
 /**
@@ -15111,7 +15183,7 @@ function progressOutcomeSummary(result) {
  * lines must never get mixed into it) and is injectable purely so tests
  * do not have to assert against real stderr.
  */
-async function runPlanning(manifest, entries, registry, packagesClient, clock, jobs, progress = (line) => {
+async function runPlanning(manifest, entries, registry, packagesClient, clock, jobs, deleteBrokenRoots, progress = (line) => {
     process.stderr.write(line);
 }) {
     const total = entries.length;
@@ -15135,6 +15207,7 @@ async function runPlanning(manifest, entries, registry, packagesClient, clock, j
                 },
                 graceDays: policy.graceDays,
             },
+            deleteBrokenRoots,
         });
         const elapsedMs = Date.now() - startedAt;
         progress(`[ghcr-tidy] (${String(n)}/${String(total)}) ${entry.match}: ${progressOutcomeSummary(result)} (${String(elapsedMs)}ms)\n`);
@@ -15169,7 +15242,10 @@ function formatPlanSummary(outcomes) {
             totalGroups += result.groups.length;
             lines.push(`  ${entry.match}: ${String(result.deleteCount)} to delete in ${String(result.groups.length)} group(s) ` +
                 `(live roots ${String(result.liveRootsCount)}, kept ${String(result.keepRootsCount)}, ` +
-                `reachable ${String(result.reachableCount)}, inflight ${String(result.inflightCount)})`);
+                `reachable ${String(result.reachableCount)}, inflight ${String(result.inflightCount)})` +
+                (result.brokenRootDigests.length > 0
+                    ? ` — broken root(s) proven not-found: ${result.brokenRootDigests.join(", ")}`
+                    : ""));
         }
     }
     return [
@@ -15207,7 +15283,7 @@ async function runPlanCommand(args, deps) {
         registry = deps.registry ?? adapters.registry;
         packagesClient = deps.packages ?? adapters.packages;
     }
-    const { outcomes, plan } = await runPlanning(manifest, entries, registry, packagesClient, clock, jobs, deps.progress);
+    const { outcomes, plan } = await runPlanning(manifest, entries, registry, packagesClient, clock, jobs, args.deleteBrokenRoots, deps.progress);
     process.stdout.write(`${formatPlanSummary(outcomes)}\n`);
     if (args.out !== undefined) {
         const fs = deps.planFs ?? nodePlanFileSystem();
@@ -15290,7 +15366,7 @@ async function runApplyCommand(args, deps) {
             ...(args.journal !== undefined && { journalPath: args.journal }),
         });
     }
-    const { outcomes, plan } = await runPlanning(manifest, entries, registry, packagesClient, clock, jobs, deps.progress);
+    const { outcomes, plan } = await runPlanning(manifest, entries, registry, packagesClient, clock, jobs, args.deleteBrokenRoots, deps.progress);
     process.stdout.write(`${formatPlanSummary(outcomes)}\n`);
     const fs = deps.planFs ?? nodePlanFileSystem();
     const outPath = external_node_path_default().resolve(args.out);

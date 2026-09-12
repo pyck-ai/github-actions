@@ -370,4 +370,130 @@ describe("planPackage", () => {
       detail: "descendant sha256:bad-a of root sha256:index failed to resolve",
     });
   });
+
+  describe("deleteBrokenRoots", () => {
+    // Mirrors the "partially unresolvable index" fixture above (a proven
+    // 404 on a keep-root's only child) but exercises the opt-in
+    // remediation path instead of the default fail-closed one.
+    function brokenRootFixture(): FakeGhcr {
+      const fake = new FakeGhcr();
+      fake
+        .setManifest(digest("sha256:root"), { children: [{ digest: "sha256:missing" }] })
+        .setManifest(digest("sha256:missing"), { notFound: true })
+        .setTag(tag("latest"), digest("sha256:root"))
+        .addVersion(version(1, "sha256:root", OLD, ["latest"]));
+      return fake;
+    }
+
+    const brokenRootPolicy: PlanPolicy = {
+      retention: { protectedTagPatterns: [/^latest$/], keepLast: 0, keepDays: 0 },
+      graceDays: 0,
+    };
+
+    it("a root with a genuinely missing descendant IS deleted when the mode is on", async () => {
+      const fake = brokenRootFixture();
+      const result = await planPackage({
+        ...options(fake, brokenRootPolicy),
+        deleteBrokenRoots: true,
+      });
+
+      expect(result.status).toBe("planned");
+      if (result.status !== "planned") return;
+      expect(result.deleteCount).toBe(1);
+      expect(result.groups).toEqual([
+        { root: digest("sha256:root"), members: [digest("sha256:root")] },
+      ]);
+      expect(result.brokenRootDigests).toEqual([digest("sha256:root")]);
+    });
+
+    it("the same root is NOT deleted when the mode is off (default)", async () => {
+      const fake = brokenRootFixture();
+      const result = await planPackage(options(fake, brokenRootPolicy));
+
+      expect(result).toMatchObject({ status: "skipped", reason: "not-found" });
+    });
+
+    it("a healthy, fully-resolving root is NEVER deleted with the mode on", async () => {
+      const fake = new FakeGhcr();
+      fake
+        .setManifest(digest("sha256:healthy"), {})
+        .setTag(tag("latest"), digest("sha256:healthy"))
+        .addVersion(version(1, "sha256:healthy", OLD, ["latest"]));
+
+      const result = await planPackage({
+        ...options(fake, brokenRootPolicy),
+        deleteBrokenRoots: true,
+      });
+
+      // Nothing broken, nothing unreachable -> nothing to do at all.
+      expect(result).toEqual({ status: "nothing-to-do" });
+    });
+
+    it("a descendant failing with a transient/5xx error does NOT qualify its root, even with the mode on", async () => {
+      const fake = new FakeGhcr();
+      fake
+        .setManifest(digest("sha256:root"), { children: [{ digest: "sha256:flaky" }] })
+        .setManifest(digest("sha256:flaky"), { transient: true })
+        .setTag(tag("latest"), digest("sha256:root"))
+        .addVersion(version(1, "sha256:root", OLD, ["latest"]));
+
+      const result = await planPackage({
+        ...options(fake, brokenRootPolicy),
+        deleteBrokenRoots: true,
+      });
+
+      expect(result).toMatchObject({ status: "skipped", reason: "transient" });
+    });
+
+    it("a proven-broken root within the grace window is left alone (existing graceDays machinery still applies)", async () => {
+      const fake = new FakeGhcr();
+      fake
+        .setManifest(digest("sha256:root"), { children: [{ digest: "sha256:missing" }] })
+        .setManifest(digest("sha256:missing"), { notFound: true })
+        .setTag(tag("latest"), digest("sha256:root"))
+        .addVersion(version(1, "sha256:root", RECENT, ["latest"]));
+
+      const recentPolicy: PlanPolicy = {
+        retention: { protectedTagPatterns: [/^latest$/], keepLast: 0, keepDays: 0 },
+        graceDays: 30,
+      };
+      const result = await planPackage({
+        ...options(fake, recentPolicy),
+        deleteBrokenRoots: true,
+      });
+
+      expect(result).toEqual({ status: "nothing-to-do" });
+    });
+
+    it("the rest of the package is still planned normally alongside a broken root", async () => {
+      const fake = new FakeGhcr();
+      fake
+        .setManifest(digest("sha256:root"), { children: [{ digest: "sha256:missing" }] })
+        .setManifest(digest("sha256:missing"), { notFound: true })
+        .setManifest(digest("sha256:healthy"), {})
+        .setManifest(digest("sha256:old"), {})
+        .setTag(tag("broken"), digest("sha256:root"))
+        .setTag(tag("latest"), digest("sha256:healthy"))
+        .addVersion(version(1, "sha256:root", OLD, ["broken"]))
+        .addVersion(version(2, "sha256:healthy", OLD, ["latest"]))
+        .addVersion(version(3, "sha256:old", OLD));
+
+      const policy: PlanPolicy = {
+        retention: { protectedTagPatterns: [/^latest$/, /^broken$/], keepLast: 0, keepDays: 0 },
+        graceDays: 0,
+      };
+      const result = await planPackage({ ...options(fake, policy), deleteBrokenRoots: true });
+
+      expect(result.status).toBe("planned");
+      if (result.status !== "planned") return;
+      // The healthy root and its tag are untouched; the unreferenced,
+      // unprotected "old" digest and the proven-broken "root" both land
+      // in DELETE.
+      expect(result.deleteCount).toBe(2);
+      expect(result.brokenRootDigests).toEqual([digest("sha256:root")]);
+      expect(result.groups.map((g) => g.root).sort()).toEqual(
+        [digest("sha256:old"), digest("sha256:root")].sort(),
+      );
+    });
+  });
 });

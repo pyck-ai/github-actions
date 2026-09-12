@@ -69,12 +69,22 @@ attempted, budget partially spent) is worse than none.
   baseline. Deletion requires three independent gestures — the `apply`
   subcommand, an explicit `--apply` flag, and a `--budget` — and none of the
   apply-path safety nets (breaker, canary, post-apply verification) can be
-  switched off.
+  switched off. An opt-in `--delete-broken-roots` flag additionally tolerates
+  a keep-root whose subtree contains a PROVEN not-found descendant (a
+  confirmed registry 404, e.g. an already-garbage-collected multi-arch
+  child) instead of failing that whole package closed, letting the
+  proven-broken root itself fall into the ordinary delete set — a
+  transient/5xx/auth/network failure never qualifies, only a confirmed
+  404 does. Deleting a broken root still requires `--apply` as well (two
+  independent gestures, same posture as `apply` itself), and the reusable
+  workflow's `delete-broken-roots` input is forced off unconditionally on
+  a `schedule` trigger.
 
   ```sh
   ghcr-tidy [plan]     # plan; plan is the default subcommand
   ghcr-tidy validate   # manifest load + validation only
   ghcr-tidy apply --apply --budget <n>   # apply the plan (see safety above)
+  ghcr-tidy apply --apply --budget <n> --delete-broken-roots   # + broken-root remediation
   ghcr-tidy --help
   ```
 

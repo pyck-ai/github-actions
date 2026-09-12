@@ -53,6 +53,36 @@ function widgetWorld(): FakeGhcr {
   return fake;
 }
 
+/**
+ * A fake world mirroring the live `baseimages/rover` incident this
+ * remediation exists for: one tagged root whose only child is a
+ * CONFIRMED 404 (an already-garbage-collected descendant), and a healthy
+ * canary tag for `apply` tests. `keepLast: 0`/`keepDays: 0`/`graceDays: 0`
+ * on the manifest below (see `VALID_MANIFEST_ZERO_GRACE`) so the broken
+ * root is old enough to actually land in DELETE once excluded from
+ * KEEP_ROOTS.
+ */
+function brokenRootWorld(): FakeGhcr {
+  const fake = new FakeGhcr();
+  fake
+    .setTag(tag("0.38"), digest("sha256:brokenroot"))
+    .setManifest(digest("sha256:brokenroot"), { children: [{ digest: "sha256:missing" }] })
+    .setManifest(digest("sha256:missing"), { notFound: true })
+    .addVersion(version(1, "sha256:brokenroot", "2020-01-01T00:00:00.000Z", ["0.38"]));
+  return fake;
+}
+
+const VALID_MANIFEST_ZERO_GRACE = `
+version: 1
+owner: acme
+keepLast: 1
+keepDays: 0
+graceDays: 0
+protectedTags: []
+packages:
+  - match: widget
+`;
+
 function baseDeps(fake: FakeGhcr, overrides: Partial<CliDeps> = {}): CliDeps {
   return {
     registry: fake.registryReader(),
@@ -102,6 +132,14 @@ describe("parseArgv", () => {
 
   it("rejects a flag missing its value", () => {
     expect(() => parseArgv(["--manifest"])).toThrow(/missing value for --manifest/);
+  });
+
+  it("sets the --delete-broken-roots boolean flag, off by default", () => {
+    expect(parseArgv(["plan"]).args.deleteBrokenRoots).toBe(false);
+    expect(parseArgv(["plan", "--delete-broken-roots"]).args.deleteBrokenRoots).toBe(true);
+    expect(parseArgv(["apply", "--apply", "--delete-broken-roots"]).args.deleteBrokenRoots).toBe(
+      true,
+    );
   });
 });
 
@@ -288,6 +326,29 @@ describe("plan subcommand", () => {
 
     const exitCode = await runCommand(["plan", "--manifest", manifestPath], baseDeps(fake));
     expect(exitCode).toBe(1);
+  });
+
+  it("--delete-broken-roots: plan still reports SKIPPED (not-found) without the flag, and identifies the broken root without deleting anything with it", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST_ZERO_GRACE);
+
+    const withoutFlag = await runCommand(
+      ["plan", "--manifest", manifestPath],
+      baseDeps(brokenRootWorld()),
+    );
+    expect(withoutFlag).toBe(1);
+
+    const logs: string[] = [];
+    const withFlag = await runCommand(
+      ["plan", "--manifest", manifestPath, "--delete-broken-roots"],
+      baseDeps(brokenRootWorld(), {
+        progress: (line) => logs.push(line),
+      }),
+    );
+    // A "planned" outcome (broken root identified and swept into DELETE,
+    // nothing left "skipped") is exit 0, not 1 — proving the whole
+    // package is no longer fail-closed once the broken root is excluded.
+    expect(withFlag).toBe(0);
+    expect(logs.join("")).toContain("broken root(s)");
   });
 
   it("exits 1 (findings), not 3, when listTags itself fails — the package is SKIPPED, not the whole run aborted", async () => {
@@ -633,6 +694,224 @@ describe("apply subcommand", () => {
     expect(exitCode).toBe(0);
     expect(deletedVersionIds).toEqual([2]);
     expect(trips).toEqual([]);
+  });
+
+  it("--delete-broken-roots: the flag ALONE, without --apply, deletes nothing (still requires the two independent gestures)", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST_ZERO_GRACE);
+    const fake = brokenRootWorld();
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        // Deliberately NO --apply here.
+        "--delete-broken-roots",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(2);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+
+  it("--delete-broken-roots requires --apply too: apply --apply alone (mode off) leaves the broken root SKIPPED and undeleted", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST_ZERO_GRACE);
+    const fake = brokenRootWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    // Findings (1): the package is skipped fail-closed, nothing to apply
+    // to, so nothing is attempted at all — not a zero-mutation safety
+    // trip, since there was no work in the (empty) plan.
+    expect(exitCode).toBe(1);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+
+  it("--apply --delete-broken-roots: BOTH gestures together actually delete the proven-broken root, with the breaker/canary/journal machinery still fully in effect", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST_ZERO_GRACE);
+    const fake = brokenRootWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { breaker, trips } = memoryBreaker();
+    const { journal, entries } = memoryJournal(CLOCK);
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--delete-broken-roots",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker, journal }),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(deletedVersionIds).toEqual([1]);
+    expect(trips).toEqual([]);
+    expect(entries.length).toBeGreaterThan(0);
+  });
+
+  it("--apply --delete-broken-roots: an already-tripped breaker still refuses to delete the broken root", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST_ZERO_GRACE);
+    const fake = brokenRootWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker({
+      issueNumber: 99,
+      issueUrl: "https://github.com/acme/repo/issues/99",
+    });
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--delete-broken-roots",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(4);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+
+  it("--apply --delete-broken-roots: budget too small to cover the group leaves it skipped-budget, mutating nothing (budget gating still applies)", async () => {
+    // The broken root's group has TWO members (root + a healthy but
+    // otherwise-unreferenced sibling — see the parents-first test below
+    // for the exact fixture) so a budget of 1 cannot cover the whole
+    // group and the group is skipped in full rather than partially spent.
+    const manifestPath = await writeManifest(VALID_MANIFEST_ZERO_GRACE);
+    const fake = new FakeGhcr();
+    fake
+      .setTag(tag("0.38"), digest("sha256:brokenroot"))
+      .setManifest(digest("sha256:brokenroot"), {
+        children: [{ digest: "sha256:missing" }, { digest: "sha256:sibling" }],
+      })
+      .setManifest(digest("sha256:missing"), { notFound: true })
+      .setManifest(digest("sha256:sibling"), {})
+      .addVersion(version(1, "sha256:brokenroot", "2020-01-01T00:00:00.000Z", ["0.38"]))
+      .addVersion(version(2, "sha256:sibling", "2020-01-01T00:00:00.000Z"))
+      .setTag(tag("canary"), digest("sha256:canary"))
+      .setManifest(digest("sha256:canary"), {});
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--delete-broken-roots",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "1",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    // Zero-mutation safety guard: the plan had a group but nothing was
+    // ever attempted (the whole group was skipped for budget reasons).
+    expect(exitCode).toBe(4);
+    expect(attemptedVersionIds).toEqual([]);
+  });
+
+  it("--apply --delete-broken-roots: a failed tagged root delete abandons the rest of that group (the flutter-rfw-style parents-first rule still holds)", async () => {
+    // The broken root here has a SECOND child, "sha256:sibling", that is
+    // NOT itself missing (it resolves fine) but is otherwise unreferenced
+    // and unprotected — so it also lands in DELETE, in the SAME group as
+    // the broken root (root is always members[0]). Faulting the root's
+    // own delete must abandon "sibling" too, never attempting it.
+    const manifestPath = await writeManifest(VALID_MANIFEST_ZERO_GRACE);
+    const fake = new FakeGhcr();
+    fake
+      .setTag(tag("0.38"), digest("sha256:brokenroot"))
+      .setManifest(digest("sha256:brokenroot"), {
+        children: [{ digest: "sha256:missing" }, { digest: "sha256:sibling" }],
+      })
+      .setManifest(digest("sha256:missing"), { notFound: true })
+      .setManifest(digest("sha256:sibling"), {})
+      .addVersion(version(1, "sha256:brokenroot", "2020-01-01T00:00:00.000Z", ["0.38"]))
+      .addVersion(version(2, "sha256:sibling", "2020-01-01T00:00:00.000Z"))
+      .setTag(tag("canary"), digest("sha256:canary"))
+      .setManifest(digest("sha256:canary"), {});
+    fake.setDeleteFault(1, { kind: "error", status: 500 });
+    const { mutator, deletedVersionIds, attemptedVersionIds } = fake.mutator();
+    const { breaker } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--delete-broken-roots",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    // Findings (1): the root's own delete failed, so the group was
+    // abandoned — "sibling" (version id 2) must never have been attempted.
+    expect(exitCode).toBe(1);
+    expect(attemptedVersionIds).toEqual([1]);
+    expect(deletedVersionIds).toEqual([]);
   });
 
   it("skips the canary requirement when the plan has no work to do (empty packages)", async () => {
