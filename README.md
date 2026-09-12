@@ -11,9 +11,9 @@ copy and silently never reached the others.
 | ------------------------ | ---------------------------------------------------------------- |
 | Container build pipeline | `pyck-ai/github-actions/.github/workflows/build-image.yml@<sha>` |
 | Repo housekeeping        | `pyck-ai/github-actions/.github/workflows/tidy-repo.yml@<sha>`   |
-| Image verification       | `pyck-ai/github-actions/.github/actions/verify-image@<sha>`      |
+| Image verification       | `pyck-ai/github-actions/verify-image@<sha>`                      |
 | GHCR retention           | `pyck-ai/github-actions/.github/workflows/tidy-ghcr.yml@<sha>`   |
-| GHCR retention CLI step  | `pyck-ai/github-actions/.github/actions/ghcr-tidy@<sha>`         |
+| GHCR retention CLI step  | `pyck-ai/github-actions/ghcr-tidy@<sha>`                         |
 
 Pin by commit SHA. `build-image.yml` builds by digest, verifies the pushed
 digest, and only then applies tags — a failed verification means no tag ever
@@ -98,24 +98,30 @@ attempted, budget partially spent) is worse than none.
 
 ```
 .github/workflows/   this repo's CI, plus the reusable workflows it publishes
-.github/actions/     actions: verify-image (plain bash, no bundle),
-                      ghcr-tidy (bundled)
-src/core/            shared: registry API client
-src/ghcr-tidy/       that tool's internals
+ghcr-tidy/           action (bundled): action.yml, src/, dist/
+verify-image/        action (plain bash, no bundle): action.yml, run.sh
+registry/            shared: registry API client
 ```
 
 GitHub requires reusable workflows to sit directly in `.github/workflows/` and
 does not support subdirectories there, so this repo's own CI and the workflows
 it ships to consumers share one flat directory.
 
+Each published action is a self-contained top-level directory (`$/ghcr-tidy`,
+`$/verify-image`), discoverable at the repo root instead of nested under
+`.github/actions/`. `registry/` is shared code with exactly one consumer today
+(`ghcr-tidy`) — it was `src/core/registry/` before this layout existed to hold
+more than one action's worth of TypeScript; it stayed a separate top-level
+directory anyway, for when a second TypeScript action needs it.
+
 ## Development
 
 ```sh
 npm install && npm test
-npm run bundle   # ncc -> .github/actions/ghcr-tidy/dist/ (committed)
+npm run bundle   # ncc -> ghcr-tidy/dist/ (committed)
 ```
 
-**After changing anything under `src/`, run `npm run bundle` and commit the
+**After changing anything under `ghcr-tidy/src/` or `registry/`, run `npm run bundle` and commit the
 result.** The bundle is what SHA-pinned consumers actually execute, so CI
 rebuilds it from a clean checkout and fails if it differs from what is
 committed — a stale bundle means a pinned consumer runs different code from the

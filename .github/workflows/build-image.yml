@@ -57,7 +57,7 @@ on:
         description: >-
           Path to a buildargs.conf-style KEY=VALUE file, passed to each
           target's verify.sh via `docker run --env-file` (see
-          `$/.github/actions/verify-image`). Optional: the action tolerates
+          `$/verify-image`). Optional: the action tolerates
           this file being absent, so a caller without one (e.g.
           github-runner, flutter-rfw) still works.
         type: string
@@ -165,7 +165,7 @@ jobs:
             fi
             # Per-real-target lookup consumed by `build`'s verify step: each
             # bake target's own `context` dir (where its `verify.sh` lives,
-            # per the `$/.github/actions/verify-image` contract) and the repo
+            # per the `$/verify-image` contract) and the repo
             # its digest lives under (same derivation as the push output
             # below, so the two always agree). Keyed by the real bake target
             # name, not the matrix component name, since one component can
@@ -363,7 +363,7 @@ jobs:
       # https://docs.github.com/actions/using-workflows/reusing-workflows
       # (composite-actions "referencing an action in the same repository"),
       # and already proven in production by `tidy-ghcr.yml`'s
-      # `uses: $/.github/actions/ghcr-tidy`. This means a consumer pinning
+      # `uses: $/ghcr-tidy`. This means a consumer pinning
       # build-image.yml@<sha> always gets the verify-image action from that
       # SAME sha — the workflow and the action can never drift apart, and no
       # self-referencing SHA needs to be hardcoded or bumped on release.
@@ -377,7 +377,7 @@ jobs:
       # repo} map, and this leg's own digest file, and verifies each one,
       # failing if any fail.
       - name: Verify pushed images
-        uses: $/.github/actions/verify-image
+        uses: $/verify-image
         with:
           targets: ${{ matrix.component.targets }}
           contexts: ${{ needs.discover.outputs.contexts }}

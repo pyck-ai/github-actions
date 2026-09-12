@@ -127,7 +127,7 @@ jobs:
       - name: Rebuild bundles and check dist/ is up to date
         run: |
           npm run bundle
-          known_dists=".github/actions/ghcr-tidy/dist"
+          known_dists="ghcr-tidy/dist"
           for dist in $known_dists; do
             if [ ! -d "$dist" ]; then
               echo "::error::$dist/ does not exist — update this check (it no longer matches the repo's bundled actions)" >&2
@@ -144,7 +144,7 @@ jobs:
           done
           # Catch the opposite drift too: a dist/ this check doesn't know
           # about yet (e.g. a new bundled action) must not slip past unseen.
-          for found in .github/actions/*/dist; do
+          for found in */dist; do
             [ -d "$found" ] || continue
             case " $known_dists " in
               *" $found "*) ;;

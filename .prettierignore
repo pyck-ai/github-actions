@@ -1,5 +1,4 @@
-.github/actions/verify-image/dist
-.github/actions/ghcr-tidy/dist
+ghcr-tidy/dist
 lib
 node_modules
 coverage

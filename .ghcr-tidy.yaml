@@ -4,7 +4,7 @@
 # for imgverify/ghcr-tidy/ghcr-audit, not a consumer of them — so it has
 # no GHCR packages of its own to prune. `packages: []` is a deliberate,
 # permanent steady state here, not a placeholder: see
-# `src/ghcr-tidy/manifest/schema.ts`'s doc comment on `Manifest.packages`
+# `ghcr-tidy/src/manifest/schema.ts`'s doc comment on `Manifest.packages`
 # for why an empty list is valid (unlike `imgverify`'s manifest, where an
 # empty `checks`/`targets` array is rejected as a real bug class).
 #
