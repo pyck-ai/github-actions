@@ -120,6 +120,18 @@ export interface GroupApplyResult {
 export interface PackageApplyResult {
   readonly packageName: PackageName;
   readonly groups: readonly GroupApplyResult[];
+  /**
+   * Tags `compareSnapshots` found `republished` for this package (see
+   * that field's doc on `verify.ts`): resolved cleanly before AND after
+   * this run's deletions, just pointing at a different digest — a
+   * concurrent publish racing this run, not damage it caused. Always
+   * empty when `verification` was not supplied. Deliberately reported
+   * here rather than only logged: it is genuine, useful context ("the
+   * registry changed under us") that must survive a clean run exactly
+   * like any other part of the result, never trips the breaker, and
+   * never aborts anything.
+   */
+  readonly republishedTags: readonly RegressedTag[];
 }
 
 /**
@@ -414,7 +426,15 @@ export async function applyPlan(
       remainingBudget -= attempted;
       totalAttempted += attempted;
     }
-    packages.push({ packageName: pkgPlan.packageName, groups });
+
+    // Computed BEFORE `packages.push` below (rather than three separate
+    // pushes at each abort site) so `republishedTags` — genuinely useful
+    // context, not damage — is present on this package's result exactly
+    // once, in the same place, regardless of whether this package also
+    // aborts the run.
+    let republishedTags: readonly RegressedTag[] = [];
+    let regressionToRecord: RegressionIncident | undefined;
+    let abortReason: ApplyAbortReason | undefined;
 
     if (verification && registryPath) {
       // A post-snapshot read failure gets exactly the same "unknown"
@@ -439,75 +459,73 @@ export async function applyPlan(
         // evidence of a regression (nothing here is confirmed broken),
         // but the run must still stop and this must still be surfaced
         // loudly, same as any other `unverified` finding.
-        return {
-          packages,
-          attempted: totalAttempted,
-          remainingBudget,
-          abortedFor: {
-            kind: "verification-unavailable",
-            packageName: pkgPlan.packageName,
-            tags: [],
-          },
-        };
-      }
-
-      const { regressions, unverified } = compareSnapshots(
-        preSnapshot ?? new Map(),
-        post.snapshot,
-        {
-          preSnapshotFailed,
-          postSnapshotFailed: post.failed,
-        },
-      );
-
-      if (regressions.length > 0) {
-        const incident: RegressionIncident = {
+        abortReason = {
+          kind: "verification-unavailable",
           packageName: pkgPlan.packageName,
-          tags: regressions,
-          precedingDeletions: deletedMembers(groups),
+          tags: [],
         };
-        // Recorded locally BEFORE the sink (which may make network
-        // calls, e.g. `breaker.ts`'s `githubIssueBreaker`) is even
-        // attempted — see `VerificationOptions.onIncident`'s doc: this is
-        // what makes the incident survive a breaker outage.
-        verification.onIncident?.(incident);
-        let sinkError: string | undefined;
-        try {
-          await verification.sink.record(incident);
-        } catch (error) {
-          // The regression is real and confirmed either way; a failure
-          // notifying the breaker about it must not swallow the run's
-          // own summary (see this module's doc on the incident this
-          // fixes) — reported alongside the abort reason instead of
-          // propagating and killing the whole process before the caller
-          // can print anything.
-          sinkError = error instanceof Error ? error.message : String(error);
-        }
-        return {
-          packages,
-          attempted: totalAttempted,
-          remainingBudget,
-          abortedFor: {
-            kind: "regression",
+      } else {
+        const { regressions, unverified, republished } = compareSnapshots(
+          preSnapshot ?? new Map(),
+          post.snapshot,
+          {
+            preSnapshotFailed,
+            postSnapshotFailed: post.failed,
+          },
+        );
+        republishedTags = republished;
+
+        if (regressions.length > 0) {
+          regressionToRecord = {
             packageName: pkgPlan.packageName,
             tags: regressions,
-            ...(sinkError !== undefined && { sinkError }),
-          },
-        };
-      }
-
-      if (unverified.length > 0) {
-        return {
-          packages,
-          attempted: totalAttempted,
-          remainingBudget,
-          abortedFor: {
+            precedingDeletions: deletedMembers(groups),
+          };
+        } else if (unverified.length > 0) {
+          abortReason = {
             kind: "verification-unavailable",
             packageName: pkgPlan.packageName,
             tags: unverified,
-          },
-        };
+          };
+        }
       }
+    }
+
+    packages.push({ packageName: pkgPlan.packageName, groups, republishedTags });
+
+    if (regressionToRecord) {
+      // Recorded locally BEFORE the sink (which may make network calls,
+      // e.g. `breaker.ts`'s `githubIssueBreaker`) is even attempted —
+      // see `VerificationOptions.onIncident`'s doc: this is what makes
+      // the incident survive a breaker outage.
+      verification?.onIncident?.(regressionToRecord);
+      let sinkError: string | undefined;
+      try {
+        await verification?.sink.record(regressionToRecord);
+      } catch (error) {
+        // The regression is real and confirmed either way; a failure
+        // notifying the breaker about it must not swallow the run's own
+        // summary (see this module's doc on the incident this fixes) —
+        // reported alongside the abort reason instead of propagating and
+        // killing the whole process before the caller can print
+        // anything.
+        sinkError = error instanceof Error ? error.message : String(error);
+      }
+      return {
+        packages,
+        attempted: totalAttempted,
+        remainingBudget,
+        abortedFor: {
+          kind: "regression",
+          packageName: pkgPlan.packageName,
+          tags: regressionToRecord.tags,
+          ...(sinkError !== undefined && { sinkError }),
+        },
+      };
+    }
+
+    if (abortReason) {
+      return { packages, attempted: totalAttempted, remainingBudget, abortedFor: abortReason };
     }
   }
 

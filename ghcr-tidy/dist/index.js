@@ -13116,6 +13116,18 @@ async function grantApply(plan, filePath, fs = nodePlanFileSystem()) {
  * irreversible — what to do about it. Pure and synchronous: no I/O, no
  * knowledge of GitHub, Octokit, or the breaker itself.
  */
+/**
+ * GitHub's hard limit on an issue/comment body is 65536 characters —
+ * kept comfortably under it rather than exactly at it, since this is
+ * plain text with no reason to court the edge. This is the fix for the
+ * incident that made it necessary: a single concurrent-publish burst on
+ * one package (~40 tags repointed by someone else's CI mid-run)
+ * produced a body over 65536 characters, GitHub's `POST .../issues`
+ * rejected it outright ("Validation Failed: body is too long"), and the
+ * breaker — the safety mechanism for a REAL regression — could not file
+ * its own incident at the exact moment it mattered most.
+ */
+const MAX_INCIDENT_BODY_CHARS = 60_000;
 /** Which of the three regression-predicate parts (see `verify.ts`'s `compareSnapshots`) is responsible for one tag's finding. Order matters: a tag that no longer resolves has nothing meaningful to say about its digest or closure, so that check comes first. */
 function failedPredicatePart(t) {
     if (!t.stillResolves) {
@@ -13139,16 +13151,45 @@ function formatTag(t) {
         `      digest after:    ${after}`,
     ].join("\n");
 }
+function formatDeletion(m) {
+    return `  - digest ${m.digest} (version id ${String(m.versionId)})`;
+}
+/** Renders every item in full — the untruncated path, byte-identical to this module's pre-truncation behaviour, used whenever the resulting body fits under {@link MAX_INCIDENT_BODY_CHARS} on the first attempt. */
+function renderFull(items, render, emptyText) {
+    return items.length === 0 ? emptyText : items.map(render).join("\n");
+}
 /**
- * Renders the full incident report body. See this module's doc for the
- * intended reader and the information it deliberately always includes.
+ * Renders as many `render(item)` lines from `items` as fit in `budget`
+ * characters (each joined by `"\n"`), appending a plain, explicit
+ * omission notice — never silent — when any had to be left out. Used for
+ * both the affected-tags and preceding-deletions sections so an incident
+ * with thousands of findings still produces a postable body instead of
+ * failing exactly when the operator needs the issue filed most.
  */
-function formatIncidentReport(incident, options = {}) {
-    const deletionsSection = incident.precedingDeletions.length === 0
-        ? "  (none — the regression was detected before this package deleted anything)"
-        : incident.precedingDeletions
-            .map((m) => `  - digest ${m.digest} (version id ${String(m.versionId)})`)
-            .join("\n");
+function renderTruncated(items, render, budget, emptyText, noun) {
+    if (items.length === 0) {
+        return emptyText;
+    }
+    const lines = [];
+    let used = 0;
+    for (const item of items) {
+        const line = render(item);
+        const addedLength = lines.length === 0 ? line.length : line.length + 1; // +1 for the joining "\n"
+        if (used + addedLength > budget) {
+            break;
+        }
+        lines.push(line);
+        used += addedLength;
+    }
+    const omitted = items.length - lines.length;
+    if (omitted > 0) {
+        lines.push(`  ... and ${String(omitted)} more ${noun}${omitted === 1 ? "" : "s"} omitted here for ` +
+            `length (${String(items.length)} total) — see the journal for the full list.`);
+    }
+    return lines.join("\n");
+}
+/** Assembles the full report body from its two variable-length sections — everything else is fixed text, shared by both the untruncated and truncated render paths. */
+function assembleBody(incident, options, tagsSection, deletionsSection, truncationNotice) {
     const journalLine = options.journalPath
         ? `Journal file for this run: ${options.journalPath}`
         : "Journal file for this run: not recorded — check the run's own logs/artifacts for its journal path.";
@@ -13156,9 +13197,10 @@ function formatIncidentReport(incident, options = {}) {
         "ghcr-tidy detected a post-apply verification REGRESSION and stopped.",
         "",
         `Package:   ${incident.packageName}`,
+        ...(truncationNotice ? ["", truncationNotice] : []),
         "",
         "Affected tags:",
-        incident.tags.map(formatTag).join("\n"),
+        tagsSection,
         "",
         "Deletions this run made in this package before the regression was detected:",
         deletionsSection,
@@ -13175,6 +13217,57 @@ function formatIncidentReport(incident, options = {}) {
         "reset and no override flag. ghcr-tidy will refuse to delete anything in",
         "any package, in any future run, for as long as this issue stays open.",
     ].join("\n");
+}
+const NO_DELETIONS_TEXT = "  (none — the regression was detected before this package deleted anything)";
+/**
+ * Renders the full incident report body, guaranteed to be no longer than
+ * {@link MAX_INCIDENT_BODY_CHARS}. See this module's doc for the
+ * intended reader and the information it deliberately always includes.
+ *
+ * The common case (the incident is small enough to render in full) is
+ * tried first and returned as-is. Only when that would exceed the
+ * limit does this fall back to a truncated render: the affected-tags
+ * list — the most actionable content, what actually regressed — gets
+ * the larger share of the remaining budget; the preceding-deletions
+ * list (already fully recorded in the run's own journal) gets the
+ * smaller share. Either list that had to be cut states PLAINLY that it
+ * was truncated and exactly how many entries were left out — a
+ * breaker that silently drops evidence to fit is exactly the kind of
+ * blind spot post-apply verification exists to prevent.
+ */
+function formatIncidentReport(incident, options = {}) {
+    const fullTags = renderFull(incident.tags, formatTag, "");
+    const fullDeletions = renderFull(incident.precedingDeletions, formatDeletion, NO_DELETIONS_TEXT);
+    const full = assembleBody(incident, options, fullTags, fullDeletions, undefined);
+    if (full.length <= MAX_INCIDENT_BODY_CHARS) {
+        return full;
+    }
+    const truncationNotice = "NOTE: this report was truncated because the full incident exceeds GitHub's " +
+        "issue body size limit. Counts below are of what is SHOWN, not the full " +
+        "incident — see each section's own omission notice for how much was left out.";
+    // Fixed overhead (everything except the two variable-length sections)
+    // measured with both sections empty, so the budget split below reacts
+    // to the ACTUAL incident (package name length, journal path length,
+    // etc.) rather than a guessed constant.
+    const skeletonLength = assembleBody(incident, options, "", "", truncationNotice).length;
+    const available = Math.max(MAX_INCIDENT_BODY_CHARS - skeletonLength, 0);
+    // Tags first: they are what regressed, and are this report's whole
+    // point. Deletions are already fully recorded in the journal
+    // (`journalLine` above), so they get the smaller remainder.
+    const tagsBudget = Math.floor(available * 0.7);
+    const deletionsBudget = available - tagsBudget;
+    const tagsSection = renderTruncated(incident.tags, formatTag, tagsBudget, "", "tag");
+    const deletionsSection = renderTruncated(incident.precedingDeletions, formatDeletion, deletionsBudget, NO_DELETIONS_TEXT, "deletion");
+    const truncated = assembleBody(incident, options, tagsSection, deletionsSection, truncationNotice);
+    if (truncated.length <= MAX_INCIDENT_BODY_CHARS) {
+        return truncated;
+    }
+    // Last-resort safety net for a pathological case (e.g. a package name
+    // long enough on its own to blow the budget): a hard cut is worse than
+    // no truncation notice placement, but it is still postable, which a
+    // rejected-outright issue is not.
+    const marker = "\n\n[... report truncated to fit GitHub's issue body size limit ...]";
+    return truncated.slice(0, MAX_INCIDENT_BODY_CHARS - marker.length) + marker;
 }
 
 ;// CONCATENATED MODULE: ./ghcr-tidy/src/breaker.ts
@@ -14582,17 +14675,25 @@ function toFinding(t, pre, post) {
  * The three-part regression predicate. For every tag present in `pre`:
  *
  * 1. it must still resolve;
- * 2. it must resolve to the SAME digest, not merely some digest;
- * 3. its full child closure must still resolve.
+ * 2. its full child closure must still resolve;
+ * 3. IF it still resolves and its closure still resolves, a digest
+ *    change is `republished` (a concurrent publish), never a
+ *    regression — see {@link CompareSnapshotsResult.republished}'s doc
+ *    for why: deleting a manifest can only make a tag fail to resolve,
+ *    it can never repoint a tag to a different digest, so a
+ *    healthy-to-healthy digest change is never evidence THIS run
+ *    caused damage.
  *
  * A tag confirmed broken in BOTH `pre` and `post` is reported separately
  * (`preExisting`) and does not count as a regression — a budgeted
  * multi-run drain of an already-broken package must not report the same
  * known damage as fresh every run. A tag whose pre-apply state could not
  * be confirmed either way (`"unknown"` — a transient read failure) is
- * held to the STRICT posture: any non-healthy post state counts as a
- * regression, because there is no confirmed-broken pre state to excuse
- * it into `preExisting`.
+ * held to the STRICT posture: any CONFIRMED-broken post state counts as
+ * a regression, because there is no confirmed-broken pre state to excuse
+ * it into `preExisting` — but a merely `"unknown"` post state still only
+ * ever lands in `unverified`, never `regressions`, same as everywhere
+ * else in this predicate.
  */
 function compareSnapshots(pre, post, options = {}) {
     const postSnapshotFailed = options.postSnapshotFailed ?? false;
@@ -14618,10 +14719,22 @@ function compareSnapshots(pre, post, options = {}) {
     const regressions = [];
     const preExisting = [];
     const unverified = [];
+    const republished = [];
     for (const [t, preState] of entries) {
         const postState = effectivePostState(t);
         if (isHealthy(preState)) {
-            if (isHealthy(postState) && preState.digest === postState.digest) {
+            if (isHealthy(postState)) {
+                if (preState.digest === postState.digest) {
+                    continue;
+                }
+                // Still fully healthy — tag resolves, full closure resolves —
+                // just pointing somewhere else. Deleting a manifest cannot
+                // repoint a tag, only make it fail to resolve, so this is never
+                // evidence that THIS run's deletions caused any damage: it is a
+                // concurrent publish (someone else's CI) racing this run. See
+                // `republished`'s doc for why this is its own bucket rather than
+                // folded into `regressions` or `unverified`.
+                republished.push(toFinding(t, preState, postState));
                 continue;
             }
             if (isUnknown(postState)) {
@@ -14632,6 +14745,10 @@ function compareSnapshots(pre, post, options = {}) {
                 unverified.push(toFinding(t, preState, postState));
             }
             else {
+                // isConfirmedBroken(postState): either the tag itself now 404s,
+                // or it still resolves but its closure does not — both are real,
+                // confirmed damage regardless of any digest change, so neither
+                // is ever redirected into `republished`.
                 regressions.push(toFinding(t, preState, postState));
             }
             continue;
@@ -14644,6 +14761,9 @@ function compareSnapshots(pre, post, options = {}) {
                 unverified.push(toFinding(t, preState, postState));
             }
             // Else: post state is healthy — resolved fine, nothing to report.
+            // (There is no pre-apply digest to compare against here, so a
+            // healthy post state can never be classified as `republished`
+            // either — there is nothing to say it changed FROM.)
             continue;
         }
         // isConfirmedBroken(preState) must hold — isHealthy and isUnknown are exhaustive otherwise.
@@ -14655,7 +14775,7 @@ function compareSnapshots(pre, post, options = {}) {
         }
         // Else: improved (now resolves) — no confirmed new damage to act on.
     }
-    return { regressions, preExisting, unverified };
+    return { regressions, preExisting, unverified, republished };
 }
 /** An in-memory `RegressionSink` for tests: records every incident, in order, with no I/O. `incidents` is a live reference. */
 function memoryRegressionSink() {
@@ -14872,7 +14992,14 @@ async function applyPlan(plan, mutator, options) {
             remainingBudget -= attempted;
             totalAttempted += attempted;
         }
-        packages.push({ packageName: pkgPlan.packageName, groups });
+        // Computed BEFORE `packages.push` below (rather than three separate
+        // pushes at each abort site) so `republishedTags` — genuinely useful
+        // context, not damage — is present on this package's result exactly
+        // once, in the same place, regardless of whether this package also
+        // aborts the run.
+        let republishedTags = [];
+        let regressionToRecord;
+        let abortReason;
         if (verification && registryPath) {
             // A post-snapshot read failure gets exactly the same "unknown"
             // treatment as any other unresolved tag (see `verify.ts`'s
@@ -14895,69 +15022,68 @@ async function applyPlan(plan, mutator, options) {
                 // evidence of a regression (nothing here is confirmed broken),
                 // but the run must still stop and this must still be surfaced
                 // loudly, same as any other `unverified` finding.
-                return {
-                    packages,
-                    attempted: totalAttempted,
-                    remainingBudget,
-                    abortedFor: {
-                        kind: "verification-unavailable",
-                        packageName: pkgPlan.packageName,
-                        tags: [],
-                    },
+                abortReason = {
+                    kind: "verification-unavailable",
+                    packageName: pkgPlan.packageName,
+                    tags: [],
                 };
             }
-            const { regressions, unverified } = compareSnapshots(preSnapshot ?? new Map(), post.snapshot, {
-                preSnapshotFailed,
-                postSnapshotFailed: post.failed,
-            });
-            if (regressions.length > 0) {
-                const incident = {
-                    packageName: pkgPlan.packageName,
-                    tags: regressions,
-                    precedingDeletions: deletedMembers(groups),
-                };
-                // Recorded locally BEFORE the sink (which may make network
-                // calls, e.g. `breaker.ts`'s `githubIssueBreaker`) is even
-                // attempted — see `VerificationOptions.onIncident`'s doc: this is
-                // what makes the incident survive a breaker outage.
-                verification.onIncident?.(incident);
-                let sinkError;
-                try {
-                    await verification.sink.record(incident);
-                }
-                catch (error) {
-                    // The regression is real and confirmed either way; a failure
-                    // notifying the breaker about it must not swallow the run's
-                    // own summary (see this module's doc on the incident this
-                    // fixes) — reported alongside the abort reason instead of
-                    // propagating and killing the whole process before the caller
-                    // can print anything.
-                    sinkError = error instanceof Error ? error.message : String(error);
-                }
-                return {
-                    packages,
-                    attempted: totalAttempted,
-                    remainingBudget,
-                    abortedFor: {
-                        kind: "regression",
+            else {
+                const { regressions, unverified, republished } = compareSnapshots(preSnapshot ?? new Map(), post.snapshot, {
+                    preSnapshotFailed,
+                    postSnapshotFailed: post.failed,
+                });
+                republishedTags = republished;
+                if (regressions.length > 0) {
+                    regressionToRecord = {
                         packageName: pkgPlan.packageName,
                         tags: regressions,
-                        ...(sinkError !== undefined && { sinkError }),
-                    },
-                };
-            }
-            if (unverified.length > 0) {
-                return {
-                    packages,
-                    attempted: totalAttempted,
-                    remainingBudget,
-                    abortedFor: {
+                        precedingDeletions: deletedMembers(groups),
+                    };
+                }
+                else if (unverified.length > 0) {
+                    abortReason = {
                         kind: "verification-unavailable",
                         packageName: pkgPlan.packageName,
                         tags: unverified,
-                    },
-                };
+                    };
+                }
             }
+        }
+        packages.push({ packageName: pkgPlan.packageName, groups, republishedTags });
+        if (regressionToRecord) {
+            // Recorded locally BEFORE the sink (which may make network calls,
+            // e.g. `breaker.ts`'s `githubIssueBreaker`) is even attempted —
+            // see `VerificationOptions.onIncident`'s doc: this is what makes
+            // the incident survive a breaker outage.
+            verification?.onIncident?.(regressionToRecord);
+            let sinkError;
+            try {
+                await verification?.sink.record(regressionToRecord);
+            }
+            catch (error) {
+                // The regression is real and confirmed either way; a failure
+                // notifying the breaker about it must not swallow the run's own
+                // summary (see this module's doc on the incident this fixes) —
+                // reported alongside the abort reason instead of propagating and
+                // killing the whole process before the caller can print
+                // anything.
+                sinkError = error instanceof Error ? error.message : String(error);
+            }
+            return {
+                packages,
+                attempted: totalAttempted,
+                remainingBudget,
+                abortedFor: {
+                    kind: "regression",
+                    packageName: pkgPlan.packageName,
+                    tags: regressionToRecord.tags,
+                    ...(sinkError !== undefined && { sinkError }),
+                },
+            };
+        }
+        if (abortReason) {
+            return { packages, attempted: totalAttempted, remainingBudget, abortedFor: abortReason };
         }
     }
     return { packages, attempted: totalAttempted, remainingBudget };
@@ -15531,6 +15657,16 @@ function summarizeApplyResult(plan, result) {
             const notAttempted = group.members.filter((m) => m.result === "not-attempted").length;
             lines.push(`  ${pkg.packageName} group ${group.root}: ${group.status} — ${String(deleted)} deleted, ` +
                 `${String(failed)} failed, ${String(notAttempted)} not attempted`);
+        }
+        // Never a failure and never sunk to the breaker (see `verify.ts`'s
+        // `republished` doc) — reported here purely as context: the
+        // registry changed under this run, which is normal in a repo whose
+        // CI publishes continuously, not something an operator needs to act
+        // on.
+        if (pkg.republishedTags.length > 0) {
+            lines.push(`  ${pkg.packageName}: ${String(pkg.republishedTags.length)} tag(s) republished by ` +
+                `something else during this run (not a regression): ` +
+                `${pkg.republishedTags.map((t) => t.tag).join(", ")}`);
         }
     }
     const header = `attempted ${String(result.attempted)} of ${String(plannedDeletionCount(plan))} planned deletion(s), ` +

@@ -241,7 +241,7 @@ function toFinding(t: Tag, pre: TagSnapshot, post: TagSnapshot): RegressedTag {
 }
 
 export interface CompareSnapshotsResult {
-  /** A HEALTHY (or unverifiable) pre-snapshot tag is now CONFIRMED broken (a real 404 evidence), or an unverifiable pre-snapshot tag is now confirmed broken post-apply — see this module's doc. This is the ONLY bucket that trips the breaker (`breaker.ts`'s `breakerRegressionSink`): every finding in it is backed by direct 404 evidence, never by a merely-unreadable tag. Aborts the run. */
+  /** A HEALTHY (or unverifiable) pre-snapshot tag is now CONFIRMED broken (a real 404 evidence), or an unverifiable pre-snapshot tag is now confirmed broken post-apply — see this module's doc. This is the ONLY bucket that trips the breaker (`breaker.ts`'s `breakerRegressionSink`): every finding in it is backed by direct 404 evidence, never by a merely-unreadable tag, and never by a mere digest change on an otherwise-healthy tag (see {@link republished}). Aborts the run. */
   readonly regressions: readonly RegressedTag[];
   /** Broken in BOTH pre and post — not caused by this run, reported but does not abort. */
   readonly preExisting: readonly RegressedTag[];
@@ -257,6 +257,24 @@ export interface CompareSnapshotsResult {
    * everything is fine when nothing was actually confirmed.
    */
   readonly unverified: readonly RegressedTag[];
+  /**
+   * A tag that resolved cleanly BEFORE this run and resolves cleanly
+   * (tag AND full closure) AFTER it, but to a DIFFERENT digest — a
+   * concurrent publish repointed it while this run was in progress.
+   * Deliberately a SEPARATE bucket from `unverified`: "someone
+   * republished this tag" and "we could not read this tag" are
+   * different facts an operator needs told apart, not the same shrug.
+   *
+   * Never trips the breaker and never aborts the run — see this
+   * module's `compareSnapshots` doc for why a digest change alone is
+   * never evidence of deletion damage: deleting a manifest can only
+   * make a tag fail to resolve, it cannot repoint a tag to a different
+   * digest. Reported so the caller can surface it as context (the
+   * registry changed under this run), which is genuinely useful in a
+   * repo whose CI publishes continuously, without treating normal,
+   * expected concurrent activity as a safety incident.
+   */
+  readonly republished: readonly RegressedTag[];
 }
 
 export interface CompareSnapshotsOptions {
@@ -291,17 +309,25 @@ export interface CompareSnapshotsOptions {
  * The three-part regression predicate. For every tag present in `pre`:
  *
  * 1. it must still resolve;
- * 2. it must resolve to the SAME digest, not merely some digest;
- * 3. its full child closure must still resolve.
+ * 2. its full child closure must still resolve;
+ * 3. IF it still resolves and its closure still resolves, a digest
+ *    change is `republished` (a concurrent publish), never a
+ *    regression — see {@link CompareSnapshotsResult.republished}'s doc
+ *    for why: deleting a manifest can only make a tag fail to resolve,
+ *    it can never repoint a tag to a different digest, so a
+ *    healthy-to-healthy digest change is never evidence THIS run
+ *    caused damage.
  *
  * A tag confirmed broken in BOTH `pre` and `post` is reported separately
  * (`preExisting`) and does not count as a regression — a budgeted
  * multi-run drain of an already-broken package must not report the same
  * known damage as fresh every run. A tag whose pre-apply state could not
  * be confirmed either way (`"unknown"` — a transient read failure) is
- * held to the STRICT posture: any non-healthy post state counts as a
- * regression, because there is no confirmed-broken pre state to excuse
- * it into `preExisting`.
+ * held to the STRICT posture: any CONFIRMED-broken post state counts as
+ * a regression, because there is no confirmed-broken pre state to excuse
+ * it into `preExisting` — but a merely `"unknown"` post state still only
+ * ever lands in `unverified`, never `regressions`, same as everywhere
+ * else in this predicate.
  */
 export function compareSnapshots(
   pre: ReadonlyMap<Tag, TagSnapshot>,
@@ -334,12 +360,24 @@ export function compareSnapshots(
   const regressions: RegressedTag[] = [];
   const preExisting: RegressedTag[] = [];
   const unverified: RegressedTag[] = [];
+  const republished: RegressedTag[] = [];
 
   for (const [t, preState] of entries) {
     const postState = effectivePostState(t);
 
     if (isHealthy(preState)) {
-      if (isHealthy(postState) && preState.digest === postState.digest) {
+      if (isHealthy(postState)) {
+        if (preState.digest === postState.digest) {
+          continue;
+        }
+        // Still fully healthy — tag resolves, full closure resolves —
+        // just pointing somewhere else. Deleting a manifest cannot
+        // repoint a tag, only make it fail to resolve, so this is never
+        // evidence that THIS run's deletions caused any damage: it is a
+        // concurrent publish (someone else's CI) racing this run. See
+        // `republished`'s doc for why this is its own bucket rather than
+        // folded into `regressions` or `unverified`.
+        republished.push(toFinding(t, preState, postState));
         continue;
       }
       if (isUnknown(postState)) {
@@ -349,6 +387,10 @@ export function compareSnapshots(
         // trip the breaker.
         unverified.push(toFinding(t, preState, postState));
       } else {
+        // isConfirmedBroken(postState): either the tag itself now 404s,
+        // or it still resolves but its closure does not — both are real,
+        // confirmed damage regardless of any digest change, so neither
+        // is ever redirected into `republished`.
         regressions.push(toFinding(t, preState, postState));
       }
       continue;
@@ -361,6 +403,9 @@ export function compareSnapshots(
         unverified.push(toFinding(t, preState, postState));
       }
       // Else: post state is healthy — resolved fine, nothing to report.
+      // (There is no pre-apply digest to compare against here, so a
+      // healthy post state can never be classified as `republished`
+      // either — there is nothing to say it changed FROM.)
       continue;
     }
 
@@ -373,7 +418,7 @@ export function compareSnapshots(
     // Else: improved (now resolves) — no confirmed new damage to act on.
   }
 
-  return { regressions, preExisting, unverified };
+  return { regressions, preExisting, unverified, republished };
 }
 
 /**

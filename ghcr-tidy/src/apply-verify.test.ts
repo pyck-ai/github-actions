@@ -148,8 +148,8 @@ describe("applyPlan — post-apply verification: regression by disappearance", (
   });
 });
 
-describe("applyPlan — post-apply verification: regression by digest change", () => {
-  it("detects a tag now resolving to a different digest", async () => {
+describe("applyPlan — post-apply verification: republished tag (a concurrent publish, not a regression)", () => {
+  it("does NOT abort, does NOT trip the breaker, and completes normally when a tag resolves cleanly before and after but to a different digest", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
     fake.setManifest(digest("sha256:other"), {});
@@ -160,8 +160,63 @@ describe("applyPlan — post-apply verification: regression by digest change", (
       reportedTags: [],
     });
     fake.setManifest(digest("sha256:garbage"), {});
-    // Deleting unrelated garbage somehow leaves the tag repointed — simulates a planner/registry model bug.
+    // Someone else's CI republishes the tag mid-run, unrelated to this
+    // run's own (correct) deletion of unrelated garbage — this run
+    // cannot have caused this: deleting a manifest can only make a tag
+    // fail to resolve, never repoint it.
     fake.setDeleteSideEffect(1, () => fake.setTag(tag("latest"), digest("sha256:other")));
+
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(deletedVersionIds).toEqual([1]);
+    expect(result.abortedFor).toBeUndefined();
+    expect(incidents).toEqual([]); // never sunk to the breaker
+    expect(result.packages[0]?.republishedTags).toEqual([
+      expect.objectContaining({
+        tag: tag("latest"),
+        digestBefore: digest("sha256:live"),
+        digestAfter: digest("sha256:other"),
+        stillResolves: true,
+        digestUnchanged: false,
+        closureResolves: true,
+      }),
+    ]);
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_OK);
+  });
+
+  it("still aborts as a regression when the tag's CLOSURE breaks, even though its own digest also changed", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake
+      .setTag(tag("latest"), digest("sha256:index"))
+      .setManifest(digest("sha256:index"), {
+        children: [{ digest: "sha256:arch-amd64" }, { digest: "sha256:arch-arm64" }],
+      })
+      .setManifest(digest("sha256:arch-amd64"), {})
+      .setManifest(digest("sha256:arch-arm64"), {});
+    fake.setManifest(digest("sha256:new-index"), {
+      children: [{ digest: "sha256:arch-amd64" }, { digest: "sha256:missing-child" }],
+    });
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    fake.setManifest(digest("sha256:garbage"), {});
+    // A concurrent publish repoints the tag to a NEW index whose own
+    // child is broken — the digest changed AND the closure is broken.
+    // Closure breakage must still win: this is real, confirmed damage
+    // regardless of why the digest also differs.
+    fake.setDeleteSideEffect(1, () => fake.setTag(tag("latest"), digest("sha256:new-index")));
 
     const { mutator } = fake.mutator();
     const { sink, incidents } = memoryRegressionSink();
@@ -175,13 +230,13 @@ describe("applyPlan — post-apply verification: regression by digest change", (
     const result = await applyPlan(plan, mutator, { budget: 100, verification });
 
     expect(result.abortedFor?.kind).toBe("regression");
+    expect(incidents).toHaveLength(1);
     expect(incidents[0]?.tags).toEqual([
       expect.objectContaining({
         tag: tag("latest"),
-        digestBefore: digest("sha256:live"),
-        digestAfter: digest("sha256:other"),
         stillResolves: true,
         digestUnchanged: false,
+        closureResolves: false,
       }),
     ]);
     expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);

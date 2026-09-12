@@ -151,9 +151,41 @@ describe("compareSnapshots — the three-part predicate", () => {
     ]);
   });
 
-  it("regression: the tag resolves but to a different digest (digestUnchanged: false)", () => {
+  it("republished, NOT a regression: healthy before and after, but a different digest — a concurrent publish, since deleting a manifest cannot repoint a tag", () => {
     const pre = new Map<Tag, TagSnapshot>([[t, healthy("sha256:a")]]);
     const post = new Map<Tag, TagSnapshot>([[t, healthy("sha256:b")]]);
+
+    const result = compareSnapshots(pre, post);
+
+    expect(result.regressions).toEqual([]);
+    expect(result.preExisting).toEqual([]);
+    expect(result.unverified).toEqual([]);
+    expect(result.republished).toEqual([
+      {
+        tag: t,
+        digestBefore: digest("sha256:a"),
+        digestAfter: digest("sha256:b"),
+        stillResolves: true,
+        digestUnchanged: false,
+        closureResolves: true,
+      },
+    ]);
+  });
+
+  it("regression: healthy before, CONFIRMED broken after (tag itself 404s) — still a regression regardless of digest bookkeeping", () => {
+    const pre = new Map<Tag, TagSnapshot>([[t, healthy("sha256:a")]]);
+    const post = new Map<Tag, TagSnapshot>([[t, notFound()]]);
+
+    const result = compareSnapshots(pre, post);
+
+    expect(result.regressions).toHaveLength(1);
+    expect(result.regressions[0]?.tag).toBe(t);
+    expect(result.republished).toEqual([]);
+  });
+
+  it("regression: healthy before, tag still resolves but its CLOSURE broke and the digest also changed — closure breakage always wins over a digest change", () => {
+    const pre = new Map<Tag, TagSnapshot>([[t, healthy("sha256:a")]]);
+    const post = new Map<Tag, TagSnapshot>([[t, closureBroken("sha256:b")]]);
 
     const result = compareSnapshots(pre, post);
 
@@ -164,9 +196,21 @@ describe("compareSnapshots — the three-part predicate", () => {
         digestAfter: digest("sha256:b"),
         stillResolves: true,
         digestUnchanged: false,
-        closureResolves: true,
+        closureResolves: false,
       },
     ]);
+    expect(result.republished).toEqual([]);
+  });
+
+  it("healthy pre, UNKNOWN post (a transient read, not a digest change) is still unverified, never republished", () => {
+    const pre = new Map<Tag, TagSnapshot>([[t, healthy("sha256:a")]]);
+    const post = new Map<Tag, TagSnapshot>([[t, unknown()]]);
+
+    const result = compareSnapshots(pre, post);
+
+    expect(result.regressions).toEqual([]);
+    expect(result.republished).toEqual([]);
+    expect(result.unverified).toHaveLength(1);
   });
 
   it("regression: same digest but the closure broke (closureResolves: false)", () => {

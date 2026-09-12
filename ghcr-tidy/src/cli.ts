@@ -723,6 +723,18 @@ function summarizeApplyResult(plan: Plan, result: ApplyResult): string {
           `${String(failed)} failed, ${String(notAttempted)} not attempted`,
       );
     }
+    // Never a failure and never sunk to the breaker (see `verify.ts`'s
+    // `republished` doc) — reported here purely as context: the
+    // registry changed under this run, which is normal in a repo whose
+    // CI publishes continuously, not something an operator needs to act
+    // on.
+    if (pkg.republishedTags.length > 0) {
+      lines.push(
+        `  ${pkg.packageName}: ${String(pkg.republishedTags.length)} tag(s) republished by ` +
+          `something else during this run (not a regression): ` +
+          `${pkg.republishedTags.map((t) => t.tag).join(", ")}`,
+      );
+    }
   }
   const header =
     `attempted ${String(result.attempted)} of ${String(plannedDeletionCount(plan))} planned deletion(s), ` +

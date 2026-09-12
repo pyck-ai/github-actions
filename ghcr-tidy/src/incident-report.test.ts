@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { packageName } from "../../registry/package-name.js";
 import { digest, tag } from "./domain.js";
-import type { RegressionIncident } from "./verify.js";
-import { formatIncidentReport } from "./incident-report.js";
+import type { RegressedTag, RegressionIncident } from "./verify.js";
+import { formatIncidentReport, MAX_INCIDENT_BODY_CHARS } from "./incident-report.js";
 
 const pkg = packageName("baseimages/golang");
 
@@ -103,5 +103,58 @@ describe("formatIncidentReport", () => {
     expect(body).toContain(
       "failed check:    manifest closure broken (a child manifest this tag's index points at no longer resolves)",
     );
+  });
+
+  it("truncates a huge incident to stay under GitHub's issue body limit, keeping tags first and stating plainly what was omitted", () => {
+    // Mirrors the incident that motivated this: thousands of findings
+    // (real run: 1525+1175+1670+1146 deletions across four packages, ~40
+    // republished tags in one alone) produced a body over 65536
+    // characters and GitHub outright rejected it.
+    const tags: RegressedTag[] = Array.from({ length: 3000 }, (_, i) => ({
+      tag: tag(`tag-${String(i)}`),
+      digestBefore: digest(`sha256:${"a".repeat(58)}${String(i).padStart(6, "0")}`),
+      digestAfter: undefined,
+      stillResolves: false,
+      digestUnchanged: false,
+      closureResolves: false,
+    }));
+    const precedingDeletions = Array.from({ length: 2000 }, (_, i) => ({
+      digest: digest(`sha256:${"b".repeat(58)}${String(i).padStart(6, "0")}`),
+      versionId: i,
+    }));
+    const incident: RegressionIncident = { packageName: pkg, tags, precedingDeletions };
+
+    const body = formatIncidentReport(incident, { journalPath: "/tmp/run.ndjson" });
+
+    expect(body.length).toBeLessThanOrEqual(MAX_INCIDENT_BODY_CHARS);
+    expect(body).toContain("truncated");
+    expect(body).toMatch(/more tags? omitted/);
+    expect(body).toMatch(/more deletions? omitted/);
+    // The most actionable content — the first tags — must still be present.
+    expect(body).toContain("tag-0");
+    // Essential remediation/closing instructions must never be cut off.
+    expect(body).toContain("GHCR HAS NO UNDELETE");
+    expect(body).toContain("To clear this breaker");
+    expect(body).toContain("Journal file for this run: /tmp/run.ndjson");
+  });
+
+  it("does not truncate an incident that fits comfortably under the limit", () => {
+    const tags: RegressedTag[] = Array.from({ length: 5 }, (_, i) => ({
+      tag: tag(`tag-${String(i)}`),
+      digestBefore: digest(`sha256:live${String(i)}`),
+      digestAfter: undefined,
+      stillResolves: false,
+      digestUnchanged: false,
+      closureResolves: false,
+    }));
+    const incident: RegressionIncident = { packageName: pkg, tags, precedingDeletions: [] };
+
+    const body = formatIncidentReport(incident);
+
+    expect(body).not.toContain("truncated");
+    expect(body).not.toContain("omitted");
+    for (const t of tags) {
+      expect(body).toContain(t.tag);
+    }
   });
 });
