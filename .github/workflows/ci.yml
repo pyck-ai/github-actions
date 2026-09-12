@@ -114,10 +114,14 @@ jobs:
       # runs stale code with no error anywhere — this is the single worst
       # failure mode of that pattern, so CI rebuilds the bundles from a clean
       # checkout and fails on any difference, tracked or untracked.
+      #
+      # verify-image is a plain-bash composite action (no node bundle, no
+      # dist/) since it now just runs an image's own verify.sh via docker
+      # run — only ghcr-tidy still bundles.
       - name: Rebuild bundles and check dist/ is up to date
         run: |
           npm run bundle
-          for dist in .github/actions/verify-image/dist .github/actions/ghcr-tidy/dist; do
+          for dist in .github/actions/ghcr-tidy/dist; do
             if ! git diff --exit-code -- "$dist/"; then
               echo "::error::$dist/ is stale — run \"npm run bundle\" and commit the result" >&2
               exit 1

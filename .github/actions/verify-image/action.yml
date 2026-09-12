@@ -1,15 +1,56 @@
-name: imgverify
+name: verify-image
 description: >-
-  Runs the pyck-ai imgverify CLI (this action's own `dist/` bundle) against
-  a built image, using the runner's bundled Node — no system `node` or
-  `setup-node` step required.
+  Runs each target's own verify.sh INSIDE the image just built for it, for
+  every target a leg built, and fails if ANY of them fail — not just the
+  first. A target with no verify.sh is a hard failure, not a skip — this is
+  deliberate: it is what guarantees every taggable image is actually
+  verified before a tag can move.
 inputs:
-  args:
+  targets:
     description: >-
-      Arguments passed straight through to `imgverify` (e.g. the base
-      invocation before `build-image.yml` appends `--digests digests.json`).
+      Newline-separated list of bake target names built by this leg (e.g.
+      `matrix.component.targets` in build-image.yml). A leg can build
+      several (baseimages' alpine and debian dependency chains each bake 7
+      targets in one leg); every one of them is verified.
+    required: true
+  contexts:
+    description: >-
+      JSON object mapping each target name to `{context, repo}`: `context`
+      is the target's own bake context dir (a `verify.sh` inside it is
+      looked up automatically), `repo` is the registry repo its digest was
+      pushed to (e.g. `ghcr.io/pyck-ai/base`). As emitted by
+      build-image.yml's `discover` job.
+    required: true
+  digests:
+    description: >-
+      Path to a JSON file mapping each target name to the digest this leg
+      just pushed for it, so the exact pushed artifact is verified rather
+      than whatever a floating tag happens to point at.
+    required: true
+  buildargs:
+    description: >-
+      Path to buildargs.conf, whose KEY=VALUE lines are passed to each
+      verify.sh as environment via `docker run --env-file`. Optional: the
+      run still proceeds if this file doesn't exist (not every consumer has
+      one).
     required: false
-    default: ""
+    default: buildargs.conf
 runs:
-  using: node24
-  main: dist/index.js
+  using: composite
+  steps:
+    # Pass inputs via `env:`, not interpolated into `run:`'s command text.
+    # `contexts` is JSON and can contain double quotes; substituting
+    # `${{ inputs.contexts }}` directly into the run script's text (as a
+    # quoted argument like `"${{ inputs.contexts }}"`) would let those quotes
+    # break out of the surrounding shell quoting before bash ever sees the
+    # line. Routing it through `env:` instead has GitHub Actions write it
+    # into the environment safely, and `"$CONTEXTS"` below is a normal bash
+    # variable expansion, immune to whatever the value contains.
+    - name: Run verify.sh inside each target's image
+      shell: bash
+      env:
+        TARGETS: ${{ inputs.targets }}
+        CONTEXTS: ${{ inputs.contexts }}
+        DIGESTS: ${{ inputs.digests }}
+        BUILDARGS: ${{ inputs.buildargs }}
+      run: '"$GITHUB_ACTION_PATH/run.sh" "$TARGETS" "$CONTEXTS" "$DIGESTS" "$BUILDARGS"'

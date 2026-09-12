@@ -53,34 +53,16 @@ on:
         type: string
         required: false
         default: ""
-      verify-command:
+      buildargs:
         description: >-
-          Shell command run in the `build` job's verify step, per matrix leg,
-          INSTEAD of the built-in `$/.github/actions/verify-image` (imgverify)
-          action. Empty (the default) means "use the built-in imgverify
-          action" — the normal path for a consumer with an `.imgverify.yaml`
-          manifest. A non-empty value is an escape hatch for a consumer that
-          has not migrated to imgverify yet: the step appends `--digests
-          <path to this leg's digest file>`, so this must name a command that
-          accepts that flag directly.
+          Path to a buildargs.conf-style KEY=VALUE file, passed to each
+          target's verify.sh via `docker run --env-file` (see
+          `$/.github/actions/verify-image`). Optional: the action tolerates
+          this file being absent, so a caller without one (e.g.
+          github-runner, flutter-rfw) still works.
         type: string
         required: false
-        # NOT `task verify`. go-task treats a trailing `--digests x` as its
-        # own flag and exits 2 printing usage without running the task; with
-        # `--` it forwards the flag to the BUILD step instead, where bake
-        # rejects it (exit 201). Both were measured. It fails closed rather
-        # than passing vacuously, but it never verifies anything either.
-        default: ""
-      verify-manifest:
-        description: >-
-          Path to the imgverify manifest, passed through as `--manifest` to
-          the built-in verify-image action. Only used when `verify-command`
-          is empty. imgverify defaults to `.imgverify.yaml` in the working
-          directory if this is left empty, which is the calling repo's
-          checkout (the action runs with the caller's workspace as cwd).
-        type: string
-        required: false
-        default: ""
+        default: buildargs.conf
       runs-on:
         description: >-
           Runner label used for every job in this workflow.
@@ -121,6 +103,7 @@ jobs:
     outputs:
       targets: ${{ steps.targets.outputs.targets }}
       bakeargs-set: ${{ steps.targets.outputs.bakeargs-set }}
+      contexts: ${{ steps.targets.outputs.contexts }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -180,6 +163,21 @@ jobs:
                            targets: ($m | join("\n")) } )
                 | sort_by(.name)' <<<"$print")"
             fi
+            # Per-real-target lookup consumed by `build`'s verify step: each
+            # bake target's own `context` dir (where its `verify.sh` lives,
+            # per the `$/.github/actions/verify-image` contract) and the repo
+            # its digest lives under (same derivation as the push output
+            # below, so the two always agree). Keyed by the real bake target
+            # name, not the matrix component name, since one component can
+            # bake several real targets (e.g. baseimages' alpine/debian
+            # dependency chains) and each needs its own verify.sh run.
+            echo "contexts=$(jq -cn --argjson p "$print" '
+              [ $p.target | to_entries[]
+                | select((.value.tags // []) | length > 0)
+                | { key: .key,
+                    value: { context: (.value.context // "."),
+                             repo: (.value.tags[0] | sub(":[^/]+$"; "")) } } ]
+              | from_entries')"
             echo 'bakeargs-set<<EOF'
             grep -v '^#' buildargs.conf | grep -v '^\s*$' | sed 's/^/*.args./'
             if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -339,14 +337,16 @@ jobs:
       # Verify the EXACT digest(s) this leg just pushed — a real pre-tag gate
       # rather than a post-publish smoke test — right here in the same job,
       # instead of a separate job that waits on every leg's digest artifact.
-      # Only this leg's own targets are passed via `--target`, one per real
-      # bake target in `matrix.component.targets` (newline-separated; see the
-      # `discover` job's comment on why that separator is load-bearing).
-      # `publish` (via `needs: [discover, build]`) only runs once every leg of
-      # this matrix has succeeded — so a bad image never has a chance to be
-      # reachable by a floating tag. With `fail-fast: false`, a failing leg
-      # doesn't stop its siblings, but it does fail this `build` job overall,
-      # which is what `publish`'s `needs: build` keys off.
+      # Every real bake target in `matrix.component.targets` (newline-
+      # separated; see the `discover` job's comment on why that separator is
+      # load-bearing) gets its own `verify.sh` run, not just the first — a
+      # component can bake several (e.g. baseimages' alpine dependency chain
+      # bakes 7 targets in one leg). `publish` (via `needs: [discover,
+      # build]`) only runs once every leg of this matrix has succeeded — so a
+      # bad image never has a chance to be reachable by a floating tag. With
+      # `fail-fast: false`, a failing leg doesn't stop its siblings, but it
+      # does fail this `build` job overall, which is what `publish`'s `needs:
+      # build` keys off.
       #
       # Caveat: a multi-arch target's `docker pull` on the recorded digest only
       # fetches the manifest for the puller's own platform (amd64, since
@@ -356,49 +356,33 @@ jobs:
       # better than a fresh single-platform rebuild (it's the actual pushed
       # artifact) but does not close this platform gap. See the same note in
       # pyck-ai/baseimages' verify.sh.
-      - name: Build target list for verify
-        id: verify-targets
-        env:
-          TARGETS: ${{ matrix.component.targets }}
-        run: |
-          {
-            echo 'args<<EOF'
-            while IFS= read -r t; do
-              [ -n "$t" ] && printf -- '--target\n%s\n' "$t"
-            done <<<"$TARGETS"
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
 
       # `$/` is the self-repository reference: it resolves an action stored
       # in THIS repository at the running commit's SHA — the same SHA as
       # this workflow — with no separate checkout needed. Documented at
       # https://docs.github.com/actions/using-workflows/reusing-workflows
-      # (and the composite-actions "referencing an action in the same
-      # repository" section). This means a consumer pinning
+      # (composite-actions "referencing an action in the same repository"),
+      # and already proven in production by `tidy-ghcr.yml`'s
+      # `uses: $/.github/actions/ghcr-tidy`. This means a consumer pinning
       # build-image.yml@<sha> always gets the verify-image action from that
       # SAME sha — the workflow and the action can never drift apart, and no
       # self-referencing SHA needs to be hardcoded or bumped on release.
       # `$/` is unsupported on GitHub Enterprise Server; fine here since this
-      # runs on github.com only. A relative `uses: ./...` would resolve
-      # against the CALLER's workspace instead of this repo, and `uses:`
-      # cannot take an expression, so neither alternative works here.
-      - name: Verify pushed image (built-in)
-        if: inputs.verify-command == ''
+      # runs on github.com only.
+      #
+      # `uses:` steps are static YAML and cannot be looped at runtime, so the
+      # per-target loop lives INSIDE the action's run.sh instead of here: it
+      # is handed every real target this leg built (newline-separated,
+      # `matrix.component.targets`), the discover job's target -> {context,
+      # repo} map, and this leg's own digest file, and verifies each one,
+      # failing if any fail.
+      - name: Verify pushed images
         uses: $/.github/actions/verify-image
         with:
-          args: >-
-            run
-            ${{ inputs.verify-manifest != '' && format('--manifest {0}', inputs.verify-manifest) || '' }}
-            ${{ steps.verify-targets.outputs.args }}
-            --digests ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
-        env:
-          REGISTRY: ${{ inputs.registry }}
-
-      - name: Verify pushed image (custom command)
-        if: inputs.verify-command != ''
-        env:
-          REGISTRY: ${{ inputs.registry }}
-        run: ${{ inputs.verify-command }} --digests ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
+          targets: ${{ matrix.component.targets }}
+          contexts: ${{ needs.discover.outputs.contexts }}
+          digests: ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
+          buildargs: ${{ inputs.buildargs }}
 
   # Apply the floating/version tags now that every leg of `build` has verified
   # the digest it pushed. Skipped on PRs: PR builds are pushed by digest only
