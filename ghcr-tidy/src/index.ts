@@ -125,6 +125,8 @@ export {
   type ResolveState,
   type TagSnapshot,
   type RegressedTag,
+  type CanaryFailureReason,
+  type CanaryCheckResult,
   type CompareSnapshotsResult,
   type CompareSnapshotsOptions,
   type RegressionIncident,

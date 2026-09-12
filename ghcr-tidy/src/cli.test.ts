@@ -2,12 +2,21 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { digest, tag } from "./domain.js";
+import { digest, registryPathFor, tag } from "./domain.js";
+import { packageName } from "../../registry/package-name.js";
 import { FakeGhcr, version } from "./fake-ghcr.js";
 import { memoryBreaker } from "./breaker.js";
 import { memoryJournal } from "./journal.js";
 import { parsePlan } from "./persisted-plan.js";
-import { parseArgv, resolveArgv, runCommand, tokenizeArgs, type CliDeps } from "./cli.js";
+import {
+  buildPackageTokenMap,
+  parseArgv,
+  resolveArgv,
+  runCommand,
+  tokenizeArgs,
+  type CliDeps,
+} from "./cli.js";
+import type { ManifestPackageEntry } from "./manifest/schema.js";
 import type { Clock } from "./ports.js";
 import type { RegistryReader } from "./ports.js";
 
@@ -936,5 +945,46 @@ describe("apply subcommand", () => {
 
     expect(exitCode).toBe(0);
     expect(attemptedVersionIds).toEqual([]);
+  });
+});
+
+describe("buildPackageTokenMap", () => {
+  const owner = "acme";
+  const buildcache = packageName("baseimages/buildcache");
+  const base = packageName("baseimages/base");
+
+  function entryFor(name: ReturnType<typeof packageName>): ManifestPackageEntry {
+    return { match: name };
+  }
+
+  it("registers the canary's package even when --package scopes selection to a DIFFERENT package — the exact regression that aborted the first real apply", () => {
+    // `--package baseimages/buildcache` selects only `buildcache`; the
+    // canary lives in `base`, which is NOT among `entries`. Before the
+    // fix, `base`'s registry path was absent from this map entirely,
+    // so the token lookup inside `buildRegistryAdapters`'s `rawRegistry`
+    // threw immediately and the canary check was indistinguishable from
+    // a broken registry.
+    const map = buildPackageTokenMap(owner, [entryFor(buildcache)], base);
+
+    expect(map.get(registryPathFor(owner, base))).toBe(base);
+    expect(map.get(registryPathFor(owner, buildcache))).toBe(buildcache);
+  });
+
+  it("still resolves the canary's package on an unscoped run (every package, including the canary's, selected)", () => {
+    // The accidental-working case: no --package filter, so every
+    // configured entry (including the canary's own package) is already
+    // selected — must not regress.
+    const map = buildPackageTokenMap(owner, [entryFor(buildcache), entryFor(base)], base);
+
+    expect(map.get(registryPathFor(owner, base))).toBe(base);
+    expect(map.get(registryPathFor(owner, buildcache))).toBe(buildcache);
+  });
+
+  it("registers nothing extra when no canary package is given", () => {
+    const map = buildPackageTokenMap(owner, [entryFor(buildcache)], undefined);
+
+    expect(map.size).toBe(1);
+    expect(map.get(registryPathFor(owner, buildcache))).toBe(buildcache);
+    expect(map.get(registryPathFor(owner, base))).toBeUndefined();
   });
 });

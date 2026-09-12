@@ -10358,6 +10358,7 @@ var __webpack_exports__ = {};
 
 // EXPORTS
 __nccwpck_require__.d(__webpack_exports__, {
+  QH: () => (/* binding */ buildPackageTokenMap),
   SB: () => (/* binding */ parseArgv),
   rf: () => (/* binding */ resolveArgv),
   d1: () => (/* binding */ runCommand),
@@ -14489,15 +14490,32 @@ async function snapshotPackage(path, registry) {
  * fails, the read path is broken today, independent of anything this run
  * is about to delete — the run must not mistake a bad registry day for
  * damage it caused.
+ *
+ * Returns a {@link CanaryCheckResult} rather than a bare boolean so a
+ * failure always carries its cause (see {@link CanaryFailureReason}) —
+ * fail-closed behaviour is unchanged, only the diagnosis improves.
  */
 async function checkCanary(path, canaryTag, registry) {
+    let snapshot;
     try {
-        const snapshot = await snapshotTag(path, canaryTag, registry, new Map());
-        return snapshot.resolve === "resolved" && snapshot.closure === "resolved";
+        snapshot = await snapshotTag(path, canaryTag, registry, new Map());
     }
-    catch {
-        return false;
+    catch (error) {
+        return {
+            ok: false,
+            reason: {
+                kind: "error",
+                message: error instanceof Error ? error.message : String(error),
+            },
+        };
     }
+    if (snapshot.resolve !== "resolved") {
+        return { ok: false, reason: { kind: "resolve-failed", state: snapshot.resolve } };
+    }
+    if (snapshot.closure !== "resolved") {
+        return { ok: false, reason: { kind: "closure-failed", state: snapshot.closure } };
+    }
+    return { ok: true };
 }
 function isHealthy(s) {
     return s.resolve === "resolved" && s.closure === "resolved";
@@ -14752,13 +14770,18 @@ async function applyPlan(plan, mutator, options) {
     }
     const verification = options.verification;
     if (verification) {
-        const canaryOk = await checkCanary(verification.canary.path, verification.canary.tag, verification.registry);
-        if (!canaryOk) {
+        const canaryResult = await checkCanary(verification.canary.path, verification.canary.tag, verification.registry);
+        if (!canaryResult.ok) {
             return {
                 packages: [],
                 attempted: 0,
                 remainingBudget: options.budget,
-                abortedFor: { kind: "canary-failed" },
+                abortedFor: {
+                    kind: "canary-failed",
+                    path: verification.canary.path,
+                    tag: verification.canary.tag,
+                    reason: canaryResult.reason,
+                },
             };
         }
     }
@@ -15124,17 +15147,53 @@ function requireToken(env) {
  *
  * This is the ONLY place either decorator is applied: `planPackage` and
  * everything it calls stay unaware that concurrency is bounded at all.
+ *
+ * `canaryPackage`, when given, is registered in the same `pathFor` token
+ * map as every selected package — the apply canary is a property of the
+ * WHOLE RUN, not of whichever packages `--package` happened to select,
+ * so it must resolve a bearer token regardless of scoping. Without this,
+ * `--package <x>` where the canary lives in some other package leaves
+ * the canary's registry path unmapped: the token lookup inside
+ * `rawRegistry` throws immediately, and `applyPlan`'s pre-flight canary
+ * check reports a bare "canary-failed" for a run that never actually
+ * touched the registry for it. This was the first real `apply` run's
+ * abort.
  */
-function buildRegistryAdapters(token, owner, registryOwner, entries, octokit, jobs) {
+/**
+ * Builds the `RegistryPath -> PackageName` map {@link buildRegistryAdapters}
+ * uses to resolve a GHCR bearer token per package. Extracted as its own
+ * pure, exported function (no network, no token exchange) specifically so
+ * the `--package`-scoping defect this fixes — the canary's package
+ * silently absent from the map whenever `--package` excludes it — is
+ * unit-testable without touching the registry at all: the bug and its fix
+ * are both fully expressed in which keys end up in this map, before any
+ * HTTP request is ever made.
+ *
+ * `entries` are the packages selected for this run (post `--package`
+ * filtering); `canaryPackage`, always registered when given regardless of
+ * that filtering, is the run-level apply canary (see
+ * {@link buildRegistryAdapters}'s doc for why it cannot be scoped away).
+ */
+function buildPackageTokenMap(registryOwner, entries, canaryPackage) {
     const pathToName = new Map();
+    const add = (p) => {
+        pathToName.set(registryPathFor(registryOwner, p), p);
+    };
+    for (const entry of entries) {
+        add(entry.match);
+    }
+    if (canaryPackage) {
+        add(canaryPackage);
+    }
+    return pathToName;
+}
+function buildRegistryAdapters(token, owner, registryOwner, entries, octokit, jobs, canaryPackage) {
+    const pathToName = new Map(buildPackageTokenMap(registryOwner, entries, canaryPackage));
     const pathFor = (p) => {
         const rp = registryPathFor(registryOwner, p);
         pathToName.set(rp, p);
         return rp;
     };
-    for (const entry of entries) {
-        pathFor(entry.match);
-    }
     const tokenCache = createInMemoryTokenCache();
     const rawRegistry = createRegistryReader(async (rp) => {
         const name = pathToName.get(rp);
@@ -15293,6 +15352,24 @@ async function runPlanCommand(args, deps) {
     const hadSkip = outcomes.some((o) => o.result.status === "skipped");
     return hadSkip ? EXIT_FINDINGS : EXIT_OK;
 }
+/** Renders one {@link CanaryFailureReason} into an operator-facing phrase — see that type's doc for the three cases. */
+function formatCanaryFailureReason(reason) {
+    switch (reason.kind) {
+        case "resolve-failed":
+            return `tag failed to resolve (${reason.state})`;
+        case "closure-failed":
+            return `tag resolved but its manifest closure failed to resolve (${reason.state})`;
+        case "error":
+            return `error while resolving: ${reason.message}`;
+    }
+}
+/** Renders one {@link ApplyAbortReason} for the `ABORTED:` line — the `canary-failed` case additionally names the canary's own path/tag and the cause, since a bare "canary-failed" gave no way to diagnose the first real apply's spurious abort. */
+function formatAbortReason(reason) {
+    if (reason.kind === "canary-failed") {
+        return `canary-failed (canary ${reason.path}:${reason.tag} — ${formatCanaryFailureReason(reason.reason)})`;
+    }
+    return reason.kind;
+}
 function summarizeApplyResult(plan, result) {
     const lines = [];
     for (const pkg of result.packages) {
@@ -15306,7 +15383,7 @@ function summarizeApplyResult(plan, result) {
     }
     const header = `attempted ${String(result.attempted)} of ${String(plannedDeletionCount(plan))} planned deletion(s), ` +
         `${String(result.remainingBudget)} budget remaining` +
-        (result.abortedFor ? `, ABORTED: ${result.abortedFor.kind}` : "");
+        (result.abortedFor ? `, ABORTED: ${formatAbortReason(result.abortedFor)}` : "");
     return [header, ...lines].join("\n");
 }
 async function runApplyCommand(args, deps) {
@@ -15325,6 +15402,25 @@ async function runApplyCommand(args, deps) {
     const registryOwner = args.registryOwner ?? manifest.owner;
     const clock = deps.clock ?? cli_systemClock;
     const jobs = args.jobs ?? DEFAULT_JOBS;
+    // The canary's package, resolved here — BEFORE `--package` filtering
+    // is baked into the registry adapters below — because the canary is a
+    // property of the whole run, not of whichever packages `--package`
+    // happened to select (see `buildRegistryAdapters`'s doc). A malformed
+    // name is swallowed here on purpose: this is only a best-effort
+    // registration for the token map, and the proper, user-facing error is
+    // still raised below, at the point where the canary is actually
+    // required (only once it is known the plan has work to verify).
+    const canaryPackageRaw = args.canaryPackage ?? manifest.canary?.package;
+    let canaryPackageForRegistry;
+    if (canaryPackageRaw !== undefined) {
+        try {
+            canaryPackageForRegistry = packageName(canaryPackageRaw);
+        }
+        catch {
+            // Deferred to the validation below, which runs only if the plan
+            // turns out to have work to verify.
+        }
+    }
     // A production Octokit client is needed for any of: the registry
     // adapters, the mutator, or the breaker — built once, lazily, only if at
     // least one of those was not already supplied by `deps` (tests supply
@@ -15342,7 +15438,7 @@ async function runApplyCommand(args, deps) {
         // token/octokit are guaranteed defined here: needsOctokit is true
         // whenever this branch is reached (deps.registry or deps.packages
         // missing implies needsOctokit).
-        const adapters = buildRegistryAdapters(token, manifest.owner, registryOwner, entries, octokit, jobs);
+        const adapters = buildRegistryAdapters(token, manifest.owner, registryOwner, entries, octokit, jobs, canaryPackageForRegistry);
         registry = adapters.registry;
         packagesClient = adapters.packages;
     }
@@ -15382,7 +15478,8 @@ async function runApplyCommand(args, deps) {
         // any) is used. The manifest is the source that survives every
         // trigger — see `manifest/schema.ts`'s `ManifestCanary` doc for why a
         // `schedule`-triggered run can never rely on a CLI-flag-only canary.
-        const canaryPackageRaw = args.canaryPackage ?? manifest.canary?.package;
+        // `canaryPackageRaw` was already resolved above (before the registry
+        // adapters were built); only `canaryTagRaw` is new here.
         const canaryTagRaw = args.canaryTag ?? manifest.canary?.tag;
         if (!canaryPackageRaw || !canaryTagRaw) {
             throw new UsageError("this plan has deletions to attempt but no canary is configured — add `canary: " +
@@ -15390,12 +15487,19 @@ async function runApplyCommand(args, deps) {
                 "<tag> (a known-good tag resolved before any deletion). Verification is not " +
                 "optional on the apply path.");
         }
+        // Reuse the package already parsed above when it succeeded; only
+        // re-parse (to surface the proper error) if it did not.
         let canaryPkg;
-        try {
-            canaryPkg = packageName(canaryPackageRaw);
+        if (canaryPackageForRegistry !== undefined) {
+            canaryPkg = canaryPackageForRegistry;
         }
-        catch (error) {
-            throw new UsageError(`canary package "${canaryPackageRaw}": ${errorMessage(error)}`);
+        else {
+            try {
+                canaryPkg = packageName(canaryPackageRaw);
+            }
+            catch (error) {
+                throw new UsageError(`canary package "${canaryPackageRaw}": ${errorMessage(error)}`);
+            }
         }
         let canaryTagValue;
         try {
@@ -15551,8 +15655,9 @@ if (isDirectRun) {
 }
 /* c8 ignore stop */
 
+var __webpack_exports__buildPackageTokenMap = __webpack_exports__.QH;
 var __webpack_exports__parseArgv = __webpack_exports__.SB;
 var __webpack_exports__resolveArgv = __webpack_exports__.rf;
 var __webpack_exports__runCommand = __webpack_exports__.d1;
 var __webpack_exports__tokenizeArgs = __webpack_exports__.vL;
-export { __webpack_exports__parseArgv as parseArgv, __webpack_exports__resolveArgv as resolveArgv, __webpack_exports__runCommand as runCommand, __webpack_exports__tokenizeArgs as tokenizeArgs };
+export { __webpack_exports__buildPackageTokenMap as buildPackageTokenMap, __webpack_exports__parseArgv as parseArgv, __webpack_exports__resolveArgv as resolveArgv, __webpack_exports__runCommand as runCommand, __webpack_exports__tokenizeArgs as tokenizeArgs };

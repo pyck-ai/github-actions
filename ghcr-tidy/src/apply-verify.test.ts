@@ -309,9 +309,75 @@ describe("applyPlan — post-apply verification: pre-flight canary", () => {
     const result = await applyPlan(plan, mutator, { budget: 100, verification });
 
     expect(attemptedVersionIds).toEqual([]);
-    expect(result.abortedFor).toEqual({ kind: "canary-failed" });
+    expect(result.abortedFor).toEqual({
+      kind: "canary-failed",
+      path: canaryPath,
+      tag: canaryTag,
+      reason: { kind: "resolve-failed", state: "not-found" },
+    });
     expect(result.packages).toEqual([]);
     expect(incidents).toEqual([]); // canary failure is not a regression incident
     expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
+  });
+
+  it("still attempts zero deletions and leaves the budget untouched when the canary is broken", async () => {
+    const fake = new FakeGhcr();
+    fake.setManifest(digest("sha256:garbage"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+
+    const { mutator } = fake.mutator();
+    const { sink } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(result.attempted).toBe(0);
+    expect(result.remainingBudget).toBe(100);
+  });
+
+  it("aborts with the thrown error's message when resolving the canary itself throws", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake.setManifest(digest("sha256:garbage"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+
+    const inner = fake.registryReader();
+    const throwingRegistry: RegistryReader = {
+      listTags: (p) => inner.listTags(p),
+      resolve: () => Promise.reject(new Error("simulated network failure")),
+    };
+
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { sink } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: throwingRegistry,
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(attemptedVersionIds).toEqual([]);
+    expect(result.abortedFor).toEqual({
+      kind: "canary-failed",
+      path: canaryPath,
+      tag: canaryTag,
+      reason: { kind: "error", message: "simulated network failure" },
+    });
   });
 });

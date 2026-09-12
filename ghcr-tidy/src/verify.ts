@@ -139,23 +139,63 @@ export async function snapshotPackage(
 }
 
 /**
+ * Why {@link checkCanary} failed, carrying enough to explain the failure
+ * to an operator — see this module's `checkCanary` doc and the incident
+ * that motivated it: an unexplained "canary-failed" with no cause cost
+ * real debugging time after a run had just planned thousands of
+ * deletions successfully.
+ *
+ * `"resolve-failed"`/`"closure-failed"` report the {@link ResolveState}
+ * the canary's own snapshot came back with (`"not-found"` or
+ * `"unknown"` — never `"resolved"`, since that would not be a failure).
+ * `"error"` is a thrown exception from resolving the canary at all (a
+ * network error, an auth failure, anything `snapshotTag` did not itself
+ * translate into a `ResolveState`), which the old boolean-returning
+ * `checkCanary` swallowed silently.
+ */
+export type CanaryFailureReason =
+  | { readonly kind: "resolve-failed"; readonly state: ResolveState }
+  | { readonly kind: "closure-failed"; readonly state: ResolveState }
+  | { readonly kind: "error"; readonly message: string };
+
+export type CanaryCheckResult =
+  { readonly ok: true } | { readonly ok: false; readonly reason: CanaryFailureReason };
+
+/**
  * The pre-flight canary: resolves one known-good tag end to end (tag +
  * full closure) BEFORE the first deletion of the whole run. If this
  * fails, the read path is broken today, independent of anything this run
  * is about to delete — the run must not mistake a bad registry day for
  * damage it caused.
+ *
+ * Returns a {@link CanaryCheckResult} rather than a bare boolean so a
+ * failure always carries its cause (see {@link CanaryFailureReason}) —
+ * fail-closed behaviour is unchanged, only the diagnosis improves.
  */
 export async function checkCanary(
   path: RegistryPath,
   canaryTag: Tag,
   registry: RegistryReader,
-): Promise<boolean> {
+): Promise<CanaryCheckResult> {
+  let snapshot: TagSnapshot;
   try {
-    const snapshot = await snapshotTag(path, canaryTag, registry, new Map());
-    return snapshot.resolve === "resolved" && snapshot.closure === "resolved";
-  } catch {
-    return false;
+    snapshot = await snapshotTag(path, canaryTag, registry, new Map());
+  } catch (error) {
+    return {
+      ok: false,
+      reason: {
+        kind: "error",
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
   }
+  if (snapshot.resolve !== "resolved") {
+    return { ok: false, reason: { kind: "resolve-failed", state: snapshot.resolve } };
+  }
+  if (snapshot.closure !== "resolved") {
+    return { ok: false, reason: { kind: "closure-failed", state: snapshot.closure } };
+  }
+  return { ok: true };
 }
 
 function isHealthy(s: TagSnapshot): boolean {

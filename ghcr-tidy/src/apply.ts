@@ -19,6 +19,7 @@ import {
   checkCanary,
   compareSnapshots,
   snapshotPackage,
+  type CanaryFailureReason,
   type RegressedTag,
   type RegressionSink,
   type TagSnapshot,
@@ -110,7 +111,9 @@ export interface PackageApplyResult {
  * `"breaker-tripped"` and `"volume-alarm"` mean nothing was attempted at
  * all — checked before anything else, including the canary.
  * `"canary-failed"` (when verification is enabled) also means nothing
- * was deleted at all. `"regression"` means every package up to and
+ * was deleted at all — it carries the canary's own path/tag and a
+ * {@link CanaryFailureReason} explaining WHY the canary failed, rather
+ * than only that it did. `"regression"` means every package up to and
  * including `packageName` was fully processed (its deletions already
  * happened) and `packageName`'s own deletions are exactly
  * `regression.tags[*]`'s `precedingDeletions` — every package AFTER it
@@ -119,7 +122,12 @@ export interface PackageApplyResult {
 export type ApplyAbortReason =
   | { readonly kind: "breaker-tripped"; readonly state: TrippedState }
   | { readonly kind: "volume-alarm"; readonly decision: VolumeAlarmDecision }
-  | { readonly kind: "canary-failed" }
+  | {
+      readonly kind: "canary-failed";
+      readonly path: RegistryPath;
+      readonly tag: Tag;
+      readonly reason: CanaryFailureReason;
+    }
   | {
       readonly kind: "regression";
       readonly packageName: PackageName;
@@ -326,17 +334,22 @@ export async function applyPlan(
 
   const verification = options.verification;
   if (verification) {
-    const canaryOk = await checkCanary(
+    const canaryResult = await checkCanary(
       verification.canary.path,
       verification.canary.tag,
       verification.registry,
     );
-    if (!canaryOk) {
+    if (!canaryResult.ok) {
       return {
         packages: [],
         attempted: 0,
         remainingBudget: options.budget,
-        abortedFor: { kind: "canary-failed" },
+        abortedFor: {
+          kind: "canary-failed",
+          path: verification.canary.path,
+          tag: verification.canary.tag,
+          reason: canaryResult.reason,
+        },
       };
     }
   }

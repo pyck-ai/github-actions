@@ -72,32 +72,50 @@ describe("snapshotPackage", () => {
 });
 
 describe("checkCanary", () => {
-  it("is true for a tag that resolves end to end", async () => {
+  it("is ok for a tag that resolves end to end", async () => {
     const fake = new FakeGhcr();
     fake
       .setTag(tag("canary"), digest("sha256:root"))
       .setManifest(digest("sha256:root"), { children: [{ digest: "sha256:child" }] })
       .setManifest(digest("sha256:child"), {});
 
-    expect(await checkCanary(path, tag("canary"), fake.registryReader())).toBe(true);
+    expect(await checkCanary(path, tag("canary"), fake.registryReader())).toEqual({ ok: true });
   });
 
-  it("is false when the tag itself 404s", async () => {
+  it("fails with a resolve-failed reason naming the ResolveState when the tag itself 404s", async () => {
     const fake = new FakeGhcr();
     fake.setTag(tag("canary"), digest("sha256:gone"));
     fake.setManifest(digest("sha256:gone"), { notFound: true });
 
-    expect(await checkCanary(path, tag("canary"), fake.registryReader())).toBe(false);
+    expect(await checkCanary(path, tag("canary"), fake.registryReader())).toEqual({
+      ok: false,
+      reason: { kind: "resolve-failed", state: "not-found" },
+    });
   });
 
-  it("is false when a descendant of the tag 404s", async () => {
+  it("fails with a closure-failed reason when a descendant of the tag 404s", async () => {
     const fake = new FakeGhcr();
     fake
       .setTag(tag("canary"), digest("sha256:root"))
       .setManifest(digest("sha256:root"), { children: [{ digest: "sha256:child" }] })
       .setManifest(digest("sha256:child"), { notFound: true });
 
-    expect(await checkCanary(path, tag("canary"), fake.registryReader())).toBe(false);
+    expect(await checkCanary(path, tag("canary"), fake.registryReader())).toEqual({
+      ok: false,
+      reason: { kind: "closure-failed", state: "not-found" },
+    });
+  });
+
+  it("fails with an error reason, including the message, when resolving the canary throws", async () => {
+    const throwingRegistry = {
+      listTags: () => Promise.reject(new Error("simulated network failure")),
+      resolve: () => Promise.reject(new Error("simulated network failure")),
+    };
+
+    expect(await checkCanary(path, tag("canary"), throwingRegistry)).toEqual({
+      ok: false,
+      reason: { kind: "error", message: "simulated network failure" },
+    });
   });
 });
 
