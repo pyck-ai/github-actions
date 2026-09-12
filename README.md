@@ -30,9 +30,20 @@ attempted, budget partially spent) is worse than none.
 
 ## Tools
 
-- **`imgverify`** — manifest-driven image verification. A repo declares its
-  checks in `.imgverify.yaml`; the tool resolves bake targets, pulls or inspects
-  each image, and runs them. Twelve check kinds, no shell escape hatch.
+- **`verify-image`** — a plain-bash composite action, not a CLI. Given a
+  leg's `targets` (newline-separated bake target names), a `contexts` JSON
+  map of `target -> {context, repo}`, and the leg's own digest file
+  (`target -> digest`), it runs EVERY target's own `verify.sh` (POSIX `sh`,
+  shipped alongside the target's Dockerfile, looked up under its bake
+  context dir) INSIDE the exact image just pushed for it via
+  `docker run --env-file buildargs.conf -e TARGET=<target> -v .../verify.sh:/verify.sh:ro --entrypoint /bin/sh <ref> /verify.sh`,
+  continuing past a failure so one push reports every broken target rather
+  than one failure per cycle, and fails the step if any target failed. A
+  target with no `verify.sh` is a hard failure, not a skip — the property
+  that guarantees an unverified image never ships green. Shell-less targets
+  (`FROM scratch`) are detected by probing for `/bin/sh` and, on failure,
+  verified against a throwaway image built as `FROM <ref>` +
+  `COPY --from=busybox:musl /bin /bin`, removed afterwards.
 - **`ghcr-tidy`** — GHCR retention, driven by a `.ghcr-tidy.yaml` config
   manifest (closed schema: an unknown key is a hard error, because in a
   deletion tool a silently ignored config key produces a green run that did
@@ -73,25 +84,14 @@ attempted, budget partially spent) is worse than none.
 
 - **`ghcr-audit`** — registry integrity checks. Not yet implemented.
 
-```sh
-imgverify [run]      # verify; --digests <file> checks the exact pushed artifact
-imgverify validate   # manifest + substitution only, no docker
-imgverify buildargs  # parse buildargs.conf, emit env/bake/github-env
-imgverify --help
-```
-
-Exit codes: `0` pass · `1` a check failed · `2` config error · `3` infrastructure
-error. Config and infrastructure errors are deliberately distinct from check
-failures, so a broken environment is never reported as a broken image.
-
 ## Layout
 
 ```
 .github/workflows/   this repo's CI, plus the reusable workflows it publishes
-.github/actions/     actions, each with its own bundle
-src/core/            shared: registry API client, reporting
+.github/actions/     actions: verify-image (plain bash, no bundle),
+                      ghcr-tidy (bundled)
+src/core/            shared: registry API client
 src/ghcr-tidy/       that tool's internals
-src/imgverify/       that tool's internals
 ```
 
 GitHub requires reusable workflows to sit directly in `.github/workflows/` and
@@ -102,7 +102,7 @@ it ships to consumers share one flat directory.
 
 ```sh
 npm install && npm test
-npm run bundle   # ncc -> .github/actions/{verify-image,ghcr-tidy}/dist/ (committed)
+npm run bundle   # ncc -> .github/actions/ghcr-tidy/dist/ (committed)
 ```
 
 **After changing anything under `src/`, run `npm run bundle` and commit the

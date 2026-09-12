@@ -24,7 +24,7 @@ permissions: {}
 
 # Deliberately ubuntu-latest, not self-hosted. The self-hosted ARC pool runs
 # an image built by pyck-ai/github-runner, which itself consumes this repo's
-# tooling (imgverify/ghcr-tidy/ghcr-audit). If publishing a fix to that
+# tooling (ghcr-tidy/ghcr-audit). If publishing a fix to that
 # tooling could only run on that pool, a bad release could wedge the org
 # with no way to publish the fix that unwedges it. This workflow is the
 # break-glass path and must not depend on the thing it may need to repair.

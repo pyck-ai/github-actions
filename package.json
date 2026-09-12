@@ -1,7 +1,7 @@
 {
   "name": "@pyck-ai/github-actions",
   "version": "0.1.0",
-  "description": "Shared TypeScript registry core and CLI tools (imgverify, ghcr-tidy, ghcr-audit) for pyck-ai GHCR maintenance.",
+  "description": "Shared TypeScript registry core and CLI tools (ghcr-tidy, ghcr-audit) for pyck-ai GHCR maintenance.",
   "type": "module",
   "engines": {
     "node": ">=22"
