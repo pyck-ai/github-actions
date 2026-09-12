@@ -2,11 +2,12 @@ name: build-image
 
 # Reusable single-image build/verify/publish workflow.
 #
-# Shape (must not be weakened): discover -> build (push BY DIGEST, no tags)
-# -> verify (pulls that digest) -> publish (applies tags) -> gate. The
-# property being protected: a bad image never gets the chance to be
-# reachable by a floating tag. Do not add a mode/input that allows tagging
-# before verify completes.
+# Shape (must not be weakened): discover -> build+verify (matrix; each leg
+# pushes BY DIGEST, no tags, then verifies the exact digest(s) it just
+# pushed) -> publish (applies tags) -> gate. The property being protected: a
+# bad image never gets the chance to be reachable by a floating tag. Do not
+# add a mode/input that allows tagging before every leg's verify step
+# completes.
 #
 # Triggers stay in the caller (schedule / workflow_dispatch / pull_request) —
 # a shared workflow must not own the cron, since the offset encodes a real
@@ -54,14 +55,14 @@ on:
         default: ""
       verify-command:
         description: >-
-          Shell command run in the verify job INSTEAD of the built-in
-          `$/.github/actions/verify-image` (imgverify) action. Empty
-          (the default) means "use the built-in imgverify action" — the
-          normal path for a consumer with an `.imgverify.yaml` manifest. A
-          non-empty value is an escape hatch for a consumer that has not
-          migrated to imgverify yet: the job appends `--digests
-          digests.json`, so this must name a command that accepts that flag
-          directly.
+          Shell command run in the `build` job's verify step, per matrix leg,
+          INSTEAD of the built-in `$/.github/actions/verify-image` (imgverify)
+          action. Empty (the default) means "use the built-in imgverify
+          action" — the normal path for a consumer with an `.imgverify.yaml`
+          manifest. A non-empty value is an escape hatch for a consumer that
+          has not migrated to imgverify yet: the step appends `--digests
+          <path to this leg's digest file>`, so this must name a command that
+          accepts that flag directly.
         type: string
         required: false
         # NOT `task verify`. go-task treats a trailing `--digests x` as its
@@ -88,7 +89,8 @@ on:
         default: self-hosted
       timeout-minutes:
         description: >-
-          Per-job timeout in minutes, applied to build/verify/publish.
+          Per-job timeout in minutes, applied to build (which now includes
+          per-leg verify) and publish.
         type: number
         required: false
         default: 60
@@ -187,9 +189,9 @@ jobs:
             fi
             # Push every build by digest only, on every trigger — never a floating
             # or version tag directly. Tags are applied afterwards by the `publish`
-            # job, once `verify` has confirmed the pushed digest is good, so a bad
-            # image never gets the chance to be reachable by `latest`. The repo to
-            # push to is derived from each target's first tag (e.g. .../foo:latest).
+            # job, once every leg of `build` has verified its own pushed digest, so
+            # a bad image never gets the chance to be reachable by `latest`. The
+            # repo to push to is derived from each target's first tag (e.g. .../foo:latest).
             # Guard against targets with no tags (e.g. a future internal-only
             # target) so `.value.tags[0]` doesn't explode.
             jq -rn --argjson p "$print" '
@@ -302,15 +304,17 @@ jobs:
           # pyck-ai/baseimages' build-images.yml which hit this for real.
           BUILDX_METADATA_PROVENANCE: disabled
 
-      # Recorded so `verify` can pull this exact digest (not whatever a
-      # floating tag happens to point at) and `publish` can apply tags to it
-      # once verify passes. One JSON file per matrix component (a component
-      # can bake multiple real bake targets; the metadata dict below is
-      # already keyed by each real target's name, so the component name here
-      # is only used to make the artifact filename unique), merged downstream
-      # via an artifact handshake — not job outputs, because matrix outputs
-      # are last-writer-wins and would silently corrupt digest tracking if a
-      # variant is added.
+      # Recorded so this leg's own verify step below can pull this exact
+      # digest (not whatever a floating tag happens to point at), and so
+      # `publish` can apply tags to it once every leg has verified. One JSON
+      # file per matrix component (a component can bake multiple real bake
+      # targets; the metadata dict below is already keyed by each real
+      # target's name, so the component name here is only used to make the
+      # artifact filename unique). Still uploaded as an artifact — not just
+      # used locally — because `publish` runs in a separate job and needs
+      # every leg's digest, merged downstream via an artifact handshake, not
+      # job outputs, because matrix outputs are last-writer-wins and would
+      # silently corrupt digest tracking if a variant is added.
       - name: Export digest
         env:
           METADATA: ${{ steps.bake.outputs.metadata }}
@@ -332,48 +336,38 @@ jobs:
           path: ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
           retention-days: 1
 
-  # Verify the EXACT digest `build` pushed — a real pre-tag gate rather than a
-  # post-publish smoke test. `build` pushed by digest only (no tag moved) and
-  # uploaded that digest as an artifact; this job downloads it, pulls the image
-  # by its recorded digest, and runs the caller's verify-command against it.
-  # Tags are applied afterwards by `publish`, which only runs once this job
-  # succeeds — so a bad image never has a chance to be reachable by a
-  # floating tag.
-  #
-  # Caveat: a multi-arch target's `docker pull` on the recorded digest only
-  # fetches the manifest for the puller's own platform (amd64, since
-  # self-hosted runners here are amd64). So this verifies the amd64 half
-  # only — any arm64 half is published unverified. `--load` cannot load a
-  # multi-arch result at all; pulling the real pushed digest is strictly
-  # better than a fresh single-platform rebuild (it's the actual pushed
-  # artifact) but does not close this platform gap. See the same note in
-  # pyck-ai/baseimages' verify.sh.
-  verify:
-    needs: [build]
-    runs-on: ${{ inputs.runs-on }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    permissions:
-      contents: read # required to checkout the calling repo
-      packages: read # required to pull the pushed digest for verification
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Log in to the Container registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: digest-*
-          path: digests
-          merge-multiple: true
-
-      - name: Merge digests
-        run: jq -s 'add' digests/*.json > digests.json
+      # Verify the EXACT digest(s) this leg just pushed — a real pre-tag gate
+      # rather than a post-publish smoke test — right here in the same job,
+      # instead of a separate job that waits on every leg's digest artifact.
+      # Only this leg's own targets are passed via `--target`, one per real
+      # bake target in `matrix.component.targets` (newline-separated; see the
+      # `discover` job's comment on why that separator is load-bearing).
+      # `publish` (via `needs: [discover, build]`) only runs once every leg of
+      # this matrix has succeeded — so a bad image never has a chance to be
+      # reachable by a floating tag. With `fail-fast: false`, a failing leg
+      # doesn't stop its siblings, but it does fail this `build` job overall,
+      # which is what `publish`'s `needs: build` keys off.
+      #
+      # Caveat: a multi-arch target's `docker pull` on the recorded digest only
+      # fetches the manifest for the puller's own platform (amd64, since
+      # self-hosted runners here are amd64). So this verifies the amd64 half
+      # only — any arm64 half is published unverified. `--load` cannot load a
+      # multi-arch result at all; pulling the real pushed digest is strictly
+      # better than a fresh single-platform rebuild (it's the actual pushed
+      # artifact) but does not close this platform gap. See the same note in
+      # pyck-ai/baseimages' verify.sh.
+      - name: Build target list for verify
+        id: verify-targets
+        env:
+          TARGETS: ${{ matrix.component.targets }}
+        run: |
+          {
+            echo 'args<<EOF'
+            while IFS= read -r t; do
+              [ -n "$t" ] && printf -- '--target\n%s\n' "$t"
+            done <<<"$TARGETS"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
 
       # `$/` is the self-repository reference: it resolves an action stored
       # in THIS repository at the running commit's SHA — the same SHA as
@@ -395,7 +389,8 @@ jobs:
           args: >-
             run
             ${{ inputs.verify-manifest != '' && format('--manifest {0}', inputs.verify-manifest) || '' }}
-            --digests digests.json
+            ${{ steps.verify-targets.outputs.args }}
+            --digests ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
         env:
           REGISTRY: ${{ inputs.registry }}
 
@@ -403,13 +398,13 @@ jobs:
         if: inputs.verify-command != ''
         env:
           REGISTRY: ${{ inputs.registry }}
-        run: ${{ inputs.verify-command }} --digests digests.json
+        run: ${{ inputs.verify-command }} --digests ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
 
-  # Apply the floating/version tags now that `verify` has confirmed the pushed
-  # digest is good. Skipped on PRs: PR builds are pushed by digest only for
-  # inspection and must never move a tag that scheduled/manual runs own.
+  # Apply the floating/version tags now that every leg of `build` has verified
+  # the digest it pushed. Skipped on PRs: PR builds are pushed by digest only
+  # for inspection and must never move a tag that scheduled/manual runs own.
   publish:
-    needs: [discover, verify]
+    needs: [discover, build]
     if: github.event_name != 'pull_request'
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
@@ -482,14 +477,14 @@ jobs:
   # name, runs even when upstream jobs fail (if: always()), and fails unless
   # every one of them succeeded.
   gate:
-    needs: [discover, build, verify, publish]
+    needs: [discover, build, publish]
     if: always()
     runs-on: ${{ inputs.runs-on }}
     permissions: {} # aggregation only; no API calls needed
     steps:
       - name: Verify all jobs succeeded
         run: |
-          results="${{ needs.discover.result }} ${{ needs.build.result }} ${{ needs.verify.result }}"
+          results="${{ needs.discover.result }} ${{ needs.build.result }}"
           for r in $results; do
             [ "$r" = "success" ] || { echo "A job did not succeed: $results"; exit 1; }
           done
