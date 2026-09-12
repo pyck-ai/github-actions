@@ -382,6 +382,40 @@ targets:
     expect(exitCode).toBe(2);
   });
 
+  it("exit 2 — completeness guard fires even when --target filters the run to a different, fully-covered target", async () => {
+    // This manifest's "static" entry only covers "static" — "agent-alpine" (also present
+    // in SAMPLE_BAKE_PRINT) has no coverage at all. Filtering with --target static must
+    // still fail: the completeness check runs against the FULL bake target set, not the
+    // --target-filtered subset (same ordering guarantee as the existing zero-hit guard).
+    await writeFile(
+      path.join(dir, "partial.yaml"),
+      `
+version: 1
+targets:
+  - match: "static"
+    checks:
+      - kind: cmd
+        commands: ["go"]
+`,
+    );
+    const cli = makeFakeCli({ run: async () => ({ output: "", exitCode: 0, timedOut: false }) });
+    const exitCode = await runCommand(
+      [
+        "run",
+        "--manifest",
+        path.join(dir, "partial.yaml"),
+        "--buildargs",
+        path.join(dir, "buildargs.conf"),
+        "--bake-print",
+        path.join(dir, "bake-print.json"),
+        "--target",
+        "static",
+      ],
+      { cli },
+    );
+    expect(exitCode).toBe(2);
+  });
+
   it("exit 3 — bake --print itself fails (infrastructure error)", async () => {
     const bakeExec: BakeExecFn = vi.fn(async () => ({
       stdout: "",

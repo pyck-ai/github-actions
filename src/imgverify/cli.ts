@@ -486,10 +486,7 @@ async function runValidateCommand(args: ParsedArgs): Promise<number> {
   const bakePrintPath = path.resolve(args.bakePrint);
   const content = await readFile(bakePrintPath, "utf8");
   const bakeTargets = parseBakePrint(content);
-  resolveTargets(
-    loaded.manifest,
-    bakeTargets.map((t) => t.name),
-  );
+  resolveTargets(loaded.manifest, bakeTargets);
 
   process.stdout.write(`manifest OK — matched ${String(bakeTargets.length)} bake target(s)\n`);
   return EXIT_OK;
@@ -540,13 +537,12 @@ async function runRunCommand(args: ParsedArgs, deps: CliDeps): Promise<number> {
     throw new BakeError(errorMessage(error));
   }
 
-  // Match validation runs against the FULL set of known bake targets, not
-  // the --target-filtered subset — a typo'd `match` glob must be caught
-  // even on a run that only exercises one target via --target.
-  const resolvedChecks = resolveTargets(
-    loaded.manifest,
-    bakeTargets.map((t) => t.name),
-  );
+  // Match validation (including the zero-coverage completeness check)
+  // runs against the FULL set of known bake targets, not the
+  // --target-filtered subset — a typo'd `match` glob, or a target with no
+  // coverage at all, must be caught even on a run that only exercises one
+  // target via --target.
+  const resolvedChecks = resolveTargets(loaded.manifest, bakeTargets);
 
   let selectedTargets = bakeTargets;
   if (args.targets.length > 0) {

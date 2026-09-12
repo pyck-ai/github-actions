@@ -9899,17 +9899,29 @@ function globMatch(pattern, targetName) {
     return globToRegExp(pattern).test(targetName);
 }
 /**
- * Resolves, for every name in `targetNames`, the ordered list of checks
+ * Resolves, for every target in `targets`, the ordered list of checks
  * that apply to it: `defaults.checks` first, then the `checks` of every
  * `targets[]` entry whose `match` glob hits that name, appended in the
  * file's declared order (so a target hit by two patterns gets both
  * patterns' checks concatenated, oracle-comparable and deterministic).
  *
- * Throws {@link ManifestError} if any `match` pattern in the manifest
- * matches zero of `targetNames` — a misspelled or stale pattern must fail
- * loud here, not silently resolve to "no checks for this target".
+ * Throws {@link ManifestError} in two symmetric cases:
+ * - any `match` pattern in the manifest matches zero of `targets` — a
+ *   misspelled or stale pattern must fail loud here, not silently
+ *   resolve to "no checks for this target"; and
+ * - any TAGGED target ends up with zero resolved checks (no `match`
+ *   covers it and there is no `defaults.checks`) — otherwise the check
+ *   loop in `cli.ts` runs zero times, "0 checks passed" is reported, and
+ *   the run exits 0 having verified nothing. Tagless targets (bake
+ *   stages with no tags, e.g. a shared internal-only build stage) are
+ *   exempt: they are filtered out of the CI matrix before verification
+ *   ever runs (`build-image.yml`'s `discover` job) and `targets/resolve.ts`
+ *   already refuses to resolve them to an image ref regardless of
+ *   manifest coverage, so requiring a manifest entry for one would be
+ *   pure busywork for an image that can never silently pass with 0 checks.
  */
-function resolveTargets(manifest, targetNames) {
+function resolveTargets(manifest, targets) {
+    const targetNames = targets.map((t) => t.name);
     const result = new Map();
     for (const name of targetNames) {
         result.set(name, [...(manifest.defaults?.checks ?? [])]);
@@ -9923,6 +9935,14 @@ function resolveTargets(manifest, targetNames) {
             result.get(name)?.push(...entry.checks);
         }
     });
+    const uncovered = targets
+        .filter((t) => t.tags.length > 0 && (result.get(t.name)?.length ?? 0) === 0)
+        .map((t) => t.name);
+    if (uncovered.length > 0) {
+        throw new ManifestError(`no manifest coverage for bake target(s): ${uncovered.join(", ")} — add a "targets[]" ` +
+            `entry whose "match" glob covers ${uncovered.length === 1 ? "it" : "them"} ` +
+            `(or a "defaults.checks" block that applies to every target)`, "<root>");
+    }
     return result;
 }
 
@@ -10741,7 +10761,7 @@ async function runValidateCommand(args) {
     const bakePrintPath = external_node_path_default().resolve(args.bakePrint);
     const content = await (0,promises_namespaceObject.readFile)(bakePrintPath, "utf8");
     const bakeTargets = parseBakePrint(content);
-    resolveTargets(loaded.manifest, bakeTargets.map((t) => t.name));
+    resolveTargets(loaded.manifest, bakeTargets);
     process.stdout.write(`manifest OK — matched ${String(bakeTargets.length)} bake target(s)\n`);
     return EXIT_OK;
 }
@@ -10770,10 +10790,12 @@ async function runRunCommand(args, deps) {
         }
         throw new BakeError(errorMessage(error));
     }
-    // Match validation runs against the FULL set of known bake targets, not
-    // the --target-filtered subset — a typo'd `match` glob must be caught
-    // even on a run that only exercises one target via --target.
-    const resolvedChecks = resolveTargets(loaded.manifest, bakeTargets.map((t) => t.name));
+    // Match validation (including the zero-coverage completeness check)
+    // runs against the FULL set of known bake targets, not the
+    // --target-filtered subset — a typo'd `match` glob, or a target with no
+    // coverage at all, must be caught even on a run that only exercises one
+    // target via --target.
+    const resolvedChecks = resolveTargets(loaded.manifest, bakeTargets);
     let selectedTargets = bakeTargets;
     if (args.targets.length > 0) {
         const globs = args.targets;

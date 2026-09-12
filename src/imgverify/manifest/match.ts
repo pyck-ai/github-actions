@@ -31,20 +31,44 @@ export function globMatch(pattern: string, targetName: string): boolean {
 }
 
 /**
- * Resolves, for every name in `targetNames`, the ordered list of checks
+ * The minimal shape `resolveTargets` needs from a real `BakeTarget`
+ * (`targets/bake.ts`) — kept local rather than importing that type so
+ * this module stays decoupled from the bake-file layer (see the module
+ * doc comment above), while still letting the completeness check below
+ * distinguish tagged from tagless targets.
+ */
+export interface ResolvableTarget {
+  readonly name: string;
+  readonly tags: readonly string[];
+}
+
+/**
+ * Resolves, for every target in `targets`, the ordered list of checks
  * that apply to it: `defaults.checks` first, then the `checks` of every
  * `targets[]` entry whose `match` glob hits that name, appended in the
  * file's declared order (so a target hit by two patterns gets both
  * patterns' checks concatenated, oracle-comparable and deterministic).
  *
- * Throws {@link ManifestError} if any `match` pattern in the manifest
- * matches zero of `targetNames` — a misspelled or stale pattern must fail
- * loud here, not silently resolve to "no checks for this target".
+ * Throws {@link ManifestError} in two symmetric cases:
+ * - any `match` pattern in the manifest matches zero of `targets` — a
+ *   misspelled or stale pattern must fail loud here, not silently
+ *   resolve to "no checks for this target"; and
+ * - any TAGGED target ends up with zero resolved checks (no `match`
+ *   covers it and there is no `defaults.checks`) — otherwise the check
+ *   loop in `cli.ts` runs zero times, "0 checks passed" is reported, and
+ *   the run exits 0 having verified nothing. Tagless targets (bake
+ *   stages with no tags, e.g. a shared internal-only build stage) are
+ *   exempt: they are filtered out of the CI matrix before verification
+ *   ever runs (`build-image.yml`'s `discover` job) and `targets/resolve.ts`
+ *   already refuses to resolve them to an image ref regardless of
+ *   manifest coverage, so requiring a manifest entry for one would be
+ *   pure busywork for an image that can never silently pass with 0 checks.
  */
 export function resolveTargets(
   manifest: Manifest,
-  targetNames: readonly string[],
+  targets: readonly ResolvableTarget[],
 ): ReadonlyMap<string, Check[]> {
+  const targetNames = targets.map((t) => t.name);
   const result = new Map<string, Check[]>();
   for (const name of targetNames) {
     result.set(name, [...(manifest.defaults?.checks ?? [])]);
@@ -62,6 +86,18 @@ export function resolveTargets(
       result.get(name)?.push(...entry.checks);
     }
   });
+
+  const uncovered = targets
+    .filter((t) => t.tags.length > 0 && (result.get(t.name)?.length ?? 0) === 0)
+    .map((t) => t.name);
+  if (uncovered.length > 0) {
+    throw new ManifestError(
+      `no manifest coverage for bake target(s): ${uncovered.join(", ")} — add a "targets[]" ` +
+        `entry whose "match" glob covers ${uncovered.length === 1 ? "it" : "them"} ` +
+        `(or a "defaults.checks" block that applies to every target)`,
+      "<root>",
+    );
+  }
 
   return result;
 }

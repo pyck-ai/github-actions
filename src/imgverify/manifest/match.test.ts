@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { globMatch, resolveTargets } from "./match.js";
+import { globMatch, resolveTargets, type ResolvableTarget } from "./match.js";
 import { parseManifest } from "./parse.js";
 import { ManifestError } from "./schema.js";
+
+/** Builds tagged `ResolvableTarget`s from plain names — the common case in these tests. */
+function tagged(...names: string[]): ResolvableTarget[] {
+  return names.map((name) => ({ name, tags: [`ghcr.io/x/${name}:latest`] }));
+}
 
 describe("globMatch", () => {
   it("matches an exact literal", () => {
@@ -61,14 +66,20 @@ targets:
 
 describe("resolveTargets", () => {
   it("gives every target defaults.checks first", () => {
-    const resolved = resolveTargets(MANIFEST, ["golang-alpine", "golang-debian", "python-alpine"]);
+    const resolved = resolveTargets(
+      MANIFEST,
+      tagged("golang-alpine", "golang-debian", "python-alpine"),
+    );
     for (const checks of resolved.values()) {
       expect(checks[0]).toMatchObject({ kind: "workdir", value: "/root" });
     }
   });
 
   it("appends checks from every matching target entry, in file order", () => {
-    const resolved = resolveTargets(MANIFEST, ["golang-alpine", "golang-debian", "python-alpine"]);
+    const resolved = resolveTargets(
+      MANIFEST,
+      tagged("golang-alpine", "golang-debian", "python-alpine"),
+    );
     // golang-alpine is matched by BOTH "golang-*" and "golang-alpine", in that order.
     expect(resolved.get("golang-alpine")).toEqual([
       { kind: "workdir", value: "/root" },
@@ -78,7 +89,10 @@ describe("resolveTargets", () => {
   });
 
   it("a target matched by only one pattern gets only that pattern's checks", () => {
-    const resolved = resolveTargets(MANIFEST, ["golang-alpine", "golang-debian", "python-alpine"]);
+    const resolved = resolveTargets(
+      MANIFEST,
+      tagged("golang-alpine", "golang-debian", "python-alpine"),
+    );
     expect(resolved.get("golang-debian")).toEqual([
       { kind: "workdir", value: "/root" },
       { kind: "cmd", commands: ["go version"] },
@@ -90,18 +104,18 @@ describe("resolveTargets", () => {
   });
 
   it("resolution is deterministic across repeated calls", () => {
-    const first = resolveTargets(MANIFEST, ["golang-alpine", "python-alpine"]);
-    const second = resolveTargets(MANIFEST, ["golang-alpine", "python-alpine"]);
+    const first = resolveTargets(MANIFEST, tagged("golang-alpine", "python-alpine"));
+    const second = resolveTargets(MANIFEST, tagged("golang-alpine", "python-alpine"));
     expect(first.get("golang-alpine")).toEqual(second.get("golang-alpine"));
   });
 
   it("throws ManifestError when a match pattern hits zero targets", () => {
-    expect(() => resolveTargets(MANIFEST, ["nginx", "static"])).toThrow(ManifestError);
+    expect(() => resolveTargets(MANIFEST, tagged("nginx", "static"))).toThrow(ManifestError);
   });
 
   it("the zero-hit error names the offending pattern", () => {
     try {
-      resolveTargets(MANIFEST, ["nginx", "static"]);
+      resolveTargets(MANIFEST, tagged("nginx", "static"));
       expect.fail("expected resolveTargets to throw");
     } catch (error) {
       expect(error).toBeInstanceOf(ManifestError);
@@ -125,7 +139,106 @@ targets:
 `,
       "imgverify.yml",
     );
-    const resolved = resolveTargets(noMatchManifest, ["golang-alpine", "static"]);
+    const resolved = resolveTargets(noMatchManifest, tagged("golang-alpine", "static"));
     expect(resolved.get("static")).toEqual([{ kind: "workdir", value: "/root" }]);
+  });
+});
+
+describe("resolveTargets — completeness (zero-coverage) guard", () => {
+  const NO_DEFAULTS_MANIFEST = parseManifest(
+    `
+version: 1
+targets:
+  - match: "golang-*"
+    checks:
+      - kind: cmd
+        commands: ["go version"]
+`,
+    "imgverify.yml",
+  );
+
+  it("throws when a tagged target is matched by no entry and there is no defaults block", () => {
+    expect(() => resolveTargets(NO_DEFAULTS_MANIFEST, tagged("golang-alpine", "nginx"))).toThrow(
+      ManifestError,
+    );
+  });
+
+  it("the completeness error names the uncovered target", () => {
+    try {
+      resolveTargets(NO_DEFAULTS_MANIFEST, tagged("golang-alpine", "nginx"));
+      expect.fail("expected resolveTargets to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ManifestError);
+      expect((error as ManifestError).message).toContain("nginx");
+    }
+  });
+
+  it("a single error names ALL uncovered targets, not just the first", () => {
+    try {
+      resolveTargets(NO_DEFAULTS_MANIFEST, tagged("golang-alpine", "nginx", "static"));
+      expect.fail("expected resolveTargets to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ManifestError);
+      expect((error as ManifestError).message).toContain("nginx");
+      expect((error as ManifestError).message).toContain("static");
+    }
+  });
+
+  it("a target covered only by defaults.checks passes (no error)", () => {
+    const withDefaults = parseManifest(
+      `
+version: 1
+defaults:
+  checks:
+    - kind: workdir
+      value: /root
+targets:
+  - match: "golang-*"
+    checks:
+      - kind: cmd
+        commands: ["go version"]
+`,
+      "imgverify.yml",
+    );
+    expect(() => resolveTargets(withDefaults, tagged("golang-alpine", "nginx"))).not.toThrow();
+    const resolved = resolveTargets(withDefaults, tagged("golang-alpine", "nginx"));
+    expect(resolved.get("nginx")).toEqual([{ kind: "workdir", value: "/root" }]);
+  });
+
+  it("a target covered by a glob entry passes (existing behaviour still holds)", () => {
+    expect(() =>
+      resolveTargets(NO_DEFAULTS_MANIFEST, tagged("golang-alpine", "golang-debian")),
+    ).not.toThrow();
+  });
+
+  it("a tagless target with no coverage does not trigger the completeness guard", () => {
+    const targets: ResolvableTarget[] = [
+      { name: "golang-alpine", tags: ["ghcr.io/x/golang:latest"] },
+      { name: "internal-stage", tags: [] },
+    ];
+    expect(() => resolveTargets(NO_DEFAULTS_MANIFEST, targets)).not.toThrow();
+  });
+
+  it("the existing zero-hit glob guard still fires even when completeness would otherwise pass", () => {
+    // "nginx" has defaults.checks so it's "covered" in completeness terms, but the
+    // "python-*" pattern still hits nothing among the given targets — must still throw.
+    const withDefaults = parseManifest(
+      `
+version: 1
+defaults:
+  checks:
+    - kind: workdir
+      value: /root
+targets:
+  - match: "python-*"
+    checks:
+      - kind: cmd
+        commands: ["python --version"]
+`,
+      "imgverify.yml",
+    );
+    expect(() => resolveTargets(withDefaults, tagged("golang-alpine", "nginx"))).toThrow(
+      ManifestError,
+    );
   });
 });
