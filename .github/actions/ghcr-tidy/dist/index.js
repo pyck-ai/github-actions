@@ -13308,6 +13308,7 @@ function memoryJournal(clock = systemClock) {
 var dist = __nccwpck_require__(8815);
 ;// CONCATENATED MODULE: ./src/ghcr-tidy/manifest/schema.ts
 
+
 /**
  * `.ghcr-tidy.yaml` config manifest schema (version 1): which packages
  * `ghcr-tidy` manages and, optionally, retention overrides for each.
@@ -13432,6 +13433,34 @@ function validatePackageEntry(raw, location, seenMatches) {
         ...(protectedTags !== undefined && { protectedTags }),
     };
 }
+const CANARY_FIELDS = ["package", "tag"];
+function validateCanary(raw, location) {
+    if (!schema_isPlainObject(raw)) {
+        schema_fail(location, `"canary" must be an object with "package" and "tag"`);
+    }
+    checkUnknownFields(raw, CANARY_FIELDS, location);
+    if (typeof raw.package !== "string" || raw.package.length === 0) {
+        schema_fail(`${location}.package`, `"package" must be a non-empty string`);
+    }
+    let pkg;
+    try {
+        pkg = packageName(raw.package);
+    }
+    catch (error) {
+        schema_fail(`${location}.package`, error instanceof Error ? error.message : String(error));
+    }
+    if (typeof raw.tag !== "string" || raw.tag.length === 0) {
+        schema_fail(`${location}.tag`, `"tag" must be a non-empty string`);
+    }
+    let canaryTag;
+    try {
+        canaryTag = tag(raw.tag);
+    }
+    catch (error) {
+        schema_fail(`${location}.tag`, error instanceof Error ? error.message : String(error));
+    }
+    return { package: pkg, tag: canaryTag };
+}
 const MANIFEST_TOP_LEVEL_FIELDS = [
     "version",
     "owner",
@@ -13440,17 +13469,22 @@ const MANIFEST_TOP_LEVEL_FIELDS = [
     "keepDays",
     "graceDays",
     "protectedTags",
+    "canary",
 ];
 /**
  * Validates a manifest already parsed from YAML into a plain JS value
  * (`unknown`). Pure — no I/O, no network.
  *
- * Rejects: any unrecognised top-level or per-package field; a missing or
- * non-`1` `version`; a missing/empty `owner`; a duplicate `match` across
- * `packages`; a `match` that is not a syntactically valid
- * {@link PackageName}; and a malformed `protectedTags` regex anywhere. Does
- * NOT reject an empty `packages` array — see {@link Manifest.packages}'s
- * doc for why that is a deliberate departure from `imgverify`.
+ * Rejects: any unrecognised top-level or per-package field (including
+ * under `canary`); a missing or non-`1` `version`; a missing/empty
+ * `owner`; a duplicate `match` across `packages`; a `match` (or
+ * `canary.package`) that is not a syntactically valid {@link PackageName};
+ * an empty/missing `canary.tag`; and a malformed `protectedTags` regex
+ * anywhere. Does NOT reject an empty `packages` array — see
+ * {@link Manifest.packages}'s doc for why that is a deliberate departure
+ * from `imgverify`. Does NOT reject a missing `canary` — see
+ * {@link Manifest.canary}'s doc for why that is optional rather than
+ * required.
  */
 function validateManifest(raw) {
     if (!schema_isPlainObject(raw)) {
@@ -13484,6 +13518,10 @@ function validateManifest(raw) {
     if (raw.protectedTags !== undefined) {
         protectedTags = validateProtectedTags(raw.protectedTags, "protectedTags");
     }
+    let canary;
+    if (raw.canary !== undefined) {
+        canary = validateCanary(raw.canary, "canary");
+    }
     return {
         version: 1,
         owner: raw.owner,
@@ -13492,6 +13530,7 @@ function validateManifest(raw) {
         ...(raw.keepDays !== undefined && { keepDays: raw.keepDays }),
         ...(raw.graceDays !== undefined && { graceDays: raw.graceDays }),
         ...(protectedTags !== undefined && { protectedTags }),
+        ...(canary !== undefined && { canary }),
     };
 }
 /**
@@ -15262,21 +15301,36 @@ async function runApplyCommand(args, deps) {
     const hasWork = totalGroupCount(plan) > 0;
     let verification;
     if (hasWork) {
-        if (!args.canaryPackage || !args.canaryTag) {
-            throw new UsageError("this plan has deletions to attempt but no canary is configured — pass " +
-                "--canary-package <name> --canary-tag <tag> (a known-good tag resolved before any " +
-                "deletion). Verification is not optional on the apply path.");
+        // `--canary-package`/`--canary-tag` OVERRIDE `manifest.canary`,
+        // field by field, when present; otherwise the manifest's value (if
+        // any) is used. The manifest is the source that survives every
+        // trigger — see `manifest/schema.ts`'s `ManifestCanary` doc for why a
+        // `schedule`-triggered run can never rely on a CLI-flag-only canary.
+        const canaryPackageRaw = args.canaryPackage ?? manifest.canary?.package;
+        const canaryTagRaw = args.canaryTag ?? manifest.canary?.tag;
+        if (!canaryPackageRaw || !canaryTagRaw) {
+            throw new UsageError("this plan has deletions to attempt but no canary is configured — add `canary: " +
+                "{ package, tag }` to the manifest, or pass --canary-package <name> --canary-tag " +
+                "<tag> (a known-good tag resolved before any deletion). Verification is not " +
+                "optional on the apply path.");
         }
         let canaryPkg;
         try {
-            canaryPkg = packageName(args.canaryPackage);
+            canaryPkg = packageName(canaryPackageRaw);
         }
         catch (error) {
-            throw new UsageError(`--canary-package: ${errorMessage(error)}`);
+            throw new UsageError(`canary package "${canaryPackageRaw}": ${errorMessage(error)}`);
+        }
+        let canaryTagValue;
+        try {
+            canaryTagValue = tag(canaryTagRaw);
+        }
+        catch (error) {
+            throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
         }
         verification = {
             registry,
-            canary: { path: registryPathFor(registryOwner, canaryPkg), tag: tag(args.canaryTag) },
+            canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
             sink: breakerRegressionSink(breaker),
         };
     }

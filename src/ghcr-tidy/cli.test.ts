@@ -572,6 +572,69 @@ describe("apply subcommand", () => {
     expect(attemptedVersionIds).toEqual([]);
   });
 
+  it("uses the manifest's canary when no --canary-package/--canary-tag flags are given", async () => {
+    const manifestPath = await writeManifest(
+      "version: 1\nowner: acme\npackages:\n  - match: widget\ncanary:\n  package: widget\n  tag: canary\n",
+    );
+    const fake = widgetWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { breaker, trips } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(deletedVersionIds).toEqual([2]);
+    expect(trips).toEqual([]);
+  });
+
+  it("--canary-package/--canary-tag OVERRIDE a manifest canary that would otherwise fail", async () => {
+    // The manifest's own canary tag does not resolve to anything (no
+    // matching setTag/setManifest below) — if the manifest canary were
+    // used instead of the CLI override, verification would fail (exit 4).
+    const manifestPath = await writeManifest(
+      "version: 1\nowner: acme\npackages:\n  - match: widget\ncanary:\n  package: widget\n  tag: broken-canary\n",
+    );
+    const fake = widgetWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { breaker, trips } = memoryBreaker();
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(deletedVersionIds).toEqual([2]);
+    expect(trips).toEqual([]);
+  });
+
   it("skips the canary requirement when the plan has no work to do (empty packages)", async () => {
     const manifestPath = await writeManifest("version: 1\nowner: acme\npackages: []\n");
     const fake = new FakeGhcr();

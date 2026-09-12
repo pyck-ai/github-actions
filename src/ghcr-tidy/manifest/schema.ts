@@ -1,4 +1,5 @@
 import { packageName, type PackageName } from "../../core/registry/package-name.js";
+import { tag, type Tag } from "../domain.js";
 
 /**
  * `.ghcr-tidy.yaml` config manifest schema (version 1): which packages
@@ -32,6 +33,26 @@ export const DEFAULT_PROTECTED_TAGS: readonly string[] = ["^latest$", "^alpine$"
 export const CACHE_POLICY_PATTERN = "^.*$";
 
 export type PackagePolicy = "cache";
+
+/**
+ * A known-good `(package, tag)` pair `apply` resolves BEFORE attempting
+ * any deletion, and again immediately after, to prove the registry itself
+ * is reachable and behaving — see `verify.ts`'s canary check and
+ * `apply.ts`'s `VerificationOptions`. This is per-repository
+ * configuration, not a per-invocation flag: it must be present on EVERY
+ * apply run regardless of trigger, including a `schedule`-triggered one,
+ * where `workflow_call` `inputs` are empty and workflow_dispatch input
+ * defaults are never applied (see `tidy-ghcr.yml`'s own doc on this exact
+ * trap). A canary sourced only from CLI flags supplied by a caller
+ * workflow would silently vanish on every scheduled run — the manifest is
+ * the only place that survives every trigger, hence living here rather
+ * than as a required CLI flag.
+ */
+export interface ManifestCanary {
+  /** MUST resolve to a tag that is NEVER itself a candidate for deletion (see this field's validation note) — a canary inside the delete set proves nothing and would be worse than no canary at all. */
+  readonly package: PackageName;
+  readonly tag: Tag;
+}
 
 export interface ManifestPackageEntry {
   /** The full GHCR package name, e.g. `"flutter-rfw"` or `"baseimages/golang"`. Never a prefix to be joined — see this module's doc. */
@@ -76,6 +97,18 @@ export interface Manifest {
   readonly keepDays?: number;
   readonly graceDays?: number;
   readonly protectedTags?: readonly string[];
+  /**
+   * OPTIONAL, deliberately: `validate` and `plan` are both read-only and
+   * work perfectly well with no canary configured at all — only `apply`
+   * WITH deletions to attempt needs one (`cli.ts`'s `hasWork` guard).
+   * Making this required would force every plan-only manifest (including
+   * this repo's own, which manages zero packages) to invent a canary it
+   * will never use. The runtime check in `cli.ts` remains the backstop
+   * for the one case that actually matters: an apply run with real work
+   * and no canary anywhere (manifest or `--canary-package`/`--canary-tag`)
+   * still fails loudly, CONFIG, before anything is deleted.
+   */
+  readonly canary?: ManifestCanary;
 }
 
 /** A manifest failed structural validation. Carries the location (a dotted/bracketed path) where it failed — mirrors `imgverify/manifest/schema.ts`'s `ManifestError`. */
@@ -201,6 +234,37 @@ function validatePackageEntry(
   };
 }
 
+const CANARY_FIELDS = ["package", "tag"];
+
+function validateCanary(raw: unknown, location: string): ManifestCanary {
+  if (!isPlainObject(raw)) {
+    fail(location, `"canary" must be an object with "package" and "tag"`);
+  }
+  checkUnknownFields(raw, CANARY_FIELDS, location);
+
+  if (typeof raw.package !== "string" || raw.package.length === 0) {
+    fail(`${location}.package`, `"package" must be a non-empty string`);
+  }
+  let pkg: PackageName;
+  try {
+    pkg = packageName(raw.package);
+  } catch (error) {
+    fail(`${location}.package`, error instanceof Error ? error.message : String(error));
+  }
+
+  if (typeof raw.tag !== "string" || raw.tag.length === 0) {
+    fail(`${location}.tag`, `"tag" must be a non-empty string`);
+  }
+  let canaryTag: Tag;
+  try {
+    canaryTag = tag(raw.tag);
+  } catch (error) {
+    fail(`${location}.tag`, error instanceof Error ? error.message : String(error));
+  }
+
+  return { package: pkg, tag: canaryTag };
+}
+
 const MANIFEST_TOP_LEVEL_FIELDS = [
   "version",
   "owner",
@@ -209,18 +273,23 @@ const MANIFEST_TOP_LEVEL_FIELDS = [
   "keepDays",
   "graceDays",
   "protectedTags",
+  "canary",
 ];
 
 /**
  * Validates a manifest already parsed from YAML into a plain JS value
  * (`unknown`). Pure — no I/O, no network.
  *
- * Rejects: any unrecognised top-level or per-package field; a missing or
- * non-`1` `version`; a missing/empty `owner`; a duplicate `match` across
- * `packages`; a `match` that is not a syntactically valid
- * {@link PackageName}; and a malformed `protectedTags` regex anywhere. Does
- * NOT reject an empty `packages` array — see {@link Manifest.packages}'s
- * doc for why that is a deliberate departure from `imgverify`.
+ * Rejects: any unrecognised top-level or per-package field (including
+ * under `canary`); a missing or non-`1` `version`; a missing/empty
+ * `owner`; a duplicate `match` across `packages`; a `match` (or
+ * `canary.package`) that is not a syntactically valid {@link PackageName};
+ * an empty/missing `canary.tag`; and a malformed `protectedTags` regex
+ * anywhere. Does NOT reject an empty `packages` array — see
+ * {@link Manifest.packages}'s doc for why that is a deliberate departure
+ * from `imgverify`. Does NOT reject a missing `canary` — see
+ * {@link Manifest.canary}'s doc for why that is optional rather than
+ * required.
  */
 export function validateManifest(raw: unknown): Manifest {
   if (!isPlainObject(raw)) {
@@ -259,6 +328,10 @@ export function validateManifest(raw: unknown): Manifest {
   if (raw.protectedTags !== undefined) {
     protectedTags = validateProtectedTags(raw.protectedTags, "protectedTags");
   }
+  let canary: ManifestCanary | undefined;
+  if (raw.canary !== undefined) {
+    canary = validateCanary(raw.canary, "canary");
+  }
 
   return {
     version: 1,
@@ -268,6 +341,7 @@ export function validateManifest(raw: unknown): Manifest {
     ...(raw.keepDays !== undefined && { keepDays: raw.keepDays as number }),
     ...(raw.graceDays !== undefined && { graceDays: raw.graceDays as number }),
     ...(protectedTags !== undefined && { protectedTags }),
+    ...(canary !== undefined && { canary }),
   };
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { packageName } from "../../core/registry/package-name.js";
+import { tag } from "../domain.js";
 import {
   CACHE_POLICY_PATTERN,
   DEFAULT_GRACE_DAYS,
@@ -74,6 +75,57 @@ describe("validateManifest — acceptance", () => {
       graceDays: 15,
       protectedTags: ["^stable$"],
     });
+  });
+
+  it("accepts a manifest with no canary at all (validate/plan-only usage)", () => {
+    const m = validateManifest(base());
+    expect(m.canary).toBeUndefined();
+  });
+
+  it("accepts a canary with a full package name and tag", () => {
+    const m = validateManifest(base({ canary: { package: "baseimages/base", tag: "alpine" } }));
+    expect(m.canary).toEqual({
+      package: packageName("baseimages/base"),
+      tag: tag("alpine"),
+    });
+  });
+});
+
+describe("validateManifest — canary rejections", () => {
+  it("rejects an unknown field under canary", () => {
+    expect(() => validateManifest(base({ canary: { package: "x", tag: "y", bogus: 1 } }))).toThrow(
+      /unknown field "bogus"/,
+    );
+  });
+
+  it("rejects a canary that is not an object", () => {
+    expect(() => validateManifest(base({ canary: "nope" }))).toThrow(
+      /"canary" must be an object with "package" and "tag"/,
+    );
+  });
+
+  it("rejects a missing or empty canary.package", () => {
+    expect(() => validateManifest(base({ canary: { tag: "y" } }))).toThrow(
+      /canary\.package.*"package" must be a non-empty string/,
+    );
+    expect(() => validateManifest(base({ canary: { package: "", tag: "y" } }))).toThrow(
+      /canary\.package.*"package" must be a non-empty string/,
+    );
+  });
+
+  it("rejects a canary.package that is not a syntactically valid package name", () => {
+    expect(() =>
+      validateManifest(base({ canary: { package: "/leading-slash", tag: "y" } })),
+    ).toThrow(ManifestError);
+  });
+
+  it("rejects a missing or empty canary.tag", () => {
+    expect(() => validateManifest(base({ canary: { package: "x" } }))).toThrow(
+      /canary\.tag.*"tag" must be a non-empty string/,
+    );
+    expect(() => validateManifest(base({ canary: { package: "x", tag: "" } }))).toThrow(
+      /canary\.tag.*"tag" must be a non-empty string/,
+    );
   });
 });
 

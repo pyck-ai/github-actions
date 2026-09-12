@@ -15,7 +15,7 @@ import { applyMutator, type Mutator } from "./mutator.js";
 import { grantApply, nodePlanFileSystem, type PlanFileSystem } from "./apply-capability.js";
 import { githubIssueBreaker, breakerRegressionSink, type Breaker } from "./breaker.js";
 import { ndjsonJournal, type Clock, type Journal } from "./journal.js";
-import { registryPathFor, tag, type RegistryPath } from "./domain.js";
+import { registryPathFor, tag, type RegistryPath, type Tag } from "./domain.js";
 import { parseManifest } from "./manifest/parse.js";
 import {
   resolvePolicy,
@@ -694,22 +694,36 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
   const hasWork = totalGroupCount(plan) > 0;
   let verification: VerificationOptions | undefined;
   if (hasWork) {
-    if (!args.canaryPackage || !args.canaryTag) {
+    // `--canary-package`/`--canary-tag` OVERRIDE `manifest.canary`,
+    // field by field, when present; otherwise the manifest's value (if
+    // any) is used. The manifest is the source that survives every
+    // trigger — see `manifest/schema.ts`'s `ManifestCanary` doc for why a
+    // `schedule`-triggered run can never rely on a CLI-flag-only canary.
+    const canaryPackageRaw: string | undefined = args.canaryPackage ?? manifest.canary?.package;
+    const canaryTagRaw: string | undefined = args.canaryTag ?? manifest.canary?.tag;
+    if (!canaryPackageRaw || !canaryTagRaw) {
       throw new UsageError(
-        "this plan has deletions to attempt but no canary is configured — pass " +
-          "--canary-package <name> --canary-tag <tag> (a known-good tag resolved before any " +
-          "deletion). Verification is not optional on the apply path.",
+        "this plan has deletions to attempt but no canary is configured — add `canary: " +
+          "{ package, tag }` to the manifest, or pass --canary-package <name> --canary-tag " +
+          "<tag> (a known-good tag resolved before any deletion). Verification is not " +
+          "optional on the apply path.",
       );
     }
     let canaryPkg: PackageName;
     try {
-      canaryPkg = packageName(args.canaryPackage);
+      canaryPkg = packageName(canaryPackageRaw);
     } catch (error) {
-      throw new UsageError(`--canary-package: ${errorMessage(error)}`);
+      throw new UsageError(`canary package "${canaryPackageRaw}": ${errorMessage(error)}`);
+    }
+    let canaryTagValue: Tag;
+    try {
+      canaryTagValue = tag(canaryTagRaw);
+    } catch (error) {
+      throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
     }
     verification = {
       registry,
-      canary: { path: registryPathFor(registryOwner, canaryPkg), tag: tag(args.canaryTag) },
+      canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
       sink: breakerRegressionSink(breaker),
     };
   }
