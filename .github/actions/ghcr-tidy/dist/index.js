@@ -13751,12 +13751,26 @@ async function buildLiveRoots(path, registry) {
  * `REACHABLE = least fixed point R with KEEP_ROOTS subset R and, for all
  * d in R, CHILDREN(d) subset R`.
  *
- * Walks each keep-root's subtree with a per-root BFS over a SHARED
- * `reachable` set (so a digest shared by two keep-roots is resolved once),
- * mirroring the bash reference's per-root processing — one broken root
- * does not stop the walk of the others before the fail-closed check below
- * is reached (though the net effect here is the same: any failure fails
- * the whole package closed, per `plan.ts`'s module doc).
+ * Walks EVERY keep-root's subtree CONCURRENTLY — one BFS per root, all
+ * started together via `Promise.all` — over a SHARED `reachable` set (so
+ * a digest shared by two keep-roots is resolved once, whichever root's
+ * walk gets there first). This replaced a per-root `for` loop that walked
+ * one root's whole subtree to completion before starting the next: for a
+ * package with many kept roots but a shallow tree under each (a few
+ * children per multi-arch index), the old loop left most of `--jobs`'
+ * concurrency budget idle, since only one root's handful of in-flight
+ * requests ever competed for it at once. Firing every root's walk at once
+ * does not add a second concurrency budget — see the note on the shared
+ * limiter below — it just gives the one existing budget enough
+ * simultaneous candidate work to actually fill it. (For a package that
+ * keeps only a HANDFUL of roots — e.g. `keepLast: 1` — this walk was
+ * never the dominant cost in the first place; see `deletion-group.ts`'s
+ * `buildDeletionGroups`/`collectGroupMembers`, which walks the far larger
+ * DELETE set and remains sequential root-by-root AND node-by-node, for
+ * where that time actually goes.) One broken root does not stop the walk
+ * of the others before the fail-closed check below is reached (though the
+ * net effect here is the same: any failure fails the whole package
+ * closed, per `plan.ts`'s module doc).
  *
  * `rootChildren` (from {@link buildLiveRoots}) supplies each root's direct
  * children for free — resolving a tag already fetched them — so the first
@@ -13768,35 +13782,52 @@ async function buildLiveRoots(path, registry) {
  * reachable. The distinct root/failedDigest in the result exists purely
  * for diagnostics.
  *
- * Each BFS level (the current `frontier`, de-duplicated) is resolved
- * CONCURRENTLY (`Promise.all`), not one node at a time — this is usually
+ * Each BFS level (the current `frontier`, de-duplicated) is ALSO resolved
+ * concurrently (`Promise.all`), not one node at a time — this is usually
  * where most of a package's fan-out actually lives (a multi-arch index's
  * platform + attestation children, all siblings in one level). Like
  * `roots.ts`'s per-tag resolution, this function imposes no concurrency
- * limit of its own; the `RegistryReader` it is given is expected to
- * already bound real HTTP concurrency (`limiter.ts`, `cli.ts`'s `--jobs`).
- * Levels themselves stay sequential (a node's children are only knowable
- * once the node itself has resolved), and roots are still walked one at a
- * time in `keepRoots`' own order — de-duplication against the shared
- * `reachable` set is exactly as it was before, just checked once per
- * level up front instead of node-by-node as each resolve returns, so
- * concurrent siblings never race each other into resolving the same
- * digest twice.
+ * limit of its own — real HTTP concurrency, across every root's every
+ * level at once, is bounded entirely by the shared `RegistryReader`
+ * (`limiter.ts`, `cli.ts`'s `--jobs`) applied once at the registry-adapter
+ * boundary, so root-level and level-level fan-out here never multiply
+ * together into a second, uncoordinated budget. Levels within one root
+ * stay sequential (a node's children are only knowable once the node
+ * itself has resolved); de-duplication against the shared `reachable` set
+ * is exactly as it was before, just checked once per level up front
+ * instead of node-by-node as each resolve returns, so concurrent
+ * siblings — whether in the same root's level or in a different root's
+ * walk entirely — never race each other into resolving the same digest
+ * twice (JS's single-threaded, run-to-completion semantics make each
+ * level's synchronous de-dup-and-reserve pass atomic; see `walkRoot`'s
+ * own comment below).
  *
- * When more than one node in a level fails, the FIRST one in the level's
- * (de-duplicated, order-preserving) order is always what gets reported —
- * independent of which network round trip happens to finish first — so
- * the emitted skip reason is deterministic regardless of concurrency (see
- * `plan.test.ts`'s determinism-under-concurrency test).
+ * When more than one node fails — whether siblings in one level or nodes
+ * in different roots' walks — the FIRST one in `keepRoots`' root order,
+ * and within a root the first in that level's (de-duplicated,
+ * order-preserving) frontier order, is always what gets reported:
+ * `Promise.all` collects every root's outcome before any is inspected,
+ * and outcomes are then scanned in root order, never by which network
+ * round trip happens to finish first — so the emitted skip reason stays
+ * deterministic regardless of concurrency (see `plan.test.ts`'s
+ * determinism-under-concurrency test).
  */
 async function computeReachability(path, keepRoots, rootChildren, registry, options = {}) {
     const nodeCap = options.nodeCap ?? 10_000;
     const depthCap = options.depthCap ?? 64;
     const reachable = new Set();
     const edges = new Map();
-    for (const root of keepRoots) {
+    // One root's BFS. Runs concurrently with every other root's (see
+    // `Promise.all` below) but reads/writes the OUTER `reachable`/`edges`
+    // safely: JS is single-threaded and every mutation here happens in a
+    // synchronous stretch with no `await` in between, so two roots' walks
+    // can never interleave mid-check — each de-dup-and-reserve pass over a
+    // level's frontier still completes atomically before this walk yields
+    // to the next `await`, exactly as it did when levels were the only
+    // thing resolved concurrently.
+    async function walkRoot(root) {
         if (reachable.has(root)) {
-            continue;
+            return { status: "success" };
         }
         let frontier = [root];
         let depth = 0;
@@ -13806,9 +13837,10 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
             }
             // De-duplicate the level up front (a digest can appear more than
             // once in one frontier — e.g. two parents at the same level sharing
-            // a child) so concurrent resolution below never issues two requests
-            // for the same digest, and order is preserved for deterministic
-            // failure reporting.
+            // a child, or two DIFFERENT roots' frontiers converging on the same
+            // shared descendant) so concurrent resolution below never issues
+            // two requests for the same digest, and order is preserved for
+            // deterministic failure reporting.
             const distinctFrontier = [];
             const seenThisLevel = new Set();
             for (const d of frontier) {
@@ -13822,9 +13854,11 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
                 if (reachable.size >= nodeCap) {
                     throw new Error(`reachability walk exceeded the node cap (${String(nodeCap)})`);
                 }
-                // Reserved up front (before any resolve completes) so the node
-                // cap above is checked against an accurate count even though the
-                // resolves below run concurrently.
+                // Reserved up front (before any resolve completes, and before
+                // this walk's next `await`) so the node cap above is checked
+                // against an accurate count even though the resolves below run
+                // concurrently — both within this level and across sibling
+                // roots' own levels.
                 reachable.add(d);
             }
             const resolved = await Promise.all(distinctFrontier.map(async (d) => {
@@ -13863,6 +13897,32 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
             frontier = next;
             depth++;
         }
+        return { status: "success" };
+    }
+    // Every root's BFS is kicked off together — this is the fix for the
+    // planner's bottleneck (see the module doc above): a keep-set with
+    // hundreds of roots but only ~4 children per multi-arch index used to
+    // leave almost all of `--jobs`' budget idle, because only ONE root's
+    // handful of concurrent requests was ever in flight at a time. Real HTTP
+    // concurrency is still bounded exactly as before — by the shared
+    // `RegistryReader`'s own limiter (`limiter.ts`, `cli.ts`'s `--jobs`) at
+    // the registry-adapter boundary, applied to every resolve this function
+    // (and every OTHER root's) issues — so firing all roots' walks at once
+    // does not add a second, uncoordinated concurrency budget: it simply
+    // gives the one existing budget enough simultaneous candidate work to
+    // actually fill it.
+    //
+    // Outcomes are collected via `Promise.all` (not raced) and then scanned
+    // in `keepRoots`' OWN order below, so which failure gets reported is
+    // determined purely by root order, never by which root's network calls
+    // happen to finish first — the same determinism guarantee the
+    // per-level frontier resolution already gave within a single root, now
+    // extended across roots too.
+    const outcomes = await Promise.all([...keepRoots].map((root) => walkRoot(root)));
+    for (const outcome of outcomes) {
+        if (outcome.status === "failed") {
+            return outcome;
+        }
     }
     return { status: "success", reachable, edges };
 }
@@ -13870,12 +13930,26 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
 ;// CONCATENATED MODULE: ./src/ghcr-tidy/deletion-group.ts
 
 /**
- * Best-effort BFS over `deleteSet`-only nodes rooted at `root`, marking
- * every visited digest in the shared `visited` set so no digest is ever
- * claimed by two groups (this is what makes a group's non-root members
- * "exclusively owned" — a digest still reachable from a KEPT root was
- * already excluded from `deleteSet` entirely by {@link computeReachability},
- * so it can never appear here in the first place).
+ * Best-effort BFS over `deleteSet`-only nodes rooted at `root`, computing
+ * `root`'s FULL transitive closure within `deleteSet` — as if `root` were
+ * the only candidate, with no cross-candidate ownership to respect. Used
+ * as {@link buildDeletionGroups}'s phase 1 (see that function's doc): the
+ * closure computed here is candidate-LOCAL (only `localVisited`, scoped
+ * to this one call, guards against re-visiting a node reachable two ways
+ * within `root`'s own subtree — e.g. a diamond), so it can safely run
+ * CONCURRENTLY with every other candidate's closure. Ownership — which
+ * candidate actually gets to keep a digest reachable from more than
+ * one — is resolved afterward, deterministically, by
+ * {@link buildDeletionGroups} itself; this function neither knows nor
+ * cares about it.
+ *
+ * Each BFS level's children are resolved CONCURRENTLY (`Promise.all`),
+ * matching `reachability.ts`'s own per-level fan-out; like that function,
+ * this imposes no concurrency limit of its own — real HTTP concurrency is
+ * bounded entirely by the shared `RegistryReader` (`limiter.ts`, `cli.ts`'s
+ * `--jobs`), and a digest reachable from more than one candidate is only
+ * ever fetched once regardless (`resolve-cache.ts`, shared across the
+ * whole run).
  *
  * This walk is REPORTING/GROUPING ONLY and never influences `DELETE`
  * itself (`DELETE` is pure set arithmetic — see `plan.ts`). Consequently a
@@ -13884,29 +13958,39 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
  * case the design accepts into `DELETE` without ceremony. Resolution here
  * simply stops descending past whatever could not be resolved; the
  * digest is still in the group as a childless leaf (or, if unresolved
- * itself with no known parent, as its own singleton group root).
+ * itself with no known parent, as its own singleton group root). A
+ * genuinely UNEXPECTED failure (a bug, not a modeled 404/transient
+ * response) still propagates as a rejected promise out of this function —
+ * it is never silently swallowed into a truncated-but-plausible-looking
+ * member list — which fails the whole package closed at the `planPackage`
+ * level (`cli.ts`'s per-package isolation keeps that from touching any
+ * OTHER package's plan).
  */
-async function collectGroupMembers(path, root, deleteSet, rootChildren, registry, visited) {
+async function computeCandidateClosure(path, root, deleteSet, rootChildren, registry) {
+    const localVisited = new Set([root]);
     const members = [root];
-    visited.add(root);
     let frontier = [root];
     while (frontier.length > 0) {
-        const next = [];
-        for (const d of frontier) {
-            let children = rootChildren.get(d);
-            if (children === undefined) {
-                try {
-                    const resolution = await registry.resolve(path, d);
-                    children =
-                        resolution.status === "success" ? resolution.children.map((c) => digest(c.digest)) : [];
-                }
-                catch {
-                    children = [];
-                }
+        const resolved = await Promise.all(frontier.map(async (d) => {
+            const known = rootChildren.get(d);
+            if (known !== undefined) {
+                return known;
             }
+            try {
+                const resolution = await registry.resolve(path, d);
+                return resolution.status === "success"
+                    ? resolution.children.map((c) => digest(c.digest))
+                    : [];
+            }
+            catch {
+                return [];
+            }
+        }));
+        const next = [];
+        for (const children of resolved) {
             for (const c of children) {
-                if (deleteSet.has(c) && !visited.has(c)) {
-                    visited.add(c);
+                if (deleteSet.has(c) && !localVisited.has(c)) {
+                    localVisited.add(c);
                     members.push(c);
                     next.push(c);
                 }
@@ -13919,22 +14003,70 @@ async function collectGroupMembers(path, root, deleteSet, rootChildren, registry
 /**
  * Groups `deleteSet` into {@link DeletionGroup}s, one per former live root
  * (parents ordered first) plus one singleton group per orphaned digest
- * that was never any known root's descendant. Deterministic: candidate
- * roots are processed in sorted digest order, and within a group each BFS
- * level's children are visited in the order {@link ManifestChild}s
- * appear in the manifest, so the same fake world always yields the same
- * plan.
+ * that was never any known root's descendant.
+ *
+ * Two phases:
+ *
+ * 1. **Concurrent, side-effect-free**: every candidate root's FULL
+ *    transitive closure within `deleteSet` is computed independently and
+ *    at the same time ({@link computeCandidateClosure}, fired via
+ *    `Promise.all`). This replaced a `for` loop that walked one
+ *    candidate's whole subtree to completion — resolving one digest at a
+ *    time — before starting the next: with hundreds of candidates (every
+ *    deleted image is its own candidate), that left almost all of
+ *    `--jobs`' concurrency budget idle for the same reason
+ *    `reachability.ts`'s old per-root loop did. Real HTTP concurrency is
+ *    still bounded entirely by the shared `RegistryReader`'s limiter, so
+ *    firing every candidate's closure at once does not add a second,
+ *    competing budget.
+ * 2. **Deterministic, synchronous, no I/O**: candidates are walked in
+ *    FIXED order (sorted digest order, live-root candidates first,
+ *    exactly as before) and each one's precomputed closure is filtered
+ *    against a single shared `visited` set, claiming whichever digests
+ *    are not already owned by an earlier candidate. A digest reachable
+ *    from more than one candidate's closure — the ownership race phase 1
+ *    deliberately ignores — is always won by whichever candidate comes
+ *    FIRST in this fixed order, exactly matching what the original
+ *    sequential-BFS algorithm did (the first candidate to reach a shared
+ *    digest always fully expanded into its descendants before any later
+ *    candidate got a chance to). Because this phase does no I/O and never
+ *    awaits, it can never race: the outcome depends only on candidate
+ *    order, never on which candidate's network calls happened to resolve
+ *    first — so the emitted groups (root, member order, and ownership of
+ *    every shared digest) are byte-for-byte deterministic regardless of
+ *    concurrency.
+ *
+ * Within a kept group, member order matches `computeCandidateClosure`'s
+ * own BFS order (parents before children) with any digest claimed by an
+ * earlier candidate filtered out — filtering out entries never reorders
+ * the survivors, so parents still precede their children.
  */
 async function buildDeletionGroups(path, deleteSet, liveRootDigests, rootChildren, registry) {
-    const visited = new Set();
-    const groups = [];
     const liveRootCandidates = [...deleteSet].filter((d) => liveRootDigests.has(d)).sort();
     const otherCandidates = [...deleteSet].filter((d) => !liveRootDigests.has(d)).sort();
-    for (const root of [...liveRootCandidates, ...otherCandidates]) {
+    const orderedCandidates = [...liveRootCandidates, ...otherCandidates];
+    const closures = await Promise.all(orderedCandidates.map((root) => computeCandidateClosure(path, root, deleteSet, rootChildren, registry)));
+    const visited = new Set();
+    const groups = [];
+    for (const [i, root] of orderedCandidates.entries()) {
         if (visited.has(root)) {
             continue;
         }
-        const members = await collectGroupMembers(path, root, deleteSet, rootChildren, registry, visited);
+        const closure = closures[i];
+        // Always defined: `closures` was built from `orderedCandidates` via
+        // `.map`, so it has exactly `orderedCandidates.length` entries in the
+        // same order.
+        if (closure === undefined) {
+            throw new Error("unreachable: closures and orderedCandidates must be the same length");
+        }
+        const members = [];
+        for (const d of closure) {
+            if (visited.has(d)) {
+                continue;
+            }
+            visited.add(d);
+            members.push(d);
+        }
         groups.push({ root, members });
     }
     return groups;
