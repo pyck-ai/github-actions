@@ -118,10 +118,21 @@ jobs:
       # verify-image is a plain-bash composite action (no node bundle, no
       # dist/) since it now just runs an image's own verify.sh via docker
       # run — only ghcr-tidy still bundles.
+      #
+      # A configured path that no longer exists is a hard failure here, not
+      # a silent pass: `git diff --exit-code` and `git status --porcelain`
+      # both succeed vacuously against a missing path, so a check that only
+      # ran those two would go blind exactly when a bundled action's dist/
+      # is deleted, staying green while asserting nothing.
       - name: Rebuild bundles and check dist/ is up to date
         run: |
           npm run bundle
-          for dist in .github/actions/ghcr-tidy/dist; do
+          known_dists=".github/actions/ghcr-tidy/dist"
+          for dist in $known_dists; do
+            if [ ! -d "$dist" ]; then
+              echo "::error::$dist/ does not exist — update this check (it no longer matches the repo's bundled actions)" >&2
+              exit 1
+            fi
             if ! git diff --exit-code -- "$dist/"; then
               echo "::error::$dist/ is stale — run \"npm run bundle\" and commit the result" >&2
               exit 1
@@ -130,6 +141,18 @@ jobs:
               echo "::error::$dist/ has untracked output — run \"npm run bundle\" and commit the result" >&2
               exit 1
             fi
+          done
+          # Catch the opposite drift too: a dist/ this check doesn't know
+          # about yet (e.g. a new bundled action) must not slip past unseen.
+          for found in .github/actions/*/dist; do
+            [ -d "$found" ] || continue
+            case " $known_dists " in
+              *" $found "*) ;;
+              *)
+                echo "::error::$found/ exists but isn't checked by this workflow — add it to known_dists above" >&2
+                exit 1
+                ;;
+            esac
           done
 
   # Aggregate check for branch protection: a single required status that
