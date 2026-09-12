@@ -130,6 +130,7 @@ describe("compareSnapshots — the three-part predicate", () => {
 
     expect(result.regressions).toEqual([]);
     expect(result.preExisting).toEqual([]);
+    expect(result.unverified).toEqual([]);
   });
 
   it("regression: the tag disappears entirely (stillResolves: false)", () => {
@@ -227,7 +228,7 @@ describe("compareSnapshots — the three-part predicate", () => {
     expect(result.preExisting).toEqual([]);
   });
 
-  it("preSnapshotFailed: every non-healthy post tag is a regression, with no pre-existing bucket", () => {
+  it("preSnapshotFailed: a CONFIRMED broken post tag is a regression, with no pre-existing bucket", () => {
     const healthyTag = tag("stable");
     const brokenTag = tag("broken");
     const post = new Map<Tag, TagSnapshot>([
@@ -240,6 +241,72 @@ describe("compareSnapshots — the three-part predicate", () => {
     expect(result.regressions).toHaveLength(1);
     expect(result.regressions[0]?.tag).toBe(brokenTag);
     expect(result.preExisting).toEqual([]);
+    expect(result.unverified).toEqual([]);
+  });
+
+  it("preSnapshotFailed: a merely UNKNOWN post tag is unverified, not a regression — the false-positive this predicate must not repeat", () => {
+    const flakyTag = tag("flaky");
+    const post = new Map<Tag, TagSnapshot>([[flakyTag, unknown()]]);
+
+    const result = compareSnapshots(new Map(), post, { preSnapshotFailed: true });
+
+    expect(result.regressions).toEqual([]);
+    expect(result.preExisting).toEqual([]);
+    expect(result.unverified).toHaveLength(1);
+    expect(result.unverified[0]?.tag).toBe(flakyTag);
+  });
+
+  it("a healthy pre tag with a merely UNKNOWN post read is unverified, not a regression", () => {
+    const pre = new Map<Tag, TagSnapshot>([[t, healthy("sha256:a")]]);
+    const post = new Map<Tag, TagSnapshot>([[t, unknown()]]);
+
+    const result = compareSnapshots(pre, post);
+
+    expect(result.regressions).toEqual([]);
+    expect(result.preExisting).toEqual([]);
+    expect(result.unverified).toHaveLength(1);
+    expect(result.unverified[0]?.tag).toBe(t);
+  });
+
+  it("a confirmed-broken pre tag with a merely UNKNOWN post read is unverified, not pre-existing", () => {
+    const pre = new Map<Tag, TagSnapshot>([[t, notFound()]]);
+    const post = new Map<Tag, TagSnapshot>([[t, unknown()]]);
+
+    const result = compareSnapshots(pre, post);
+
+    expect(result.regressions).toEqual([]);
+    expect(result.preExisting).toEqual([]);
+    expect(result.unverified).toHaveLength(1);
+  });
+
+  it("postSnapshotFailed: every tag pre knew as healthy is unverified, NEVER defaulted to confirmed-broken — the exact defect that turned one failed listTags call into a mass false regression", () => {
+    const liveTag1 = tag("stable-1");
+    const liveTag2 = tag("stable-2");
+    const pre = new Map<Tag, TagSnapshot>([
+      [liveTag1, healthy("sha256:a")],
+      [liveTag2, healthy("sha256:b")],
+    ]);
+    // Whatever the (necessarily unreliable) post map looks like — even
+    // completely empty, as a totally failed read produces — must never
+    // be trusted as "these tags are gone".
+    const post = new Map<Tag, TagSnapshot>();
+
+    const result = compareSnapshots(pre, post, { postSnapshotFailed: true });
+
+    expect(result.regressions).toEqual([]);
+    expect(result.preExisting).toEqual([]);
+    expect(result.unverified).toHaveLength(2);
+  });
+
+  it("postSnapshotFailed: a pre tag already confirmed broken is unverified, not silently reported as pre-existing (post state is genuinely not known)", () => {
+    const pre = new Map<Tag, TagSnapshot>([[t, notFound()]]);
+    const post = new Map<Tag, TagSnapshot>();
+
+    const result = compareSnapshots(pre, post, { postSnapshotFailed: true });
+
+    expect(result.regressions).toEqual([]);
+    expect(result.preExisting).toEqual([]);
+    expect(result.unverified).toHaveLength(1);
   });
 });
 

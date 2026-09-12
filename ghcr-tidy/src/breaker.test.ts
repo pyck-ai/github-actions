@@ -144,6 +144,42 @@ describe("githubIssueBreaker", () => {
   });
 });
 
+describe("githubIssueBreaker — mis-scoped token diagnostic", () => {
+  /** A fake whose every request 404s, as GitHub does for an issues call made with a token that has no repo/issues access — indistinguishable on the wire from "no such repo". */
+  function fake404Requestable(): IssuesRequestable {
+    return {
+      request: () => {
+        const err = Object.assign(new Error("Not Found"), { status: 404 });
+        return Promise.reject(err);
+      },
+    };
+  }
+
+  it("trip rejects with a diagnostic naming the token/scope cause, not a bare 404", async () => {
+    const breaker = githubIssueBreaker(fake404Requestable(), "pyck-ai", "baseimages");
+    await expect(breaker.trip(incident())).rejects.toThrow(
+      /token passed to githubIssueBreaker cannot write issues/,
+    );
+    await expect(breaker.trip(incident())).rejects.toThrow(/pyck-ai\/baseimages/);
+  });
+
+  it("isTripped also rejects with the same diagnostic, not a bare 404", async () => {
+    const breaker = githubIssueBreaker(fake404Requestable(), "pyck-ai", "baseimages");
+    await expect(breaker.isTripped()).rejects.toThrow(
+      /token passed to githubIssueBreaker cannot write issues/,
+    );
+  });
+
+  it("a non-404 failure is rethrown unchanged, with no invented diagnosis", async () => {
+    const octokit: IssuesRequestable = {
+      request: () =>
+        Promise.reject(Object.assign(new Error("service unavailable"), { status: 503 })),
+    };
+    const breaker = githubIssueBreaker(octokit, "pyck-ai", "baseimages");
+    await expect(breaker.trip(incident())).rejects.toThrow("service unavailable");
+  });
+});
+
 describe("breakerRegressionSink", () => {
   it("records an incident by tripping the breaker", async () => {
     const { breaker, trips } = memoryBreaker();

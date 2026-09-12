@@ -180,7 +180,19 @@ jobs:
             ${{ inputs.package != '' && format('--package {0}', inputs.package) || '' }}
             ${{ steps.effective.outputs.delete-broken-roots == 'true' && '--delete-broken-roots' || '' }}
         env:
+          # `GITHUB_TOKEN` here is `steps.token.outputs.token` — on a real
+          # apply that is `secrets.GHCR_ADMIN_TOKEN`, a PAT scoped for
+          # deleting GHCR versions (`delete:packages`) with NO issues
+          # access. The breaker manages issues in THIS repo instead, so it
+          # is handed the job's own `secrets.GITHUB_TOKEN` (which has
+          # `issues: write` via this job's `permissions:` block above) as
+          # a SEPARATE token — see `breaker.ts`'s `githubIssueBreaker` doc
+          # and `cli.ts`'s `GHCR_TIDY_BREAKER_TOKEN`. Passing the admin PAT
+          # for both produced a bare 404 on a real apply run: GitHub
+          # cannot distinguish "wrong scope" from "no such repo" on this
+          # endpoint.
           GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+          GHCR_TIDY_BREAKER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Uploaded `if: always()` so a failed, aborted, or breaker-tripped run
       # still leaves its forensic record — the plan shows exactly what was

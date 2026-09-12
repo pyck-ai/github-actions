@@ -58,6 +58,21 @@ function registryThatFailsListTagsOnce(inner: RegistryReader): RegistryReader {
   };
 }
 
+/** Wraps a real `RegistryReader` so its SECOND `listTags` call throws, then behaves normally — simulating an operational POST-snapshot failure (the pre-snapshot succeeds, the post-snapshot does not) without touching `FakeGhcr` itself. This is the shape of the real incident: 24 minutes of successful deletions, then the post-apply read itself failed. */
+function registryThatFailsSecondListTags(inner: RegistryReader): RegistryReader {
+  let calls = 0;
+  return {
+    listTags: (path) => {
+      calls += 1;
+      if (calls === 2) {
+        throw new Error("simulated transient failure listing tags");
+      }
+      return inner.listTags(path);
+    },
+    resolve: (path, ref) => inner.resolve(path, ref),
+  };
+}
+
 describe("applyPlan — post-apply verification: clean apply", () => {
   it("pre and post snapshots match, no regression, the run completes normally", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
@@ -282,6 +297,204 @@ describe("applyPlan — post-apply verification: pre-snapshot failure", () => {
     expect(result.abortedFor?.kind).toBe("regression");
     expect(incidents).toHaveLength(1);
     expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
+  });
+});
+
+describe("applyPlan — post-apply verification: post-snapshot failure (the false-positive regression this fixes)", () => {
+  it("does NOT trip the breaker when the post-snapshot read itself fails, even though every pre-apply tag was healthy — it aborts as verification-unavailable instead", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    // Nothing here is actually broken — this run's deletions are clean.
+    fake
+      .setTag(tag("latest"), digest("sha256:live"))
+      .setManifest(digest("sha256:live"), {})
+      .setManifest(digest("sha256:garbage"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: registryThatFailsSecondListTags(fake.registryReader()),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    // The deletion itself succeeded — this is purely a post-apply read failure.
+    expect(deletedVersionIds).toEqual([1]);
+    // The breaker must NEVER be told about this: nothing is confirmed broken.
+    expect(incidents).toEqual([]);
+    expect(result.abortedFor?.kind).toBe("verification-unavailable");
+    const unavailable = result.abortedFor as {
+      packageName: unknown;
+      tags: readonly { tag: string }[];
+    };
+    expect(unavailable.packageName).toBe(pkgA);
+    expect(unavailable.tags.map((t) => t.tag)).toContain(tag("latest"));
+    // Still a hard failure, not a silent pass — an operator must not be
+    // told the run was clean when nothing was actually confirmed.
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
+  });
+
+  it("still reports a CONFIRMED pre-existing break as pre-existing even when the post-snapshot as a whole fails elsewhere in this package's tag set", async () => {
+    // A tag that already 404s pre-apply, read successfully in a
+    // pre-snapshot that itself does NOT fail — only the post-snapshot
+    // fails wholesale, so every tag (including this pre-existing one)
+    // ends up "unknown" post-apply, not silently reclassified as newly
+    // regressed or newly pre-existing.
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake.setTag(tag("already-broken"), digest("sha256:hollow"));
+    fake.setManifest(digest("sha256:hollow"), { notFound: true });
+    fake.setManifest(digest("sha256:garbage"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+
+    const { mutator } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: registryThatFailsSecondListTags(fake.registryReader()),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(incidents).toEqual([]); // never a regression
+    expect(result.abortedFor?.kind).toBe("verification-unavailable");
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
+  });
+});
+
+describe("applyPlan — post-apply verification: both snapshots fail operationally", () => {
+  it("aborts as verification-unavailable with no tag data at all, rather than silently reporting a clean run", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:live"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+
+    const inner = fake.registryReader();
+    const alwaysFailsListTags: RegistryReader = {
+      listTags: () => {
+        throw new Error("registry read is down");
+      },
+      resolve: (p, ref) => inner.resolve(p, ref),
+    };
+
+    const { mutator } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: alwaysFailsListTags,
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(incidents).toEqual([]);
+    expect(result.abortedFor).toEqual({
+      kind: "verification-unavailable",
+      packageName: pkgA,
+      tags: [],
+    });
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
+  });
+});
+
+describe("applyPlan — post-apply verification: incident survives a broken sink (the breaker outage this fixes)", () => {
+  it("calls onIncident BEFORE sink.record, and still returns a normal abort result (with the run summary intact) when sink.record throws", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:live"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    fake.setDeleteSideEffect(1, () => fake.setManifest(digest("sha256:live"), { notFound: true }));
+
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const callOrder: string[] = [];
+    const sink = {
+      record: () => {
+        callOrder.push("sink");
+        return Promise.reject(new Error("simulated 404: breaker token cannot write issues"));
+      },
+    };
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+      onIncident: () => {
+        callOrder.push("onIncident");
+      },
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    // Must not throw — a thrown sink error used to propagate all the way
+    // out of applyPlan, killing the run before the CLI could print its
+    // summary line at all.
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(attemptedVersionIds).toEqual([1]);
+    expect(callOrder).toEqual(["onIncident", "sink"]); // recorded locally before the network call
+    expect(result.abortedFor).toEqual({
+      kind: "regression",
+      packageName: pkgA,
+      tags: [expect.objectContaining({ tag: tag("latest") }) as unknown],
+      sinkError: "simulated 404: breaker token cannot write issues",
+    });
+    // The run summary is still fully computable from `result` — nothing
+    // about the sink failure erased `attempted`/`remainingBudget`.
+    expect(result.attempted).toBe(1);
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
+  });
+
+  it("onIncident is called even when the confirmed regression's sink succeeds (breaker healthy) — sinkError is absent", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:live"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    fake.setDeleteSideEffect(1, () => fake.setManifest(digest("sha256:live"), { notFound: true }));
+
+    const { mutator } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    let onIncidentCalls = 0;
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+      onIncident: () => {
+        onIncidentCalls += 1;
+      },
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(onIncidentCalls).toBe(1);
+    expect(incidents).toHaveLength(1);
+    expect(result.abortedFor?.kind).toBe("regression");
+    expect((result.abortedFor as { sinkError?: string }).sinkError).toBeUndefined();
   });
 });
 

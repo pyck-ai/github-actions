@@ -21,6 +21,7 @@ import {
   snapshotPackage,
   type CanaryFailureReason,
   type RegressedTag,
+  type RegressionIncident,
   type RegressionSink,
   type TagSnapshot,
 } from "./verify.js";
@@ -40,6 +41,21 @@ export interface VerificationOptions {
   /** One known-good, already-published tag resolved end to end before any deletion, to distinguish "the read path is broken today" from "this run broke something". Need not belong to any package in the plan. */
   readonly canary: { readonly path: RegistryPath; readonly tag: Tag };
   readonly sink: RegressionSink;
+  /**
+   * Called synchronously the moment a regression is confirmed, BEFORE
+   * `sink.record` is invoked and regardless of whether that call
+   * later succeeds — so the incident survives even if the sink itself
+   * (e.g. `breaker.ts`'s `githubIssueBreaker`, which makes network
+   * calls) is unreachable. This is what makes an outage of the breaker's
+   * OWN plumbing (wrong token, GitHub down, etc.) fail loud without
+   * erasing the evidence for the regression that triggered it — see the
+   * incident that motivated this: a breaker whose issue-creation call
+   * threw left no record at all of what it was trying to report, only a
+   * bare "Not Found". Optional and side-effect-free from `applyPlan`'s
+   * own perspective: never awaited, never allowed to affect control
+   * flow.
+   */
+  readonly onIncident?: (incident: RegressionIncident) => void;
 }
 
 export interface ApplyOptions {
@@ -117,7 +133,17 @@ export interface PackageApplyResult {
  * including `packageName` was fully processed (its deletions already
  * happened) and `packageName`'s own deletions are exactly
  * `regression.tags[*]`'s `precedingDeletions` — every package AFTER it
- * in plan order was never touched.
+ * in plan order was never touched. `regression.sinkError`, when present,
+ * means `verification.sink.record` (the breaker) itself threw — e.g. the
+ * incident that motivated this field: the breaker's own issue-creation
+ * call 404'd on a mis-scoped token. The regression is real and confirmed
+ * either way; `sinkError` only reports that the breaker could not be
+ * notified of it, never that the regression itself is in doubt.
+ * `"verification-unavailable"` means nothing here was CONFIRMED broken —
+ * `tags` is `unverified` from `compareSnapshots` (or empty, when BOTH the
+ * pre- and post-snapshot failed operationally and there is no per-tag
+ * data at all) — but verification could not vouch for this package
+ * either, so the run stops without tripping the breaker.
  */
 export type ApplyAbortReason =
   | { readonly kind: "breaker-tripped"; readonly state: TrippedState }
@@ -130,6 +156,12 @@ export type ApplyAbortReason =
     }
   | {
       readonly kind: "regression";
+      readonly packageName: PackageName;
+      readonly tags: readonly RegressedTag[];
+      readonly sinkError?: string;
+    }
+  | {
+      readonly kind: "verification-unavailable";
       readonly packageName: PackageName;
       readonly tags: readonly RegressedTag[];
     };
@@ -389,18 +421,68 @@ export async function applyPlan(
       // treatment as any other unresolved tag (see `verify.ts`'s
       // `ResolveState` doc) rather than throwing: an infrastructure
       // hiccup reading the registry back is not evidence of a
-      // regression, but it also cannot be silently waved through, so it
-      // still runs through the same strict `compareSnapshots` predicate.
+      // regression, but it also cannot be silently waved through. Unlike
+      // the pre-fix behaviour, `post.failed` is now THREADED into
+      // `compareSnapshots` as `postSnapshotFailed` rather than silently
+      // discarded — passing only `post.snapshot` (empty on failure) let
+      // the ordinary "absent from post means confirmed not-found" rule
+      // fire for every tag the pre-snapshot had ever seen healthy, which
+      // is exactly what turned one failed `listTags` call into a mass
+      // false regression on a real apply run.
       const post = await trySnapshot(registryPath, verification.registry);
-      const { regressions } = compareSnapshots(preSnapshot ?? new Map(), post.snapshot, {
-        preSnapshotFailed,
-      });
+
+      if (preSnapshotFailed && post.failed) {
+        // Neither snapshot could be taken at all: there is no per-tag
+        // data in either direction for this package, so there is
+        // nothing for `compareSnapshots` to compare — bypass it rather
+        // than let it silently report zero findings. This is NOT
+        // evidence of a regression (nothing here is confirmed broken),
+        // but the run must still stop and this must still be surfaced
+        // loudly, same as any other `unverified` finding.
+        return {
+          packages,
+          attempted: totalAttempted,
+          remainingBudget,
+          abortedFor: {
+            kind: "verification-unavailable",
+            packageName: pkgPlan.packageName,
+            tags: [],
+          },
+        };
+      }
+
+      const { regressions, unverified } = compareSnapshots(
+        preSnapshot ?? new Map(),
+        post.snapshot,
+        {
+          preSnapshotFailed,
+          postSnapshotFailed: post.failed,
+        },
+      );
+
       if (regressions.length > 0) {
-        await verification.sink.record({
+        const incident: RegressionIncident = {
           packageName: pkgPlan.packageName,
           tags: regressions,
           precedingDeletions: deletedMembers(groups),
-        });
+        };
+        // Recorded locally BEFORE the sink (which may make network
+        // calls, e.g. `breaker.ts`'s `githubIssueBreaker`) is even
+        // attempted — see `VerificationOptions.onIncident`'s doc: this is
+        // what makes the incident survive a breaker outage.
+        verification.onIncident?.(incident);
+        let sinkError: string | undefined;
+        try {
+          await verification.sink.record(incident);
+        } catch (error) {
+          // The regression is real and confirmed either way; a failure
+          // notifying the breaker about it must not swallow the run's
+          // own summary (see this module's doc on the incident this
+          // fixes) — reported alongside the abort reason instead of
+          // propagating and killing the whole process before the caller
+          // can print anything.
+          sinkError = error instanceof Error ? error.message : String(error);
+        }
         return {
           packages,
           attempted: totalAttempted,
@@ -409,6 +491,20 @@ export async function applyPlan(
             kind: "regression",
             packageName: pkgPlan.packageName,
             tags: regressions,
+            ...(sinkError !== undefined && { sinkError }),
+          },
+        };
+      }
+
+      if (unverified.length > 0) {
+        return {
+          packages,
+          attempted: totalAttempted,
+          remainingBudget,
+          abortedFor: {
+            kind: "verification-unavailable",
+            packageName: pkgPlan.packageName,
+            tags: unverified,
           },
         };
       }

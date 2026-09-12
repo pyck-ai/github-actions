@@ -10361,6 +10361,7 @@ __nccwpck_require__.d(__webpack_exports__, {
   QH: () => (/* binding */ buildPackageTokenMap),
   SB: () => (/* binding */ parseArgv),
   rf: () => (/* binding */ resolveArgv),
+  u9: () => (/* binding */ resolveBreakerToken),
   d1: () => (/* binding */ runCommand),
   vL: () => (/* binding */ tokenizeArgs)
 });
@@ -13210,6 +13211,39 @@ function isRawIssueArray(data) {
             typeof d.number === "number" &&
             typeof d.html_url === "string"));
 }
+/** The HTTP status an Octokit `RequestError` carries — narrowed so a mis-scoped-token 404 can be told apart from any other failure without depending on `@octokit/request-error` directly. */
+function requestErrorStatus(error) {
+    const status = error?.status;
+    return typeof status === "number" ? status : undefined;
+}
+/**
+ * Wraps one `octokit.request` call so a bare 404 — GitHub's response to
+ * an issues call made with a token that has no `repo`/`issues` scope,
+ * indistinguishable on the wire from "no such repo" — is rethrown with
+ * the cause named. This is the fix for the incident that motivated it: a
+ * PAT scoped `read:packages, delete:packages, read:org` (correct for
+ * deleting GHCR versions, wrong for managing issues) produced exactly
+ * this 404 with no indication anywhere that the token, not the repo, was
+ * the problem — see this module's `githubIssueBreaker` doc for the token
+ * this function expects to be handed instead.
+ */
+async function requestOrExplain(octokit, owner, repo, route, params) {
+    try {
+        return await octokit.request(route, params);
+    }
+    catch (error) {
+        if (requestErrorStatus(error) === 404) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`ghcr-tidy breaker: GitHub returned 404 managing the breaker issue in ${owner}/${repo} ` +
+                `(${route}). This almost always means the token passed to githubIssueBreaker cannot ` +
+                `write issues — e.g. a delete:packages-scoped PAT used to delete GHCR versions has no ` +
+                `repo/issues access. Configure a SEPARATE token with issue write access for the ` +
+                `breaker (a plain GITHUB_TOKEN with \`issues: write\` permissions is enough). ` +
+                `Original error: ${message}`);
+        }
+        throw error;
+    }
+}
 /**
  * The real, GitHub-issue-backed {@link Breaker}.
  *
@@ -13220,10 +13254,16 @@ function isRawIssueArray(data) {
  * tripped when a second regression is reported (e.g. two packages in the
  * same run, or a re-run before a human has caught up) — either way the
  * issue stays open and no new issue is created for the same outage.
+ *
+ * `octokit` must be authenticated with a token that can create/comment on
+ * issues in `owner/repo` — NOT necessarily the same token used to read
+ * the registry or delete package versions (`delete:packages` carries no
+ * issues access at all). See {@link requestOrExplain} for what happens
+ * when it is the wrong one.
  */
 function githubIssueBreaker(octokit, owner, repo, options = {}) {
     async function findOpenIssue() {
-        const res = await octokit.request("GET /repos/{owner}/{repo}/issues", {
+        const res = await requestOrExplain(octokit, owner, repo, "GET /repos/{owner}/{repo}/issues", {
             owner,
             repo,
             state: "open",
@@ -13244,7 +13284,7 @@ function githubIssueBreaker(octokit, owner, repo, options = {}) {
             const body = formatIncidentReport(incident, options);
             const existing = await findOpenIssue();
             if (existing) {
-                await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+                await requestOrExplain(octokit, owner, repo, "POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
                     owner,
                     repo,
                     issue_number: existing.number,
@@ -13252,7 +13292,7 @@ function githubIssueBreaker(octokit, owner, repo, options = {}) {
                 });
                 return;
             }
-            await octokit.request("POST /repos/{owner}/{repo}/issues", {
+            await requestOrExplain(octokit, owner, repo, "POST /repos/{owner}/{repo}/issues", {
                 owner,
                 repo,
                 title: BREAKER_ISSUE_TITLE,
@@ -14555,40 +14595,67 @@ function toFinding(t, pre, post) {
  * it into `preExisting`.
  */
 function compareSnapshots(pre, post, options = {}) {
-    if (options.preSnapshotFailed) {
-        const regressions = [];
-        for (const [t, postState] of post) {
-            if (!isHealthy(postState)) {
-                regressions.push(toFinding(t, { resolve: "unknown", closure: "unknown" }, postState));
-            }
+    const postSnapshotFailed = options.postSnapshotFailed ?? false;
+    function effectivePostState(t) {
+        if (postSnapshotFailed) {
+            // See `CompareSnapshotsOptions.postSnapshotFailed`'s doc: the read
+            // itself failed, so `post` (however it looks) is not trustworthy
+            // evidence for ANY tag — never fall through to the "absent means
+            // not-found" default below, which is only valid when the post read
+            // actually succeeded.
+            return { resolve: "unknown", closure: "unknown" };
         }
-        return { regressions, preExisting: [] };
+        return post.get(t) ?? { resolve: "not-found", closure: "unknown" };
     }
+    // When the PRE-snapshot itself failed there is no reliable baseline to
+    // iterate (`pre` is empty) — instead walk every tag `post` currently
+    // knows about, each with a synthetic `"unknown"` pre-state, so the
+    // per-tag classification below still runs and still separates
+    // confirmed damage from merely-unverifiable tags.
+    const entries = options.preSnapshotFailed
+        ? Array.from(post.keys(), (t) => [t, { resolve: "unknown", closure: "unknown" }])
+        : pre;
     const regressions = [];
     const preExisting = [];
-    for (const [t, preState] of pre) {
-        const postState = post.get(t) ?? { resolve: "not-found", closure: "unknown" };
+    const unverified = [];
+    for (const [t, preState] of entries) {
+        const postState = effectivePostState(t);
         if (isHealthy(preState)) {
             if (isHealthy(postState) && preState.digest === postState.digest) {
                 continue;
             }
-            regressions.push(toFinding(t, preState, postState));
+            if (isUnknown(postState)) {
+                // Cannot confirm the tag is broken — only that this run's read of
+                // it, post-apply, was inconclusive. Surfaced, but not a
+                // regression: see this module's doc on why `isUnknown` must never
+                // trip the breaker.
+                unverified.push(toFinding(t, preState, postState));
+            }
+            else {
+                regressions.push(toFinding(t, preState, postState));
+            }
             continue;
         }
         if (isUnknown(preState)) {
-            if (!isHealthy(postState)) {
+            if (isConfirmedBroken(postState)) {
                 regressions.push(toFinding(t, preState, postState));
             }
+            else if (isUnknown(postState)) {
+                unverified.push(toFinding(t, preState, postState));
+            }
+            // Else: post state is healthy — resolved fine, nothing to report.
             continue;
         }
         // isConfirmedBroken(preState) must hold — isHealthy and isUnknown are exhaustive otherwise.
         if (isConfirmedBroken(postState)) {
             preExisting.push(toFinding(t, preState, postState));
         }
-        // Else: improved, or post state is unknown (inconclusive) — neither
-        // is reported; there is no confirmed new damage to act on.
+        else if (isUnknown(postState)) {
+            unverified.push(toFinding(t, preState, postState));
+        }
+        // Else: improved (now resolves) — no confirmed new damage to act on.
     }
-    return { regressions, preExisting };
+    return { regressions, preExisting, unverified };
 }
 /** An in-memory `RegressionSink` for tests: records every incident, in order, with no I/O. `incidents` is a live reference. */
 function memoryRegressionSink() {
@@ -14811,18 +14878,62 @@ async function applyPlan(plan, mutator, options) {
             // treatment as any other unresolved tag (see `verify.ts`'s
             // `ResolveState` doc) rather than throwing: an infrastructure
             // hiccup reading the registry back is not evidence of a
-            // regression, but it also cannot be silently waved through, so it
-            // still runs through the same strict `compareSnapshots` predicate.
+            // regression, but it also cannot be silently waved through. Unlike
+            // the pre-fix behaviour, `post.failed` is now THREADED into
+            // `compareSnapshots` as `postSnapshotFailed` rather than silently
+            // discarded — passing only `post.snapshot` (empty on failure) let
+            // the ordinary "absent from post means confirmed not-found" rule
+            // fire for every tag the pre-snapshot had ever seen healthy, which
+            // is exactly what turned one failed `listTags` call into a mass
+            // false regression on a real apply run.
             const post = await trySnapshot(registryPath, verification.registry);
-            const { regressions } = compareSnapshots(preSnapshot ?? new Map(), post.snapshot, {
+            if (preSnapshotFailed && post.failed) {
+                // Neither snapshot could be taken at all: there is no per-tag
+                // data in either direction for this package, so there is
+                // nothing for `compareSnapshots` to compare — bypass it rather
+                // than let it silently report zero findings. This is NOT
+                // evidence of a regression (nothing here is confirmed broken),
+                // but the run must still stop and this must still be surfaced
+                // loudly, same as any other `unverified` finding.
+                return {
+                    packages,
+                    attempted: totalAttempted,
+                    remainingBudget,
+                    abortedFor: {
+                        kind: "verification-unavailable",
+                        packageName: pkgPlan.packageName,
+                        tags: [],
+                    },
+                };
+            }
+            const { regressions, unverified } = compareSnapshots(preSnapshot ?? new Map(), post.snapshot, {
                 preSnapshotFailed,
+                postSnapshotFailed: post.failed,
             });
             if (regressions.length > 0) {
-                await verification.sink.record({
+                const incident = {
                     packageName: pkgPlan.packageName,
                     tags: regressions,
                     precedingDeletions: deletedMembers(groups),
-                });
+                };
+                // Recorded locally BEFORE the sink (which may make network
+                // calls, e.g. `breaker.ts`'s `githubIssueBreaker`) is even
+                // attempted — see `VerificationOptions.onIncident`'s doc: this is
+                // what makes the incident survive a breaker outage.
+                verification.onIncident?.(incident);
+                let sinkError;
+                try {
+                    await verification.sink.record(incident);
+                }
+                catch (error) {
+                    // The regression is real and confirmed either way; a failure
+                    // notifying the breaker about it must not swallow the run's
+                    // own summary (see this module's doc on the incident this
+                    // fixes) — reported alongside the abort reason instead of
+                    // propagating and killing the whole process before the caller
+                    // can print anything.
+                    sinkError = error instanceof Error ? error.message : String(error);
+                }
                 return {
                     packages,
                     attempted: totalAttempted,
@@ -14831,6 +14942,19 @@ async function applyPlan(plan, mutator, options) {
                         kind: "regression",
                         packageName: pkgPlan.packageName,
                         tags: regressions,
+                        ...(sinkError !== undefined && { sinkError }),
+                    },
+                };
+            }
+            if (unverified.length > 0) {
+                return {
+                    packages,
+                    attempted: totalAttempted,
+                    remainingBudget,
+                    abortedFor: {
+                        kind: "verification-unavailable",
+                        packageName: pkgPlan.packageName,
+                        tags: unverified,
                     },
                 };
             }
@@ -14880,6 +15004,7 @@ function classifyApplyExit(plan, result) {
 }
 
 ;// CONCATENATED MODULE: ./ghcr-tidy/src/cli.ts
+
 
 
 
@@ -15049,6 +15174,9 @@ function parseArgv(argv) {
             case "--breaker-repo":
                 args.breakerRepo = nextValue();
                 break;
+            case "--breaker-token":
+                args.breakerToken = nextValue();
+                break;
             case "--apply":
                 args.apply = true;
                 break;
@@ -15186,6 +15314,24 @@ function buildPackageTokenMap(registryOwner, entries, canaryPackage) {
         add(canaryPackage);
     }
     return pathToName;
+}
+/**
+ * Which token `githubIssueBreaker` should authenticate with — deliberately
+ * SEPARATE from the registry/Packages-API token, which for `apply` is
+ * typically a `delete:packages`-scoped PAT with no issues access (see
+ * `breaker.ts`'s `githubIssueBreaker` doc for what happens when the two
+ * are conflated: a bare 404 with no indication the token was the
+ * problem). Precedence, highest first: `--breaker-token`, then
+ * `GHCR_TIDY_BREAKER_TOKEN`, then `fallback` (the registry token itself)
+ * — the last resort exists only for setups where one token legitimately
+ * carries both scopes (e.g. local/dry-run use with a broadly-scoped PAT).
+ * Pure and side-effect-free specifically so this precedence is
+ * unit-testable without constructing an Octokit client or making any
+ * network call — mirroring {@link buildPackageTokenMap}'s reason for
+ * being its own function.
+ */
+function resolveBreakerToken(args, env, fallback) {
+    return args.breakerToken ?? env.GHCR_TIDY_BREAKER_TOKEN ?? fallback;
 }
 function buildRegistryAdapters(token, owner, registryOwner, entries, octokit, jobs, canaryPackage) {
     const pathToName = new Map(buildPackageTokenMap(registryOwner, entries, canaryPackage));
@@ -15363,10 +15509,16 @@ function formatCanaryFailureReason(reason) {
             return `error while resolving: ${reason.message}`;
     }
 }
-/** Renders one {@link ApplyAbortReason} for the `ABORTED:` line — the `canary-failed` case additionally names the canary's own path/tag and the cause, since a bare "canary-failed" gave no way to diagnose the first real apply's spurious abort. */
+/** Renders one {@link ApplyAbortReason} for the `ABORTED:` line — the `canary-failed` case additionally names the canary's own path/tag and the cause, since a bare "canary-failed" gave no way to diagnose the first real apply's spurious abort. The `regression` case additionally names a `sinkError` (the breaker itself failed to record the — still real, still confirmed — regression) rather than letting that failure erase the summary line entirely, as it did in the incident that motivated `sinkError`. */
 function formatAbortReason(reason) {
     if (reason.kind === "canary-failed") {
         return `canary-failed (canary ${reason.path}:${reason.tag} — ${formatCanaryFailureReason(reason.reason)})`;
+    }
+    if (reason.kind === "regression" && reason.sinkError !== undefined) {
+        return `regression (breaker also failed to record it: ${reason.sinkError})`;
+    }
+    if (reason.kind === "verification-unavailable") {
+        return `verification-unavailable (${String(reason.tags.length)} tag(s) could not be confirmed healthy or broken in package ${reason.packageName} — not treated as a regression, breaker not tripped)`;
     }
     return reason.kind;
 }
@@ -15458,7 +15610,9 @@ async function runApplyCommand(args, deps) {
         if (!breakerOwner || !breakerRepo) {
             throw new UsageError(`--breaker-repo/GITHUB_REPOSITORY must be "<owner>/<repo>", got "${repoSpec}"`);
         }
-        breaker = githubIssueBreaker(octokit, breakerOwner, breakerRepo, {
+        const breakerTokenValue = resolveBreakerToken(args, process.env, token);
+        const breakerOctokit = breakerTokenValue === token ? octokit : createOctokit(breakerTokenValue);
+        breaker = githubIssueBreaker(breakerOctokit, breakerOwner, breakerRepo, {
             ...(args.journal !== undefined && { journalPath: args.journal }),
         });
     }
@@ -15512,6 +15666,14 @@ async function runApplyCommand(args, deps) {
             registry,
             canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
             sink: breakerRegressionSink(breaker),
+            // Printed to stdout BEFORE `sink.record` (which calls the
+            // breaker, a network operation) is even attempted — so the
+            // incident survives a breaker outage instead of vanishing behind
+            // a bare "Not Found" the way it did in the run that motivated
+            // this (see `apply.ts`'s `VerificationOptions.onIncident` doc).
+            onIncident: (incident) => {
+                process.stdout.write(`${formatIncidentReport(incident, { ...(args.journal !== undefined && { journalPath: args.journal }) })}\n`);
+            },
         };
     }
     const journal = deps.journal ?? (args.journal ? ndjsonJournal(args.journal) : undefined);
@@ -15658,6 +15820,7 @@ if (isDirectRun) {
 var __webpack_exports__buildPackageTokenMap = __webpack_exports__.QH;
 var __webpack_exports__parseArgv = __webpack_exports__.SB;
 var __webpack_exports__resolveArgv = __webpack_exports__.rf;
+var __webpack_exports__resolveBreakerToken = __webpack_exports__.u9;
 var __webpack_exports__runCommand = __webpack_exports__.d1;
 var __webpack_exports__tokenizeArgs = __webpack_exports__.vL;
-export { __webpack_exports__buildPackageTokenMap as buildPackageTokenMap, __webpack_exports__parseArgv as parseArgv, __webpack_exports__resolveArgv as resolveArgv, __webpack_exports__runCommand as runCommand, __webpack_exports__tokenizeArgs as tokenizeArgs };
+export { __webpack_exports__buildPackageTokenMap as buildPackageTokenMap, __webpack_exports__parseArgv as parseArgv, __webpack_exports__resolveArgv as resolveArgv, __webpack_exports__resolveBreakerToken as resolveBreakerToken, __webpack_exports__runCommand as runCommand, __webpack_exports__tokenizeArgs as tokenizeArgs };

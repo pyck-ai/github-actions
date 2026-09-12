@@ -14,6 +14,7 @@ import { createCachingRegistryReader } from "./resolve-cache.js";
 import { applyMutator, type Mutator } from "./mutator.js";
 import { grantApply, nodePlanFileSystem, type PlanFileSystem } from "./apply-capability.js";
 import { githubIssueBreaker, breakerRegressionSink, type Breaker } from "./breaker.js";
+import { formatIncidentReport } from "./incident-report.js";
 import { ndjsonJournal, type Clock, type Journal } from "./journal.js";
 import { registryPathFor, tag, type RegistryPath, type Tag } from "./domain.js";
 import { parseManifest } from "./manifest/parse.js";
@@ -131,6 +132,17 @@ interface ParsedArgs {
   canaryTag?: string;
   registryOwner?: string;
   breakerRepo?: string;
+  /**
+   * A token authenticated for issue read/write in the breaker's repo,
+   * SEPARATE from `GITHUB_TOKEN` (used for the registry/Packages API and,
+   * for `apply`, deleting versions). Falls back to `GHCR_TIDY_BREAKER_TOKEN`
+   * (see `runApplyCommand`), then to `GITHUB_TOKEN` itself for setups
+   * where one token legitimately carries both scopes. See
+   * `breaker.ts`'s `githubIssueBreaker` doc for why this must not simply
+   * reuse a `delete:packages`-scoped PAT — that combination is exactly
+   * what produced a 404 on a real apply run.
+   */
+  breakerToken?: string;
   apply: boolean;
   /**
    * Opt-in remediation, OFF by default: tolerates a keep-root whose
@@ -227,6 +239,9 @@ export function parseArgv(argv: readonly string[]): { subcommand: Subcommand; ar
         break;
       case "--breaker-repo":
         args.breakerRepo = nextValue();
+        break;
+      case "--breaker-token":
+        args.breakerToken = nextValue();
         break;
       case "--apply":
         args.apply = true;
@@ -407,6 +422,29 @@ export function buildPackageTokenMap(
     add(canaryPackage);
   }
   return pathToName;
+}
+
+/**
+ * Which token `githubIssueBreaker` should authenticate with — deliberately
+ * SEPARATE from the registry/Packages-API token, which for `apply` is
+ * typically a `delete:packages`-scoped PAT with no issues access (see
+ * `breaker.ts`'s `githubIssueBreaker` doc for what happens when the two
+ * are conflated: a bare 404 with no indication the token was the
+ * problem). Precedence, highest first: `--breaker-token`, then
+ * `GHCR_TIDY_BREAKER_TOKEN`, then `fallback` (the registry token itself)
+ * — the last resort exists only for setups where one token legitimately
+ * carries both scopes (e.g. local/dry-run use with a broadly-scoped PAT).
+ * Pure and side-effect-free specifically so this precedence is
+ * unit-testable without constructing an Octokit client or making any
+ * network call — mirroring {@link buildPackageTokenMap}'s reason for
+ * being its own function.
+ */
+export function resolveBreakerToken(
+  args: Pick<ParsedArgs, "breakerToken">,
+  env: NodeJS.ProcessEnv,
+  fallback: string,
+): string {
+  return args.breakerToken ?? env.GHCR_TIDY_BREAKER_TOKEN ?? fallback;
 }
 
 function buildRegistryAdapters(
@@ -655,10 +693,16 @@ function formatCanaryFailureReason(reason: CanaryFailureReason): string {
   }
 }
 
-/** Renders one {@link ApplyAbortReason} for the `ABORTED:` line — the `canary-failed` case additionally names the canary's own path/tag and the cause, since a bare "canary-failed" gave no way to diagnose the first real apply's spurious abort. */
+/** Renders one {@link ApplyAbortReason} for the `ABORTED:` line — the `canary-failed` case additionally names the canary's own path/tag and the cause, since a bare "canary-failed" gave no way to diagnose the first real apply's spurious abort. The `regression` case additionally names a `sinkError` (the breaker itself failed to record the — still real, still confirmed — regression) rather than letting that failure erase the summary line entirely, as it did in the incident that motivated `sinkError`. */
 function formatAbortReason(reason: ApplyAbortReason): string {
   if (reason.kind === "canary-failed") {
     return `canary-failed (canary ${reason.path}:${reason.tag} — ${formatCanaryFailureReason(reason.reason)})`;
+  }
+  if (reason.kind === "regression" && reason.sinkError !== undefined) {
+    return `regression (breaker also failed to record it: ${reason.sinkError})`;
+  }
+  if (reason.kind === "verification-unavailable") {
+    return `verification-unavailable (${String(reason.tags.length)} tag(s) could not be confirmed healthy or broken in package ${reason.packageName} — not treated as a regression, breaker not tripped)`;
   }
   return reason.kind;
 }
@@ -777,7 +821,10 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
         `--breaker-repo/GITHUB_REPOSITORY must be "<owner>/<repo>", got "${repoSpec}"`,
       );
     }
-    breaker = githubIssueBreaker(octokit as RegistryOctokit, breakerOwner, breakerRepo, {
+    const breakerTokenValue = resolveBreakerToken(args, process.env, token as string);
+    const breakerOctokit =
+      breakerTokenValue === token ? (octokit as RegistryOctokit) : createOctokit(breakerTokenValue);
+    breaker = githubIssueBreaker(breakerOctokit, breakerOwner, breakerRepo, {
       ...(args.journal !== undefined && { journalPath: args.journal }),
     });
   }
@@ -844,6 +891,16 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
       registry,
       canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
       sink: breakerRegressionSink(breaker),
+      // Printed to stdout BEFORE `sink.record` (which calls the
+      // breaker, a network operation) is even attempted — so the
+      // incident survives a breaker outage instead of vanishing behind
+      // a bare "Not Found" the way it did in the run that motivated
+      // this (see `apply.ts`'s `VerificationOptions.onIncident` doc).
+      onIncident: (incident) => {
+        process.stdout.write(
+          `${formatIncidentReport(incident, { ...(args.journal !== undefined && { journalPath: args.journal }) })}\n`,
+        );
+      },
     };
   }
 

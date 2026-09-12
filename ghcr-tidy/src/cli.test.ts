@@ -12,6 +12,7 @@ import {
   buildPackageTokenMap,
   parseArgv,
   resolveArgv,
+  resolveBreakerToken,
   runCommand,
   tokenizeArgs,
   type CliDeps,
@@ -986,5 +987,27 @@ describe("buildPackageTokenMap", () => {
     expect(map.size).toBe(1);
     expect(map.get(registryPathFor(owner, buildcache))).toBe(buildcache);
     expect(map.get(registryPathFor(owner, base))).toBeUndefined();
+  });
+});
+
+describe("resolveBreakerToken — never let the delete:packages PAT double as the issues token", () => {
+  it("prefers --breaker-token over everything else", () => {
+    expect(
+      resolveBreakerToken(
+        { breakerToken: "from-flag" },
+        { GHCR_TIDY_BREAKER_TOKEN: "from-env" },
+        "registry-token",
+      ),
+    ).toBe("from-flag");
+  });
+
+  it("falls back to GHCR_TIDY_BREAKER_TOKEN when no flag is given", () => {
+    expect(resolveBreakerToken({}, { GHCR_TIDY_BREAKER_TOKEN: "from-env" }, "registry-token")).toBe(
+      "from-env",
+    );
+  });
+
+  it("falls back to the registry token as a last resort when neither is configured — the pre-fix (and still-supported single-token) behaviour", () => {
+    expect(resolveBreakerToken({}, {}, "registry-token")).toBe("registry-token");
   });
 });

@@ -241,10 +241,22 @@ function toFinding(t: Tag, pre: TagSnapshot, post: TagSnapshot): RegressedTag {
 }
 
 export interface CompareSnapshotsResult {
-  /** A HEALTHY (or unverifiable) pre-snapshot tag is now broken, or an unverifiable pre-snapshot tag is still broken post-apply — see this module's doc and rule 5 of the task brief. Aborts the run. */
+  /** A HEALTHY (or unverifiable) pre-snapshot tag is now CONFIRMED broken (a real 404 evidence), or an unverifiable pre-snapshot tag is now confirmed broken post-apply — see this module's doc. This is the ONLY bucket that trips the breaker (`breaker.ts`'s `breakerRegressionSink`): every finding in it is backed by direct 404 evidence, never by a merely-unreadable tag. Aborts the run. */
   readonly regressions: readonly RegressedTag[];
   /** Broken in BOTH pre and post — not caused by this run, reported but does not abort. */
   readonly preExisting: readonly RegressedTag[];
+  /**
+   * Neither confirmed healthy nor confirmed broken after this run: a
+   * transient read failure on an individual tag, or a whole snapshot
+   * (pre or post) that could not be taken at all. NEVER trips the
+   * breaker — `isUnknown` is not evidence of damage, and treating it as
+   * such is exactly the defect that turned one failed `listTags` call
+   * into thousands of false "regressions" (every tag silently defaulted
+   * to a confirmed-not-found post state). The caller must still fail the
+   * run loudly when this is non-empty: an operator cannot be told
+   * everything is fine when nothing was actually confirmed.
+   */
+  readonly unverified: readonly RegressedTag[];
 }
 
 export interface CompareSnapshotsOptions {
@@ -252,11 +264,27 @@ export interface CompareSnapshotsOptions {
    * Set when the PRE-snapshot itself failed operationally (e.g.
    * `registry.listTags` threw) rather than merely reporting individual
    * tags as `"unknown"`. Per the task brief's strict posture (rule 5),
-   * every broken POST tag is then treated as a regression: there is no
-   * "pre-existing" bucket to fall back into because there is no reliable
-   * pre-apply data for any tag at all.
+   * there is then no reliable per-tag baseline at all, so every tag
+   * `post` currently knows about is examined against a synthetic
+   * `"unknown"` pre-state instead — see `compareSnapshots`'s doc for how
+   * that still separates CONFIRMED post-apply damage (a regression) from
+   * a merely unverifiable one (`unverified`), rather than collapsing both
+   * into "regression" the way the pre-fix strict posture did.
    */
   readonly preSnapshotFailed?: boolean;
+  /**
+   * Set when the POST-snapshot itself failed operationally. Every tag's
+   * post state is then treated as `"unknown"` UNCONDITIONALLY — never
+   * looked up in (the necessarily incomplete or empty) `post` map at
+   * all. This is the fix for the incident that motivated this option:
+   * without it, a whole-snapshot read failure produced an empty `post`
+   * map, and every tag `pre` had ever seen as healthy defaulted (via the
+   * ordinary "absent from post means not-found" rule, which is only
+   * valid when the post read actually succeeded) to CONFIRMED broken —
+   * turning one infrastructure hiccup into a mass false regression that
+   * tripped the breaker on a real apply run.
+   */
+  readonly postSnapshotFailed?: boolean;
 }
 
 /**
@@ -280,46 +308,72 @@ export function compareSnapshots(
   post: ReadonlyMap<Tag, TagSnapshot>,
   options: CompareSnapshotsOptions = {},
 ): CompareSnapshotsResult {
-  if (options.preSnapshotFailed) {
-    const regressions: RegressedTag[] = [];
-    for (const [t, postState] of post) {
-      if (!isHealthy(postState)) {
-        regressions.push(toFinding(t, { resolve: "unknown", closure: "unknown" }, postState));
-      }
+  const postSnapshotFailed = options.postSnapshotFailed ?? false;
+
+  function effectivePostState(t: Tag): TagSnapshot {
+    if (postSnapshotFailed) {
+      // See `CompareSnapshotsOptions.postSnapshotFailed`'s doc: the read
+      // itself failed, so `post` (however it looks) is not trustworthy
+      // evidence for ANY tag — never fall through to the "absent means
+      // not-found" default below, which is only valid when the post read
+      // actually succeeded.
+      return { resolve: "unknown", closure: "unknown" };
     }
-    return { regressions, preExisting: [] };
+    return post.get(t) ?? { resolve: "not-found", closure: "unknown" };
   }
+
+  // When the PRE-snapshot itself failed there is no reliable baseline to
+  // iterate (`pre` is empty) — instead walk every tag `post` currently
+  // knows about, each with a synthetic `"unknown"` pre-state, so the
+  // per-tag classification below still runs and still separates
+  // confirmed damage from merely-unverifiable tags.
+  const entries: Iterable<readonly [Tag, TagSnapshot]> = options.preSnapshotFailed
+    ? Array.from(post.keys(), (t) => [t, { resolve: "unknown", closure: "unknown" } as const])
+    : pre;
 
   const regressions: RegressedTag[] = [];
   const preExisting: RegressedTag[] = [];
+  const unverified: RegressedTag[] = [];
 
-  for (const [t, preState] of pre) {
-    const postState: TagSnapshot = post.get(t) ?? { resolve: "not-found", closure: "unknown" };
+  for (const [t, preState] of entries) {
+    const postState = effectivePostState(t);
 
     if (isHealthy(preState)) {
       if (isHealthy(postState) && preState.digest === postState.digest) {
         continue;
       }
-      regressions.push(toFinding(t, preState, postState));
+      if (isUnknown(postState)) {
+        // Cannot confirm the tag is broken — only that this run's read of
+        // it, post-apply, was inconclusive. Surfaced, but not a
+        // regression: see this module's doc on why `isUnknown` must never
+        // trip the breaker.
+        unverified.push(toFinding(t, preState, postState));
+      } else {
+        regressions.push(toFinding(t, preState, postState));
+      }
       continue;
     }
 
     if (isUnknown(preState)) {
-      if (!isHealthy(postState)) {
+      if (isConfirmedBroken(postState)) {
         regressions.push(toFinding(t, preState, postState));
+      } else if (isUnknown(postState)) {
+        unverified.push(toFinding(t, preState, postState));
       }
+      // Else: post state is healthy — resolved fine, nothing to report.
       continue;
     }
 
     // isConfirmedBroken(preState) must hold — isHealthy and isUnknown are exhaustive otherwise.
     if (isConfirmedBroken(postState)) {
       preExisting.push(toFinding(t, preState, postState));
+    } else if (isUnknown(postState)) {
+      unverified.push(toFinding(t, preState, postState));
     }
-    // Else: improved, or post state is unknown (inconclusive) — neither
-    // is reported; there is no confirmed new damage to act on.
+    // Else: improved (now resolves) — no confirmed new damage to act on.
   }
 
-  return { regressions, preExisting };
+  return { regressions, preExisting, unverified };
 }
 
 /**
