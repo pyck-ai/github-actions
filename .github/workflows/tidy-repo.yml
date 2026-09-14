@@ -101,6 +101,8 @@ jobs:
     needs: clean-old-workflow-runs
     runs-on: self-hosted
     permissions:
+      actions: write # required for stale's run-state cache, to resume after
+        # operations-per-run is exhausted (not for workflow-run deletion)
       issues: write # required to list/label/close issues
       pull-requests: write # required to list/label/close PRs
     steps:
