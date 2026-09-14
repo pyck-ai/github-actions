@@ -101,7 +101,8 @@ jobs:
     needs: clean-old-workflow-runs
     runs-on: self-hosted
     permissions:
-      pull-requests: write # required to label/close issues and PRs
+      issues: write # required to list/label/close issues
+      pull-requests: write # required to list/label/close PRs
     steps:
       - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
         with:
@@ -127,6 +128,7 @@ jobs:
     runs-on: self-hosted
     permissions:
       contents: write # required to delete branches
+      pull-requests: read # required to list open PRs for exclude_open_pr_branches
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

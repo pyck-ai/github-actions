@@ -29,10 +29,13 @@ jobs:
     uses: ./.github/workflows/tidy-repo.yml
     # Union of the permissions tidy-repo.yml's three jobs declare:
     # clean-old-workflow-runs needs actions: write,
-    # clean-stale-issues-and-prs needs pull-requests: write,
-    # clean-stale-branches needs contents: write.
+    # clean-stale-issues-and-prs needs issues: write and pull-requests: write,
+    # clean-stale-branches needs contents: write and pull-requests: read
+    # (write already covers the read here, so pull-requests: write suffices
+    # for both jobs).
     permissions:
       actions: write
+      issues: write
       pull-requests: write
       contents: write
     secrets: inherit
