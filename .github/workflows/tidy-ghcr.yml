@@ -207,16 +207,13 @@ jobs:
         env:
           # A single `secrets.GITHUB_TOKEN`, scoped by this job's own
           # `permissions:` block above (`packages: write` for the registry
-          # API, `issues: write` for the breaker), does both jobs now that
-          # deletion no longer needs a separate PAT. No
-          # `GHCR_TIDY_BREAKER_TOKEN` is set: `cli.ts`'s
-          # `resolveBreakerToken` falls back to the registry token itself
-          # (its documented last-resort precedence) when no breaker token
-          # is configured, which is exactly this setup, one token carrying
-          # both scopes. That fallback is what previously produced a bare
-          # 404 when the "registry token" was a `delete:packages`-scoped
-          # PAT with no issues access; it is safe here because the
-          # fallback token genuinely has issues access.
+          # API, `issues: write` for the breaker), covers both. No
+          # `GHCR_TIDY_BREAKER_TOKEN` is set, so `cli.ts`'s
+          # `resolveBreakerToken` falls back to the registry token itself,
+          # its documented last-resort precedence. That is safe ONLY
+          # because this token carries issues access too: a registry-only
+          # token would fail the breaker with a bare 404, since GitHub
+          # answers 404 rather than 403 for a token lacking issue scope.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Uploaded `if: always()` so a failed, aborted, or breaker-tripped run
