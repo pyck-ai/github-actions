@@ -97,20 +97,28 @@ jobs:
   tidy:
     name: Plan / apply GHCR retention
     runs-on: self-hosted
+    timeout-minutes: 180
     # `contents: read` to check out the caller's manifest.
-    # `packages: read` to plan (list versions, read manifests) for every
-    # configured package via GITHUB_TOKEN.
-    # `issues: write` because the breaker (mandatory on the apply path —
+    # `packages: write` to plan AND delete versions via GITHUB_TOKEN. GitHub
+    # automatically grants a repository admin on any package it publishes,
+    # and every package this workflow prunes is repo-linked to its
+    # publishing workflow, so GITHUB_TOKEN with `packages: write` can
+    # delete it. Proved by direct experiment: a throwaway package published
+    # from a workflow was deleted using only `secrets.GITHUB_TOKEN`
+    # (DELETE .../versions/{id} -> 400 "cannot delete the last tagged
+    # version", a documented constraint, not an auth failure; DELETE
+    # .../packages/container/<name> -> 204). `read` alone plans but cannot
+    # delete. A package that is NOT repo-linked to the caller (should one
+    # ever be added to a manifest) now fails that deletion loudly with a
+    # 403, recorded as a failed attempt with its group abandoned, rather
+    # than the old hard failure at workflow start.
+    # `issues: write` because the breaker (mandatory on the apply path,
     # see ghcr-tidy/breaker.ts) opens/comments on a labelled issue in THIS
     # repo (the caller) the moment post-apply verification finds a
     # regression, and checks for that issue before every apply run.
-    # `packages: write` is NOT listed here: GITHUB_TOKEN cannot delete
-    # packages regardless of scope (GitHub Packages has no "delete" grant
-    # for the default token). Deleting requires GHCR_ADMIN_TOKEN — see the
-    # "Deleting packages needs a PAT" step below.
     permissions:
       contents: read
-      packages: read
+      packages: write
       issues: write
     steps:
       - name: Checkout repository
@@ -168,28 +176,6 @@ jobs:
             echo "delete-broken-roots=${{ github.event_name != 'schedule' && inputs.delete-broken-roots == true }}"
           } >> "$GITHUB_OUTPUT"
 
-      # Deleting packages needs `delete:packages`, a scope GITHUB_TOKEN can
-      # never carry (see the job's `permissions:` comment above). Prefer a
-      # PAT supplied by the caller as `secrets.GHCR_ADMIN_TOKEN`; fall back
-      # to GITHUB_TOKEN for plan-only runs (and so `validate`/`plan` work
-      # with zero extra setup in a consumer). If `apply` is requested with
-      # no admin token configured, fail loudly here rather than let the
-      # CLI's own `apply` fail deep inside a delete attempt with the
-      # budget partially spent.
-      - name: Select registry token
-        id: token
-        env:
-          GHCR_ADMIN_TOKEN: ${{ secrets.GHCR_ADMIN_TOKEN }}
-        run: |
-          if [ -n "$GHCR_ADMIN_TOKEN" ]; then
-            echo "token=$GHCR_ADMIN_TOKEN" >> "$GITHUB_OUTPUT"
-          elif [ "${{ steps.effective.outputs.apply }}" = "true" ]; then
-            echo "::error::apply was requested but no secrets.GHCR_ADMIN_TOKEN is configured — GITHUB_TOKEN cannot delete packages (no delete:packages scope). Add a PAT with that scope as GHCR_ADMIN_TOKEN in the caller's repo/org secrets." >&2
-            exit 1
-          else
-            echo "token=${{ secrets.GITHUB_TOKEN }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Plan
         if: steps.effective.outputs.apply != 'true'
         uses: $/ghcr-tidy
@@ -202,7 +188,7 @@ jobs:
             ${{ inputs.package != '' && format('--package {0}', inputs.package) || '' }}
             ${{ steps.effective.outputs.delete-broken-roots == 'true' && '--delete-broken-roots' || '' }}
         env:
-          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Apply
         if: steps.effective.outputs.apply == 'true'
@@ -219,19 +205,19 @@ jobs:
             ${{ inputs.package != '' && format('--package {0}', inputs.package) || '' }}
             ${{ steps.effective.outputs.delete-broken-roots == 'true' && '--delete-broken-roots' || '' }}
         env:
-          # `GITHUB_TOKEN` here is `steps.token.outputs.token` — on a real
-          # apply that is `secrets.GHCR_ADMIN_TOKEN`, a PAT scoped for
-          # deleting GHCR versions (`delete:packages`) with NO issues
-          # access. The breaker manages issues in THIS repo instead, so it
-          # is handed the job's own `secrets.GITHUB_TOKEN` (which has
-          # `issues: write` via this job's `permissions:` block above) as
-          # a SEPARATE token — see `breaker.ts`'s `githubIssueBreaker` doc
-          # and `cli.ts`'s `GHCR_TIDY_BREAKER_TOKEN`. Passing the admin PAT
-          # for both produced a bare 404 on a real apply run: GitHub
-          # cannot distinguish "wrong scope" from "no such repo" on this
-          # endpoint.
-          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
-          GHCR_TIDY_BREAKER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A single `secrets.GITHUB_TOKEN`, scoped by this job's own
+          # `permissions:` block above (`packages: write` for the registry
+          # API, `issues: write` for the breaker), does both jobs now that
+          # deletion no longer needs a separate PAT. No
+          # `GHCR_TIDY_BREAKER_TOKEN` is set: `cli.ts`'s
+          # `resolveBreakerToken` falls back to the registry token itself
+          # (its documented last-resort precedence) when no breaker token
+          # is configured, which is exactly this setup, one token carrying
+          # both scopes. That fallback is what previously produced a bare
+          # 404 when the "registry token" was a `delete:packages`-scoped
+          # PAT with no issues access; it is safe here because the
+          # fallback token genuinely has issues access.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Uploaded `if: always()` so a failed, aborted, or breaker-tripped run
       # still leaves its forensic record — the plan shows exactly what was
