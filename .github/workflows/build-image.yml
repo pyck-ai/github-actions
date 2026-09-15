@@ -98,6 +98,11 @@ jobs:
   # variant is picked up by the build matrix without touching CI.
   discover:
     runs-on: ${{ inputs.runs-on }}
+    # Reads the bake file and computes the matrix; observed well under a
+    # minute in practice. Generous headroom over that, and still a small
+    # fraction of the 360-minute default, so a hung runner fails fast
+    # instead of holding a concurrency slot for hours.
+    timeout-minutes: 10
     permissions:
       contents: read # required to checkout the calling repo
     outputs:
@@ -464,6 +469,10 @@ jobs:
     needs: [discover, build, publish]
     if: always()
     runs-on: ${{ inputs.runs-on }}
+    # Pure `needs.*.result` aggregation, no checkout, no API calls;
+    # observed well under a minute. Kept small so a hung runner is
+    # reported quickly rather than holding the required check open.
+    timeout-minutes: 10
     permissions: {} # aggregation only; no API calls needed
     steps:
       - name: Verify all jobs succeeded

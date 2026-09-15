@@ -80,6 +80,10 @@ jobs:
   clean-old-workflow-runs:
     name: Delete old workflow runs
     runs-on: self-hosted
+    # Observed 13s-22s on a small steady-state backlog, one clearing a
+    # larger one-off backlog took ~8.5 minutes. Generous headroom over
+    # that, well under the 360-minute default.
+    timeout-minutes: 20
     permissions:
       actions: write # required to delete workflow runs
     steps:
@@ -100,6 +104,9 @@ jobs:
     name: Close stale issues and PRs
     needs: clean-old-workflow-runs
     runs-on: self-hosted
+    # Observed a few seconds per run (operations-per-run: 100 keeps a
+    # single run bounded). Generous headroom over that.
+    timeout-minutes: 10
     permissions:
       # `actions: write` is for stale's own run-state cache, so it can resume
       # after `operations-per-run` is exhausted rather than restarting from the
@@ -130,6 +137,8 @@ jobs:
     name: Delete stale branches
     needs: clean-stale-issues-and-prs
     runs-on: self-hosted
+    # Observed under 20s per run. Generous headroom over that.
+    timeout-minutes: 10
     permissions:
       contents: write # required to delete branches
       pull-requests: read # required to list open PRs for exclude_open_pr_branches
