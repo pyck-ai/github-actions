@@ -28,11 +28,17 @@ on:
         description: >-
           Maximum number of version-deletion attempts this run may make
           (required for `apply` to do anything; ignored for plan-only
-          runs). Same "schedule inputs are empty" caveat as `apply` — see
-          the `apply-effective` step.
-        type: number
+          runs). Must be a non-negative integer if set — validated in the
+          `Validate string inputs` step below, which fails the run early
+          rather than let a malformed value reach the CLI. `type: string`
+          (not `number`): every caller value ends up as a shell argv
+          string for the `ghcr-tidy` CLI's own `--budget` flag anyway, so
+          the conversion belongs here rather than forcing every caller
+          through `fromJSON()`. Same "schedule inputs are empty" caveat as
+          `apply` — see the `apply-effective` step.
+        type: string
         required: false
-        default: 200
+        default: "200"
       delete-broken-roots:
         description: >-
           Opt-in remediation for a keep-root whose subtree contains a
@@ -67,9 +73,17 @@ on:
         description: >-
           Trailing baseline for the volume alarm: `apply` refuses to run
           when the plan deletes more than a configurable multiple (see the
-          CLI's own default) of this many versions. Leave unset to disable
-          the volume alarm for this call.
-        type: number
+          CLI's own default) of this many versions. Leave empty (the
+          default) to disable the volume alarm for this call — an empty
+          `baseline` here means the `--baseline` flag is omitted entirely
+          from the CLI invocation below, never passed as `0` (which would
+          instead mean "refuse any plan that deletes anything"; there is
+          no other way to express "off" once the input is a plain string,
+          so this omission happens in the run steps below rather than via
+          a workflow_call default). `type: string`, same reasoning as
+          `budget` above. Must be a non-negative integer if set —
+          validated in the `Validate string inputs` step below.
+        type: string
         required: false
 
 # NO top-level `concurrency:` here, deliberately — see tidy-repo.yml's
@@ -101,6 +115,31 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `budget`/`baseline` are `type: string` (see their input docs
+      # above), so nothing stops a caller from passing something that
+      # isn't a number at all. Fail loudly here, before either value ever
+      # reaches a CLI flag or a later step's arithmetic, rather than let
+      # it surface as a confusing `ghcr-tidy` usage error or an empty/NaN
+      # budget deep inside the apply path. Empty is valid for both (it
+      # means "use the schedule default" for `budget`, "disable the
+      # volume alarm" for `baseline` — see the `apply-effective` step and
+      # the `Apply` step's `--baseline` construction respectively).
+      - name: Validate string inputs
+        run: |
+          validate() {
+            name="$1"
+            value="$2"
+            [ -z "$value" ] && return 0
+            case "$value" in
+              *[!0-9]*)
+                echo "::error::\`$name\` must be a non-negative integer if set, got: $value" >&2
+                exit 1
+                ;;
+            esac
+          }
+          validate budget "${{ inputs.budget }}"
+          validate baseline "${{ inputs.baseline }}"
 
       # On a `schedule` event the `inputs` context is EMPTY (not merely
       # defaulted) — GitHub does not evaluate `workflow_call` input
