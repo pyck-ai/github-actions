@@ -1,9 +1,13 @@
 name: tidy
 run-name: Tidy repo
 
-# Dogfoods this repo's own reusable housekeeping workflow: delete old
-# workflow runs, close stale issues/PRs, and delete stale branches. Every
-# consumer of tidy-repo.yml wires it up like this; the provider should too.
+# Dogfoods this repo's own reusable workflows: housekeeping (delete old
+# workflow runs, close stale issues/PRs, delete stale branches) and GHCR
+# retention. Every consumer of tidy-repo.yml/tidy-ghcr.yml wires them up
+# like this; the provider should too. This repo publishes no container
+# images (see `.ghcr-tidy.yaml`'s own header), so the tidy-ghcr job always
+# plans/applies against zero packages: it proves the workflow's wiring and
+# token permissions on every run, never its deletion path.
 on:
   schedule:
     # Daily. Neither ci.yml nor release.yml (nor any other workflow in this
@@ -45,3 +49,23 @@ jobs:
     # merge/superseding, so 90 days of inactivity before deletion is not
     # tight; and 30/7-day stale handling gives outside contributors a fair
     # window before an issue or PR gets closed. Not overridden.
+
+  tidy-ghcr:
+    name: Tidy GHCR
+    uses: ./.github/workflows/tidy-ghcr.yml
+    # Matches tidy-ghcr.yml's own job permissions (contents: read,
+    # packages: write, issues: write); see that file for what each is for.
+    permissions:
+      contents: read
+      packages: write
+      issues: write
+    secrets: inherit
+    # No inputs: `.ghcr-tidy.yaml` (packages: []) and the workflow's own
+    # defaults are enough. On the daily `schedule` trigger tidy-ghcr.yml
+    # forces `apply` on regardless of `inputs.apply` (see its
+    # `apply-effective` step): harmless here since there is never
+    # anything to delete, and this is precisely what dogfoods the apply
+    # path (breaker check, canary skip, volume alarm) end to end with zero
+    # risk. A manual `workflow_dispatch` run defaults to `apply: false`
+    # (plan-only), which is what proves the token/permissions wiring
+    # without exercising the delete path at all.
