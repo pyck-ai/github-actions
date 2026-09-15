@@ -543,7 +543,7 @@ export const EXIT_APPLY_SAFETY = 4;
 
 /**
  * Maps an {@link ApplyResult} to an exit code, extending the planning
- * core / `imgverify`'s scheme with `4 = safety`.
+ * core's `0`/`1` scheme with `4 = safety`.
  *
  * The zero-mutation guard: if the plan contained at least one group but
  * NOTHING was attempted (e.g. the whole budget was `0`, or every group

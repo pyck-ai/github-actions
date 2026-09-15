@@ -46,10 +46,10 @@ import type { PackagesClient, RegistryReader } from "./ports.js";
  * (`plan.ts`), the apply path (`apply-capability.ts`, `apply.ts`,
  * `mutator.ts`), and safety machinery (`breaker.ts`, `volume-alarm.ts`,
  * `verify.ts`) into three subcommands driven by one config manifest,
- * `.ghcr-tidy.yaml`. Follows `imgverify/cli.ts`'s house style closely:
- * closed-schema config, explicit argv parsing, a small, total exit-code
- * mapping, and the `INPUT_ARGS`-vs-argv duality that lets this same
- * bundle serve as both a plain CLI and (later) a JS action.
+ * `.ghcr-tidy.yaml`: closed-schema config, explicit argv parsing, a
+ * small, total exit-code mapping, and the `INPUT_ARGS`-vs-argv duality
+ * that lets this same bundle serve as both a plain CLI and (later) a JS
+ * action.
  *
  * ## Exit codes
  *
@@ -96,9 +96,8 @@ const DEFAULT_MANIFEST_PATH = ".ghcr-tidy.yaml";
  * ceiling on concurrent requests hitting `ghcr.io` regardless of how many
  * packages or BFS levels are logically "active" at once.
  *
- * 4, matching `imgverify/cli.ts`'s own `--jobs` default for the same
- * reason it gives there: GHCR applies SECONDARY rate limits to bursts
- * (see this project's incident notes on `flutter-rfw`/`baseimages`), so
+ * 4: GHCR applies SECONDARY rate limits to bursts (see this project's
+ * incident notes on `flutter-rfw`/`baseimages`), so
  * the fan-out this change adds within a single package (previously fully
  * serial: one HEAD per tag, one fetch per BFS node) must stay bounded
  * rather than firing every tag/every frontier node for every package at
@@ -112,7 +111,7 @@ function errorMessage(error: unknown): string {
 
 type Subcommand = "validate" | "plan" | "apply";
 
-/** A CLI usage problem (bad flag, missing value, unrecognised subcommand) — always a CONFIG error, same as `imgverify/cli.ts`'s `UsageError`. */
+/** A CLI usage problem (bad flag, missing value, unrecognised subcommand) — always a CONFIG error. */
 class UsageError extends Error {
   constructor(message: string) {
     super(message);
@@ -162,9 +161,8 @@ interface ParsedArgs {
  * Parses argv (without `node`/script path). The first token is a
  * subcommand (`validate`/`plan`/`apply`) ONLY if it exactly matches one of
  * those three names; otherwise the whole of argv is treated as `plan`'s
- * flags — `plan` is the default subcommand, mirroring `imgverify`'s `run`
- * default, since it is the read-only, safe-to-run-with-no-ceremony
- * operation.
+ * flags — `plan` is the default subcommand since it is the read-only,
+ * safe-to-run-with-no-ceremony operation.
  */
 export function parseArgv(argv: readonly string[]): { subcommand: Subcommand; args: ParsedArgs } {
   let subcommand: Subcommand = "plan";
@@ -268,7 +266,7 @@ async function loadManifestFile(manifestFlag: string | undefined): Promise<Manif
   return parseManifest(content, manifestPath);
 }
 
-/** Applies `--package` filtering: an exact match against each configured entry's `match`. Empty `filters` means "every configured package". Throws a {@link UsageError} (CONFIG) if a filter matches nothing — the same posture `imgverify`'s `--target` takes for an unmatched glob. */
+/** Applies `--package` filtering: an exact match against each configured entry's `match`. Empty `filters` means "every configured package". Throws a {@link UsageError} (CONFIG) if a filter matches nothing. */
 function selectPackages(
   manifest: Manifest,
   filters: readonly string[],
@@ -294,9 +292,9 @@ function selectPackages(
 
 /**
  * Runs `worker` over `items` with at most `limit` concurrently in flight,
- * writing each result to its original index — a small bounded pool,
- * mirroring `imgverify/cli.ts`'s `runPool` exactly (see that module's doc
- * comment for why this is not a plain `Promise.all`).
+ * writing each result to its original index — a small bounded pool. Not a
+ * plain `Promise.all`: that would fire every item at once with no cap on
+ * concurrent registry requests.
  */
 async function runPool<T, R>(
   items: readonly T[],
@@ -331,7 +329,7 @@ interface PackagePlanOutcome {
   readonly result: PackagePlanResult;
 }
 
-/** Injectable production dependencies for `plan`/`apply` — real network access by default, faked entirely in tests (mirroring `imgverify/cli.ts`'s `CliDeps`). */
+/** Injectable production dependencies for `plan`/`apply` — real network access by default, faked entirely in tests. */
 export interface CliDeps {
   registry?: RegistryReader;
   packages?: PackagesClient;
@@ -510,8 +508,7 @@ function progressOutcomeSummary(result: PackagePlanResult): string {
 /**
  * Plans every selected package, then assembles a persisted {@link Plan}
  * (`apply`-ready) from whichever of them came back `"planned"`.
- * Concurrency bounded by `--jobs` (default {@link DEFAULT_JOBS}), matching
- * `imgverify/cli.ts`'s target-verification pool.
+ * Concurrency bounded by `--jobs` (default {@link DEFAULT_JOBS}).
  *
  * Emits one terse progress line via `progress` when each package STARTS
  * and another when it FINISHES (with its result and elapsed time) — a
@@ -983,11 +980,7 @@ export async function runCommand(argv: readonly string[], deps: CliDeps = {}): P
 
 /**
  * Splits a single argument string (e.g. `INPUT_ARGS`'s value) into argv
- * tokens, respecting single- and double-quoted segments. Identical in
- * behaviour to `imgverify/cli.ts`'s `tokenizeArgs` — duplicated rather than
- * imported so the two CLIs' bundles stay independent (`imgverify` is
- * bundled as a JS action today; `ghcr-tidy` is not yet — see this
- * project's task notes on scope).
+ * tokens, respecting single- and double-quoted segments.
  */
 export function tokenizeArgs(input: string): string[] {
   const tokens: string[] = [];
@@ -1028,9 +1021,10 @@ export function tokenizeArgs(input: string): string[] {
 
 /**
  * Picks argv for the run: `INPUT_ARGS` when defined (running as a future
- * JS action), falling back to real `process.argv` otherwise — see
- * `imgverify/cli.ts`'s `resolveArgv` doc for the exact semantics this
- * mirrors, including why "defined" (not "non-empty") is the signal.
+ * JS action), falling back to real `process.argv` otherwise. Tests
+ * "defined" rather than "non-empty" so an explicitly-set-but-empty
+ * `INPUT_ARGS` is treated as a usage error below, not silently ignored
+ * in favour of `process.argv`.
  */
 export function resolveArgv(env: NodeJS.ProcessEnv, argv: readonly string[]): string[] {
   const inputArgs = env.INPUT_ARGS;

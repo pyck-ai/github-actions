@@ -5,11 +5,10 @@ import { tag, type Tag } from "../domain.js";
  * `.ghcr-tidy.yaml` config manifest schema (version 1): which packages
  * `ghcr-tidy` manages and, optionally, retention overrides for each.
  *
- * CLOSED schema, matching `imgverify`'s manifest (`imgverify/manifest/schema.ts`):
- * an unknown top-level or per-package field is a hard error, never a
- * silently-ignored one. A silently ignored key in a deletion tool's config
- * produces a green run that did the wrong thing — the exact failure class
- * this strictness exists to remove.
+ * CLOSED schema: an unknown top-level or per-package field is a hard error,
+ * never a silently-ignored one. A silently ignored key in a deletion tool's
+ * config produces a green run that did the wrong thing — the exact failure
+ * class this strictness exists to remove.
  *
  * `packages[].match` is a FULL package name (`registry/package-name.ts`'s
  * `PackageName`), never a `(prefix, image)` pair to be joined here or
@@ -84,13 +83,10 @@ export interface Manifest {
    * The packages this manifest manages. MAY be empty: a repository that
    * publishes no container images (this repository, dogfooding itself —
    * see the root `.ghcr-tidy.yaml`) is a legitimate, permanent steady
-   * state, not a misconfiguration. This is a deliberate departure from
-   * `imgverify`'s manifest, where an empty `checks`/`targets` array is
-   * rejected: there, emptiness means "silently testing nothing", a real
-   * bug class observed in the bash predecessor. Here, emptiness means
-   * "this repo manages zero GHCR packages", which is simply true for some
-   * repos and must not be worked around by inventing a fake package entry
-   * just to satisfy a non-empty rule.
+   * state, not a misconfiguration, and must not be worked around by
+   * inventing a fake package entry just to satisfy a non-empty rule.
+   * Emptiness is deliberately NOT rejected here: it simply means "this
+   * repo manages zero GHCR packages", which is true for some repos.
    */
   readonly packages: readonly ManifestPackageEntry[];
   readonly keepLast?: number;
@@ -111,7 +107,7 @@ export interface Manifest {
   readonly canary?: ManifestCanary;
 }
 
-/** A manifest failed structural validation. Carries the location (a dotted/bracketed path) where it failed — mirrors `imgverify/manifest/schema.ts`'s `ManifestError`. */
+/** A manifest failed structural validation. Carries the location (a dotted/bracketed path) where it failed. */
 export class ManifestError extends Error {
   /** The underlying failure message, without the location prefix. */
   readonly reason: string;
@@ -286,10 +282,9 @@ const MANIFEST_TOP_LEVEL_FIELDS = [
  * `canary.package`) that is not a syntactically valid {@link PackageName};
  * an empty/missing `canary.tag`; and a malformed `protectedTags` regex
  * anywhere. Does NOT reject an empty `packages` array — see
- * {@link Manifest.packages}'s doc for why that is a deliberate departure
- * from `imgverify`. Does NOT reject a missing `canary` — see
- * {@link Manifest.canary}'s doc for why that is optional rather than
- * required.
+ * {@link Manifest.packages}'s doc for why. Does NOT reject a missing
+ * `canary` — see {@link Manifest.canary}'s doc for why that is optional
+ * rather than required.
  */
 export function validateManifest(raw: unknown): Manifest {
   if (!isPlainObject(raw)) {
