@@ -13,14 +13,6 @@
   // and the SHA-pinned actions in .github/workflows/ plus the two composite actions
   // (ghcr-tidy/action.yml, verify-image/action.yml).
   enabledManagers: ["npm", "github-actions"],
-  // Open PRs immediately. Do NOT use "status-success" here: ci.yml triggers on
-  // `pull_request` and on pushes to main only, so a renovate/** branch gets no build
-  // until its PR exists. Gating on a branch status would deadlock (no PR -> no build ->
-  // status never resolves -> no PR). Automerge still waits for a green `gate`, which is
-  // this repo's required status check.
-  prCreation: "immediate",
-  // Cap open Renovate PRs so the queue stays readable.
-  prConcurrentLimit: 5,
   // Pin the Node that the runner installs for npm work to the same major ci.yml uses
   // (`node-version: 22`), not merely to package.json's ">=22" floor. The post-upgrade
   // hook rebuilds a COMMITTED artifact, so it has to produce byte-identical output to
