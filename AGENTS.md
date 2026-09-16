@@ -29,3 +29,8 @@ each one does and how a consumer pins it.
 - On a `schedule` trigger the `inputs` context is EMPTY. Dispatch defaults
   do not apply there; branch on `github.event_name == 'schedule'` instead
   of relying on `inputs.x || default`.
+- A dependency bump makes `ghcr-tidy/dist/` stale, because ncc inlines the
+  runtime deps into the bundle. Renovate rebuilds it via
+  `.github/renovate-post-upgrade.sh`, wired up in `.github/renovate.json5`. If
+  you bump a dependency by hand, run `npm run bundle` and commit the result, or
+  `ci.yml`'s `build` job will fail.

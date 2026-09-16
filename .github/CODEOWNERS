@@ -1,0 +1,11 @@
+# Code owners for this repository.
+#
+# The org-wide Renovate runner (pyck-ai/renovate) allowlists the exact path
+# .github/renovate-post-upgrade.sh and executes it on a self-hosted runner during
+# dependency updates. Anything committed there runs arbitrary commands in that
+# environment, and this repository is public, so changes to it must be reviewed.
+#
+# main's ruleset already sets require_code_owner_review, but that rule is vacuous
+# while no CODEOWNERS file exists. This file is what actually activates it, and it
+# deliberately covers ONLY the hook: no other path gains a review requirement.
+/.github/renovate-post-upgrade.sh   @michaelkrupp

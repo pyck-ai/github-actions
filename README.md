@@ -125,7 +125,9 @@ npm run bundle   # ncc -> ghcr-tidy/dist/ (committed)
 result.** The bundle is what SHA-pinned consumers actually execute, so CI
 rebuilds it from a clean checkout and fails if it differs from what is
 committed — a stale bundle means a pinned consumer runs different code from the
-source it appears to match.
+source it appears to match. Dependencies are managed by Renovate
+(`.github/renovate.json5`), which rebuilds the bundle automatically via
+`.github/renovate-post-upgrade.sh` after each npm update.
 
 ## Publishing
 
