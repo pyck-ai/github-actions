@@ -5,24 +5,14 @@
     "config:recommended",
     // Track everything on the Dependency Dashboard issue, including pending updates.
     ":dependencyDashboard",
+    // Shared org defaults (branchPrefix, timezone, automerge schedule/strategy,
+    // minimumReleaseAge, labels, semanticCommits, vulnerability alerts).
+    "local>pyck-ai/renovate//presets/default.json5",
   ],
-  // Explicit prefix for all Renovate branches; keeps them easy to filter and identify.
-  branchPrefix: "renovate/",
   // Two surfaces to keep current: the npm dependencies behind the TypeScript tooling,
   // and the SHA-pinned actions in .github/workflows/ plus the two composite actions
   // (ghcr-tidy/action.yml, verify-image/action.yml).
   enabledManagers: ["npm", "github-actions"],
-  // Interpret all schedule strings (e.g. automergeSchedule) in Berlin local time.
-  timezone: "Europe/Berlin",
-  // Automerge only during business hours, so an unattended merge never lands overnight.
-  automergeSchedule: ["after 9am and before 4pm every weekday"],
-  // Squash keeps history linear AND is the only merge method GitHub signs. The org-wide
-  // "require signed commits" ruleset applies to this repo, and a rebase merge is never
-  // signed (GitHub rewrites the commit and has no access to the author's key), so a
-  // rebase automerge would be rejected outright.
-  automergeStrategy: "squash",
-  // Wait 3 days before opening a PR so yanked or broken releases have time to be caught.
-  minimumReleaseAge: "3 days",
   // Open PRs immediately. Do NOT use "status-success" here: ci.yml triggers on
   // `pull_request` and on pushes to main only, so a renovate/** branch gets no build
   // until its PR exists. Gating on a branch status would deadlock (no PR -> no build ->
@@ -31,9 +21,6 @@
   prCreation: "immediate",
   // Cap open Renovate PRs so the queue stays readable.
   prConcurrentLimit: 5,
-  labels: ["renovate"],
-  // Plain commit messages; semantic commit prefixes add noise without benefit here.
-  semanticCommits: "disabled",
   // Pin the Node that the runner installs for npm work to the same major ci.yml uses
   // (`node-version: 22`), not merely to package.json's ">=22" floor. The post-upgrade
   // hook rebuilds a COMMITTED artifact, so it has to produce byte-identical output to
@@ -41,17 +28,10 @@
   constraints: {
     node: "^22.0.0",
   },
+  // The shared preset's packageRules (automerge by update type, major-update review,
+  // digest/pin release-age handling) arrive first via extends and are prepended ahead
+  // of these, so later-rules-win still holds for the repo-specific rules below.
   packageRules: [
-    {
-      description: "Automerge everything except major updates",
-      matchUpdateTypes: ["minor", "patch", "pin", "digest"],
-      automerge: true,
-    },
-    {
-      description: "Major updates require manual review",
-      matchUpdateTypes: ["major"],
-      automerge: false,
-    },
     {
       // Grouped per manager rather than one batch for everything. An npm update drags
       // the rebuilt ncc bundle along with it (see the postUpgradeTasks rule below),
@@ -67,14 +47,6 @@
       matchManagers: ["github-actions"],
       matchUpdateTypes: ["minor", "patch", "digest", "pin"],
       groupName: "github actions",
-    },
-    {
-      // Digest/pin updates carry no release timestamp, so the default
-      // minimumReleaseAgeBehaviour=timestamp-required would mark them pending forever
-      // and never open a PR at all.
-      description: "Digests/pins have no release timestamp; don't pend them forever",
-      matchUpdateTypes: ["digest", "pin"],
-      minimumReleaseAgeBehaviour: "timestamp-optional",
     },
     {
       // THE load-bearing rule for this repo. ghcr-tidy/dist/ is a committed ncc bundle
@@ -106,10 +78,4 @@
       },
     },
   ],
-  // GitHub's built-in vulnerability alerts are redundant when OSV scanning is on.
-  vulnerabilityAlerts: {
-    enabled: false,
-  },
-  // Use the OSV database for vulnerability scanning: broader coverage than GitHub's.
-  osvVulnerabilityAlerts: true,
 }
