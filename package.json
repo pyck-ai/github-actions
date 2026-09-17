@@ -21,10 +21,10 @@
     "bundle:prune": "find ghcr-tidy/dist \\( -name '*.d.ts' -o -name '*.d.ts.map' \\) -delete"
   },
   "dependencies": {
-    "@octokit/core": "^6.1.2",
-    "@octokit/plugin-paginate-rest": "^11.3.6",
-    "@octokit/plugin-retry": "^7.1.2",
-    "@octokit/plugin-throttling": "^9.3.2",
+    "@octokit/core": "^7.0.0",
+    "@octokit/plugin-paginate-rest": "^15.0.0",
+    "@octokit/plugin-retry": "^8.0.0",
+    "@octokit/plugin-throttling": "^11.0.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
