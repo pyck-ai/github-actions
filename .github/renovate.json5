@@ -13,12 +13,25 @@
   // and the SHA-pinned actions in .github/workflows/ plus the two composite actions
   // (ghcr-tidy/action.yml, verify-image/action.yml).
   enabledManagers: ["npm", "github-actions"],
-  // Pin the Node that the runner installs for npm work to the same major ci.yml uses
-  // (`node-version: 22`), not merely to package.json's ">=22" floor. The post-upgrade
-  // hook rebuilds a COMMITTED artifact, so it has to produce byte-identical output to
-  // the CI job that checks it.
+  // KEEP THIS IN STEP WITH ci.yml's `node-version`. It is not merely
+  // package.json's ">=22" floor, and it does two distinct jobs.
+  //
+  // First, it picks the Node that Renovate provisions for the post-upgrade hook
+  // (see installTools below). That hook rebuilds a COMMITTED artifact, so it has
+  // to produce byte-identical output to the CI job that checks it.
+  //
+  // Second, and much less obvious: Renovate also uses this to decide which
+  // dependency versions are ELIGIBLE, by testing each candidate's engines.node
+  // against this range. A stale value here silently holds packages back, and it
+  // does so per package, which can split a monorepo. That is exactly what
+  // happened while this said "^22.0.0" after ci.yml had moved to 24: the range
+  // permits Node 22.0.0, which vitest@5 rejects (it wants
+  // "^22.12.0 || ^24.0.0 || >=26.0.0"), so Renovate skipped vitest while
+  // @vitest/coverage-v8, which declares no engines at all, went ahead on its
+  // own. The result was PR #7, pinning coverage-v8@5 against vitest@2 with an
+  // unsatisfiable peer and a lockfile Renovate could not generate.
   constraints: {
-    node: "^22.0.0",
+    node: "^24.0.0",
   },
   // The shared preset's packageRules (automerge by update type, major-update review,
   // digest/pin release-age handling) arrive first via extends and are prepended ahead
