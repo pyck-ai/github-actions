@@ -132,6 +132,7 @@ async function requestOrExplain(
           `repo/issues access. Configure a SEPARATE token with issue write access for the ` +
           `breaker (a plain GITHUB_TOKEN with \`issues: write\` permissions is enough). ` +
           `Original error: ${message}`,
+        { cause: error },
       );
     }
     throw error;

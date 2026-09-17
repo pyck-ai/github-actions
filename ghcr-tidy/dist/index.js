@@ -13868,7 +13868,7 @@ async function grantApply(plan, filePath, fs = nodePlanFileSystem()) {
         rawJson = JSON.parse(reread);
     }
     catch (error) {
-        throw new Error(`plan round trip failed: ${filePath} is not valid JSON after being written (${error instanceof Error ? error.message : String(error)}) — refusing to grant apply`);
+        throw new Error(`plan round trip failed: ${filePath} is not valid JSON after being written (${error instanceof Error ? error.message : String(error)}) — refusing to grant apply`, { cause: error });
     }
     // Compare via serializePlan's canonical key order, not raw
     // JSON.stringify — a value's own key insertion order is not guaranteed
@@ -14106,7 +14106,7 @@ async function requestOrExplain(octokit, owner, repo, route, params) {
                 `write issues — e.g. a delete:packages-scoped PAT used to delete GHCR versions has no ` +
                 `repo/issues access. Configure a SEPARATE token with issue write access for the ` +
                 `breaker (a plain GITHUB_TOKEN with \`issues: write\` permissions is enough). ` +
-                `Original error: ${message}`);
+                `Original error: ${message}`, { cause: error });
         }
         throw error;
     }

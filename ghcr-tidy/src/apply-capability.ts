@@ -108,6 +108,7 @@ export async function grantApply(
   } catch (error) {
     throw new Error(
       `plan round trip failed: ${filePath} is not valid JSON after being written (${error instanceof Error ? error.message : String(error)}) — refusing to grant apply`,
+      { cause: error },
     );
   }
 
