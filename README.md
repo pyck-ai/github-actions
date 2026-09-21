@@ -71,11 +71,17 @@ attempted, budget partially spent) is worse than none.
   decision, recomputed independently at verification time, never read off
   the plan): a tag it expected gone is reported as `expired`, not a
   regression, and a tag it expected gone but which still resolves is
-  reported separately without aborting anything. This ships wired to the
-  real, policy-driven producer: it retires exactly the tags the retention
-  windowing above would exclude, independently re-derived at verification
-  time rather than read off the plan, so a bug anywhere from the planner's
-  keep-root rule downward is still caught. A post-apply
+  reported separately without aborting anything (bounded, expected residuals:
+  budget-deferred deletions, suppressed per package with a stated reason; a
+  digest unreachable by tag but reachable via another kept root's closure;
+  a concurrent publish between snapshots — the signal to act on is a
+  persistent, growing set, not one run's count). This ships wired to the
+  real, policy-driven producer: it mirrors the full deletion predicate, not
+  the semver windows alone — a tag is expected gone only if NO tag on its
+  digest is retained AND that digest is at least `keepDays` old — independently
+  re-derived at verification time (including an independent Packages API
+  read for digest age) rather than read off the plan, so a bug anywhere
+  from the planner's keep-root rule downward is still caught. A post-apply
   regression also opens a labelled issue with a cold-read incident report and
   trips a circuit breaker: every later run checks that issue before touching
   anything (including the canary) and refuses all deletions while it is

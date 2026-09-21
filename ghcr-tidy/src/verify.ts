@@ -271,14 +271,74 @@ export interface ExpiryProducerResult {
 }
 
 /**
- * Produces the INTENDED expiry set for one package: which currently-live
- * tags the resolved retention policy has decided to retire. Takes the
- * tag list {@link snapshotPackage} already read from the registry for
- * this package's PRE-apply snapshot (never anything from `Plan`, which
- * carries no such field) and that package's fully-resolved policy
- * (`manifest/schema.ts`'s `ResolvedPolicy`, recomputed from the manifest
- * at verification time, independently of planning's own resolution of
- * the same manifest).
+ * Everything {@link ExpiryProducer.produce} needs to independently
+ * recompute `DELETE` (`plan.ts`'s `ALL \ (REACHABLE union INFLIGHT)`)
+ * projected back onto tags, for one package's PRE-apply snapshot.
+ *
+ * `digestOf` needs NO new I/O: it is derived from the SAME pre-apply
+ * `TagSnapshot`s {@link snapshotPackage} already took (`TagSnapshot.digest`
+ * — absent for a tag that itself failed to resolve, in which case that
+ * tag simply cannot be asserted expected-to-expire, since there is no
+ * digest to check).
+ *
+ * `createdAtOf` DOES require new I/O: an INDEPENDENT `PackagesClient.
+ * listVersions` read, taken at verification time, never the planner's own
+ * `versionsByDigest` map threaded through from `planPackage`. This does
+ * NOT violate the independence principle this seam exists for: that
+ * principle bans consuming the planner's VERDICTS (`KEEP_ROOTS`,
+ * `INFLIGHT`, `DELETE`, the version-id map) — not FACTS. `created_at` is
+ * raw Packages API data, the same category as the `listTags`/`resolve`
+ * calls the verifier already performs independently of planning. This
+ * mirrors PR #21's reader split (`decorateRegistry` gives verification
+ * its own uncached `RegistryReader`, never planning's cached one, for
+ * exactly this reason) applied to the Packages API side instead of the
+ * registry side. The cost: this roughly DOUBLES Packages API traffic for
+ * a verified apply run, since there is no digest-scoped lookup endpoint
+ * and the full version listing (about 1870 versions per `baseimages`
+ * package, ~19 paginated requests) must be read again.
+ *
+ * `now` is a plain value, not a `Clock`, and MUST be injectable end to
+ * end — never `Date.now()` inside a producer — because a producer is a
+ * pure function and its output must be reproducible against a pinned
+ * instant (see the corpus test driven by
+ * `__fixtures__/baseimages-tag-digest-age.tsv`).
+ */
+export interface ExpiryProducerInput {
+  /** Every tag from this package's PRE-apply snapshot tag list. */
+  readonly tags: readonly Tag[];
+  /** tag -> the digest it resolved to pre-apply. Absent for a tag whose own pre-apply resolution failed. */
+  readonly digestOf: ReadonlyMap<Tag, Digest>;
+  /** digest -> Packages API `createdAt`, from an independent `listVersions` read at verification time. Absent for a digest that read did not report. */
+  readonly createdAtOf: ReadonlyMap<Digest, Date>;
+  readonly now: Date;
+  readonly policy: ResolvedPolicy;
+}
+
+/**
+ * Produces the tags this run should expect to no longer resolve after
+ * apply: an INDEPENDENT recomputation of `plan.ts`'s `DELETE` set,
+ * projected back onto tags, for this package's PRE-apply snapshot (never
+ * anything from `Plan` itself, which carries no such field).
+ *
+ * The real deletion predicate this must mirror is a CONJUNCTION of both
+ * halves of retention, not the semver windows alone:
+ *
+ * ```
+ * expect_gone(t) := no tag on digest(t) is retained        // mirrors retain.ts's computeKeepRoots existential
+ *               AND age(digest(t)) >= policy.keepDays      // mirrors plan.ts's INFLIGHT gate
+ * ```
+ *
+ * A tag classified purely by "is it outside its own semver window" is
+ * NOT this predicate: `computeKeepRoots` keeps a DIGEST if ANY of its
+ * tags is retained, so a non-retained tag sharing a digest with a
+ * retained one can never actually disappear, and a non-retained tag on a
+ * digest younger than `keepDays` is protected by `INFLIGHT` regardless
+ * of its window. A producer that ignores either clause reports tags as
+ * "expected gone" that the real deletion predicate would never touch —
+ * this was issue #27: 100 permanent false positives on a run that
+ * behaved perfectly, from a producer computing a per-TAG verdict where
+ * survival is decided per-DIGEST, and from never reading `policy.keepDays`
+ * at all despite receiving it.
  *
  * WHAT THIS CATCHES: everything from the planner's keep-root rule
  * downward, retention's age/count arithmetic, reachability, deletion
@@ -287,58 +347,101 @@ export interface ExpiryProducerResult {
  * expects to be gone.
  *
  * WHAT THIS CANNOT CATCH: both the real planner and the real producer
- * call the SAME classify/window functions to decide what should have
- * expired. A bug there is invisible to this check, because both sides
- * agree on the wrong answer: a shared pure function is a shared failure
- * mode, not a gap in this seam's architecture. The mitigation is
- * property-based testing over the real tag corpus, not more layers of
- * checking, so nobody later mistakes this check for stronger than it
- * is. {@link resolveExpirySet}'s two obligations at least bound how
- * wrong a producer implementation can go, independently of that shared
- * code.
+ * call the SAME classify/window functions (`computeRetainedTags`,
+ * `computeFloorTags`) to decide what should have expired. A bug there is
+ * invisible to this check, because both sides agree on the wrong answer:
+ * a shared pure function is a shared failure mode, not a gap in this
+ * seam's architecture. The mitigation is property-based testing over the
+ * real tag corpus, not more layers of checking, so nobody later mistakes
+ * this check for stronger than it is. {@link resolveExpirySet}'s two
+ * obligations at least bound how wrong a producer implementation can go,
+ * independently of that shared code.
  */
 export interface ExpiryProducer {
-  produce(tags: readonly Tag[], policy: ResolvedPolicy): ExpiryProducerResult;
+  produce(input: ExpiryProducerInput): ExpiryProducerResult;
 }
 
 /**
  * The producer this change ships: always the empty set for every
- * argument, unconditionally. With this producer, {@link resolveExpirySet}
- * always succeeds with an empty expiry set, so `compareSnapshots`
- * classifies every tag exactly as it did before this seam existed. A
- * later change supplies the real, policy-driven producer this seam
- * exists for.
+ * argument, unconditionally (it ignores its input entirely). With this
+ * producer, {@link resolveExpirySet} always succeeds with an empty
+ * expiry set, so `compareSnapshots` classifies every tag exactly as it
+ * did before this seam existed.
  */
 export const nullExpiryProducer: ExpiryProducer = {
   produce: () => ({ expiry: new Set(), floor: new Set(), unclassifiable: new Set() }),
 };
 
+const MS_PER_DAY = 86_400_000;
+
 /**
- * The real, policy-driven producer: retires exactly the tags
- * `retain.ts`'s `computeRetainedTags` would exclude from the keep set
- * for the SAME `tags`/`policy` pair `planPackage` itself resolves against
- * — independently re-derived here, not read off `Plan` (see this
- * module's doc for why). `unclassifiable` is always empty: `tag-kind.ts`'s
- * parse rule never fails to classify a tag (AC 1 — every tag decomposes
- * into a kind, a level, and a version, or is unversioned), so there is
+ * The real, policy-driven producer: mirrors the full deletion predicate
+ * documented on {@link ExpiryProducer}, composed over the SAME
+ * `computeRetainedTags`/`computeFloorTags` (`retain.ts`) `planPackage`
+ * itself resolves against, plus the per-digest existential and the
+ * `keepDays` age gate `plan.ts` applies afterwards.
+ *
+ * `unclassifiable` is always empty: `tag-kind.ts`'s parse rule never
+ * fails to classify a tag (AC 1 of issue #23 — every tag decomposes into
+ * a kind, a level, and a version, or is unversioned), so there is
  * nothing this producer could ever refuse to classify.
  *
  * `floor` is computed independently from `computeRetainedTags` (see
- * `retain.ts`'s `computeFloorTags` doc) rather than derived from it, so a
+ * `computeFloorTags`'s doc) rather than derived from it, so a
  * misconfigured policy cannot, by construction, make this producer's own
  * `expiry` and `floor` overlap — `resolveExpirySet` still checks this
  * rather than trusting it, per that function's doc.
+ *
+ * Fails safe on missing data, in both directions: a tag with no known
+ * digest (its own pre-apply resolution failed) and a digest with no
+ * known `createdAt` (absent from the independent `listVersions` read)
+ * are both simply never added to `expiry` — an uncertain fact is never
+ * grounds for asserting a tag SHOULD be gone, only for declining to
+ * assert it, exactly like `retain.ts`'s pre-#23 `isRetainedByAge` did for
+ * an unknown-age root.
  */
 export const policyDrivenExpiryProducer: ExpiryProducer = {
-  produce(tags, policy) {
+  produce({ tags, digestOf, createdAtOf, now, policy }) {
     const retained = computeRetainedTags(tags, policy);
     const floor = computeFloorTags(tags);
-    const expiry = new Set<Tag>();
+
+    // Mirrors `retain.ts`'s `computeKeepRoots` existential: a digest
+    // survives if ANY tag pointing at it is retained, so a retained
+    // tag's digest can never be a candidate for expiry, no matter how
+    // many OTHER, non-retained tags also point at it.
+    const survivingDigests = new Set<Digest>();
     for (const t of tags) {
       if (!retained.has(t)) {
+        continue;
+      }
+      const d = digestOf.get(t);
+      if (d !== undefined) {
+        survivingDigests.add(d);
+      }
+    }
+
+    const expiry = new Set<Tag>();
+    for (const t of tags) {
+      if (retained.has(t)) {
+        continue; // a retained tag is never itself a candidate
+      }
+      const d = digestOf.get(t);
+      if (d === undefined || survivingDigests.has(d)) {
+        continue; // unknown digest, or kept alive by a sibling tag
+      }
+      const createdAt = createdAtOf.get(d);
+      if (createdAt === undefined) {
+        continue; // unknown age: fail safe, never assert
+      }
+      // Mirrors `plan.ts`'s INFLIGHT gate: `age(v) < keepDays` keeps a
+      // version regardless of tags, so only a digest AT LEAST `keepDays`
+      // old is ever a candidate here.
+      const ageDays = (now.getTime() - createdAt.getTime()) / MS_PER_DAY;
+      if (ageDays >= policy.keepDays) {
         expiry.add(t);
       }
     }
+
     return { expiry, floor, unclassifiable: new Set() };
   },
 };
@@ -374,13 +477,18 @@ export type ExpiryResolution =
  * With {@link nullExpiryProducer}, both sets are always empty, so both
  * checks are vacuous and this function always returns `ok: true` with
  * an empty `expiry` set.
+ *
+ * Takes the full {@link ExpiryProducerInput} record (mirroring
+ * {@link ExpiryProducer.produce}'s own signature) purely as a pass-
+ * through — this function's own two checks below are unchanged and
+ * still only ever look at the RESULT the producer returns, never at the
+ * input itself.
  */
 export function resolveExpirySet(
   producer: ExpiryProducer,
-  tags: readonly Tag[],
-  policy: ResolvedPolicy,
+  input: ExpiryProducerInput,
 ): ExpiryResolution {
-  const { expiry, floor, unclassifiable } = producer.produce(tags, policy);
+  const { expiry, floor, unclassifiable } = producer.produce(input);
   const floorOverlap = [...expiry].filter((t) => floor.has(t));
   if (floorOverlap.length > 0) {
     return { ok: false, reason: "floor-overlap", tags: floorOverlap };
@@ -448,10 +556,38 @@ export interface CompareSnapshotsResult {
    * this run: the two-sided half of the expiry check. The policy can
    * be wrong in either direction, and a tag that failed to retire is as
    * worth surfacing as one that retired when it should not have. Never
-   * trips the breaker and never aborts the run: an intended deletion
-   * that simply did not happen this cycle (e.g. it was not yet
-   * reachable for deletion under `graceDays`, or the run's budget ran
-   * out before its group) is not evidence of damage.
+   * trips the breaker and never aborts the run.
+   *
+   * On a CORRECT run this must be empty in steady state (issue #27: a
+   * producer computing the wrong predicate made it fire on every clean
+   * run, which is alarm fatigue on the only detector this architecture
+   * has for a shared planner/verifier bug — see `ExpiryProducer`'s doc).
+   * Three BOUNDED residuals can still legitimately appear even when
+   * `policyDrivenExpiryProducer` is correct, and none of them is damage:
+   *
+   * 1. Budget deferral: the run's budget ran out before a group covering
+   *    this tag's digest was even started (`applyGroup`'s group-granular
+   *    `"skipped-budget"` — see `apply.ts`'s `applyGroup` doc). Suppressed
+   *    PER PACKAGE with a stated reason rather than reported here at all
+   *    — see `apply.ts`'s `PackageApplyResult.notExpiredSuppressedReason`
+   *    — since a budget-truncated package's remaining candidates are
+   *    known-deferred, not evidence of anything.
+   * 2. A digest unreachable BY TAG but still reachable as a child of some
+   *    OTHER kept root's manifest closure (a multi-arch index sharing a
+   *    platform manifest with a still-live index, for instance) — a real
+   *    possibility given `plan.ts`'s reachability walk, not merely the
+   *    per-digest existential this producer already accounts for.
+   *    Theoretical: not observed in either `baseimages` package this was
+   *    verified against.
+   * 3. A concurrent publish between the pre- and post-apply snapshots
+   *    that happens to leave a tag still resolving (e.g. a race with
+   *    someone else's CI re-tagging the same version this run also
+   *    expected gone).
+   *
+   * Because of these, the signal to act on is a PERSISTENT, GROWING
+   * `notExpired` set across runs for the same package — not a single
+   * run's count, and not a single package once, both of which the
+   * bounded residuals above can produce on an otherwise-healthy system.
    */
   readonly notExpired: readonly RegressedTag[];
 }

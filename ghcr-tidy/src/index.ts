@@ -151,6 +151,7 @@ export {
   type RegressionIncident,
   type RegressionSink,
   type ExpiryProducer,
+  type ExpiryProducerInput,
   type ExpiryProducerResult,
   type ExpiryResolution,
   type ExpiryFailureReason,

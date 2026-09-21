@@ -15582,38 +15582,77 @@ function toFinding(t, pre, post) {
 }
 /**
  * The producer this change ships: always the empty set for every
- * argument, unconditionally. With this producer, {@link resolveExpirySet}
- * always succeeds with an empty expiry set, so `compareSnapshots`
- * classifies every tag exactly as it did before this seam existed. A
- * later change supplies the real, policy-driven producer this seam
- * exists for.
+ * argument, unconditionally (it ignores its input entirely). With this
+ * producer, {@link resolveExpirySet} always succeeds with an empty
+ * expiry set, so `compareSnapshots` classifies every tag exactly as it
+ * did before this seam existed.
  */
 const nullExpiryProducer = {
     produce: () => ({ expiry: new Set(), floor: new Set(), unclassifiable: new Set() }),
 };
+const verify_MS_PER_DAY = 86_400_000;
 /**
- * The real, policy-driven producer: retires exactly the tags
- * `retain.ts`'s `computeRetainedTags` would exclude from the keep set
- * for the SAME `tags`/`policy` pair `planPackage` itself resolves against
- * — independently re-derived here, not read off `Plan` (see this
- * module's doc for why). `unclassifiable` is always empty: `tag-kind.ts`'s
- * parse rule never fails to classify a tag (AC 1 — every tag decomposes
- * into a kind, a level, and a version, or is unversioned), so there is
+ * The real, policy-driven producer: mirrors the full deletion predicate
+ * documented on {@link ExpiryProducer}, composed over the SAME
+ * `computeRetainedTags`/`computeFloorTags` (`retain.ts`) `planPackage`
+ * itself resolves against, plus the per-digest existential and the
+ * `keepDays` age gate `plan.ts` applies afterwards.
+ *
+ * `unclassifiable` is always empty: `tag-kind.ts`'s parse rule never
+ * fails to classify a tag (AC 1 of issue #23 — every tag decomposes into
+ * a kind, a level, and a version, or is unversioned), so there is
  * nothing this producer could ever refuse to classify.
  *
  * `floor` is computed independently from `computeRetainedTags` (see
- * `retain.ts`'s `computeFloorTags` doc) rather than derived from it, so a
+ * `computeFloorTags`'s doc) rather than derived from it, so a
  * misconfigured policy cannot, by construction, make this producer's own
  * `expiry` and `floor` overlap — `resolveExpirySet` still checks this
  * rather than trusting it, per that function's doc.
+ *
+ * Fails safe on missing data, in both directions: a tag with no known
+ * digest (its own pre-apply resolution failed) and a digest with no
+ * known `createdAt` (absent from the independent `listVersions` read)
+ * are both simply never added to `expiry` — an uncertain fact is never
+ * grounds for asserting a tag SHOULD be gone, only for declining to
+ * assert it, exactly like `retain.ts`'s pre-#23 `isRetainedByAge` did for
+ * an unknown-age root.
  */
 const policyDrivenExpiryProducer = {
-    produce(tags, policy) {
+    produce({ tags, digestOf, createdAtOf, now, policy }) {
         const retained = computeRetainedTags(tags, policy);
         const floor = computeFloorTags(tags);
-        const expiry = new Set();
+        // Mirrors `retain.ts`'s `computeKeepRoots` existential: a digest
+        // survives if ANY tag pointing at it is retained, so a retained
+        // tag's digest can never be a candidate for expiry, no matter how
+        // many OTHER, non-retained tags also point at it.
+        const survivingDigests = new Set();
         for (const t of tags) {
             if (!retained.has(t)) {
+                continue;
+            }
+            const d = digestOf.get(t);
+            if (d !== undefined) {
+                survivingDigests.add(d);
+            }
+        }
+        const expiry = new Set();
+        for (const t of tags) {
+            if (retained.has(t)) {
+                continue; // a retained tag is never itself a candidate
+            }
+            const d = digestOf.get(t);
+            if (d === undefined || survivingDigests.has(d)) {
+                continue; // unknown digest, or kept alive by a sibling tag
+            }
+            const createdAt = createdAtOf.get(d);
+            if (createdAt === undefined) {
+                continue; // unknown age: fail safe, never assert
+            }
+            // Mirrors `plan.ts`'s INFLIGHT gate: `age(v) < keepDays` keeps a
+            // version regardless of tags, so only a digest AT LEAST `keepDays`
+            // old is ever a candidate here.
+            const ageDays = (now.getTime() - createdAt.getTime()) / verify_MS_PER_DAY;
+            if (ageDays >= policy.keepDays) {
                 expiry.add(t);
             }
         }
@@ -15644,9 +15683,15 @@ const policyDrivenExpiryProducer = {
  * With {@link nullExpiryProducer}, both sets are always empty, so both
  * checks are vacuous and this function always returns `ok: true` with
  * an empty `expiry` set.
+ *
+ * Takes the full {@link ExpiryProducerInput} record (mirroring
+ * {@link ExpiryProducer.produce}'s own signature) purely as a pass-
+ * through — this function's own two checks below are unchanged and
+ * still only ever look at the RESULT the producer returns, never at the
+ * input itself.
  */
-function resolveExpirySet(producer, tags, policy) {
-    const { expiry, floor, unclassifiable } = producer.produce(tags, policy);
+function resolveExpirySet(producer, input) {
+    const { expiry, floor, unclassifiable } = producer.produce(input);
     const floorOverlap = [...expiry].filter((t) => floor.has(t));
     if (floorOverlap.length > 0) {
         return { ok: false, reason: "floor-overlap", tags: floorOverlap };
@@ -16003,19 +16048,40 @@ async function applyPlan(plan, mutator, options) {
             preSnapshotFailed = pre.failed;
         }
         // The expected-expiry set (`verify.ts`'s `ExpiryProducer`) is
-        // resolved here, per package, from THIS package's own pre-snapshot
-        // tag list and its resolved policy: recomputed at verification
-        // time, never read off `plan` (see `verify.ts`'s module doc for
-        // why). Deliberately checked BEFORE this package's own deletions
-        // start: a producer that fails either safety obligation is not
-        // trusted enough to fall back to an empty set and proceed, so
-        // nothing here is deleted at all, see `ApplyAbortReason`'s
-        // `"expiry-producer-invalid"` doc.
+        // resolved here, per package, from THIS package's own
+        // `ExpiryProducerInput`: recomputed at verification time, never read
+        // off `plan` (see `verify.ts`'s module doc for why). Deliberately
+        // checked BEFORE this package's own deletions start: a producer that
+        // fails either safety obligation is not trusted enough to fall back
+        // to an empty set and proceed, so nothing here is deleted at all,
+        // see `ApplyAbortReason`'s `"expiry-producer-invalid"` doc.
         let expectedExpiry = new Set();
         if (verification?.expiry) {
             const policy = verification.expiry.policyFor(pkgPlan.packageName);
             const tags = preSnapshot ? [...preSnapshot.keys()] : [];
-            const resolution = resolveExpirySet(verification.expiry.producer, tags, policy);
+            // `digestOf` needs no new I/O — it is the SAME pre-apply
+            // `preSnapshot` already read above, just narrowed to the tags
+            // that actually resolved. `createdAtOf` is the one genuinely new,
+            // INDEPENDENT read: see `verify.ts`'s `ExpiryProducerInput.
+            // createdAtOf` doc for why this must not be the planner's own
+            // `versionsByDigest` map.
+            const digestOf = new Map();
+            if (preSnapshot) {
+                for (const [t, snapshot] of preSnapshot) {
+                    if (snapshot.digest !== undefined) {
+                        digestOf.set(t, snapshot.digest);
+                    }
+                }
+            }
+            const versions = await verification.expiry.packages.listVersions(plan.org, pkgPlan.packageName);
+            const createdAtOf = new Map(versions.map((v) => [v.digest, v.createdAt]));
+            const resolution = resolveExpirySet(verification.expiry.producer, {
+                tags,
+                digestOf,
+                createdAtOf,
+                now: verification.expiry.now(),
+                policy,
+            });
             if (!resolution.ok) {
                 return {
                     packages,
@@ -16046,8 +16112,15 @@ async function applyPlan(plan, mutator, options) {
         let republishedTags = [];
         let expiredTags = [];
         let notExpiredTags = [];
+        let notExpiredSuppressedReason;
         let regressionToRecord;
         let abortReason;
+        // A crisp, PER-PACKAGE, group-granular fact (see `applyGroup`'s
+        // `"skipped-budget"` doc) — never a run-global gate on remaining
+        // budget, so a package processed before the budget ran out still
+        // gets its real `notExpiredTags` below, even if a LATER package in
+        // this same run gets suppressed instead.
+        const hadSkippedBudget = groups.some((g) => g.status === "skipped-budget");
         if (verification && registryPath) {
             // A post-snapshot read failure gets exactly the same "unknown"
             // treatment as any other unresolved tag (see `verify.ts`'s
@@ -16084,7 +16157,23 @@ async function applyPlan(plan, mutator, options) {
                 });
                 republishedTags = republished;
                 expiredTags = expired;
-                notExpiredTags = notExpired;
+                // See `PackageApplyResult.notExpiredSuppressedReason`'s doc:
+                // a budget-truncated package's remaining "should be gone"
+                // candidates are known-deferred work, not a genuine planner/
+                // verifier divergence, so they are withheld WITH a stated
+                // reason rather than reported as `notExpiredTags` (which would
+                // reproduce exactly the false-positive class issue #27 fixed)
+                // or silently dropped (which would erase the distinction
+                // between "verified clean" and "could not verify").
+                if (hadSkippedBudget) {
+                    notExpiredSuppressedReason =
+                        "at least one deletion group for this package was skipped for lack of remaining " +
+                            "budget; any tag still outside its retention window may simply be awaiting a " +
+                            "future, unbudgeted run rather than diverging from the plan";
+                }
+                else {
+                    notExpiredTags = notExpired;
+                }
                 if (regressions.length > 0) {
                     regressionToRecord = {
                         packageName: pkgPlan.packageName,
@@ -16107,6 +16196,7 @@ async function applyPlan(plan, mutator, options) {
             republishedTags,
             expiredTags,
             notExpiredTags,
+            ...(notExpiredSuppressedReason !== undefined && { notExpiredSuppressedReason }),
         });
         if (regressionToRecord) {
             // Recorded locally BEFORE the sink (which may make network calls,
@@ -16766,7 +16856,13 @@ function summarizeApplyResult(plan, result) {
             lines.push(`  ${pkg.packageName}: ${String(pkg.expiredTags.length)} tag(s) expired as intended ` +
                 `(not a regression): ${pkg.expiredTags.map((t) => t.tag).join(", ")}`);
         }
-        if (pkg.notExpiredTags.length > 0) {
+        if (pkg.notExpiredSuppressedReason !== undefined) {
+            // See `apply.ts`'s `PackageApplyResult.notExpiredSuppressedReason`
+            // doc: printed explicitly rather than silently omitted, so
+            // "cannot report" is never confused with "nothing to report".
+            lines.push(`  ${pkg.packageName}: notExpired check withheld for this package (${pkg.notExpiredSuppressedReason})`);
+        }
+        else if (pkg.notExpiredTags.length > 0) {
             lines.push(`  ${pkg.packageName}: ${String(pkg.notExpiredTags.length)} tag(s) expected to expire ` +
                 `but still resolve (not a regression): ` +
                 `${pkg.notExpiredTags.map((t) => t.tag).join(", ")}`);
@@ -16924,6 +17020,14 @@ async function runApplyCommand(args, deps) {
             expiry: {
                 producer: policyDrivenExpiryProducer,
                 policyFor: () => policy,
+                // Deliberately `packagesClient`, not a fresh client: it is never
+                // cached (unlike `registry`/`verificationRegistry` — see
+                // `verify.ts`'s `ExpiryProducerInput.createdAtOf` doc and
+                // `buildRegistryAdapters`'s doc on why the registry side needs
+                // two DISTINCT readers), so calling it again here is already a
+                // genuine independent read, not a cache replay of planning's.
+                packages: packagesClient,
+                now: () => clock.now(),
             },
             // Printed to stdout BEFORE `sink.record` (which calls the
             // breaker, a network operation) is even attempted — so the

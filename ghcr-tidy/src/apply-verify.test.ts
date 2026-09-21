@@ -3,8 +3,13 @@ import { packageName } from "../../registry/package-name.js";
 import { digest, registryPathFor, tag, type Tag } from "./domain.js";
 import type { ResolvedPolicy } from "./manifest/schema.js";
 import { FakeGhcr } from "./fake-ghcr.js";
-import { memoryRegressionSink, nullExpiryProducer, type ExpiryProducer } from "./verify.js";
-import type { RegistryReader } from "./ports.js";
+import {
+  memoryRegressionSink,
+  nullExpiryProducer,
+  policyDrivenExpiryProducer,
+  type ExpiryProducer,
+} from "./verify.js";
+import type { PackagesClient, RegistryReader } from "./ports.js";
 import { PLAN_SCHEMA_VERSION, type Plan, type PersistedDeletionGroup } from "./persisted-plan.js";
 import {
   applyPlan,
@@ -51,6 +56,20 @@ const anyPolicy: ResolvedPolicy = {
   keepPatches: 5,
   keepDays: 30,
 };
+
+/**
+ * A minimal `PackagesClient` for tests in this file whose producer does
+ * not itself read `createdAtOf` (the fake, hand-written producers below
+ * only ever inspect `tags`) — `verification.expiry.packages` and `.now`
+ * are still REQUIRED fields (see `apply.ts`'s `VerificationOptions.
+ * expiry` doc), so every test wiring one must supply both regardless of
+ * whether its own producer happens to use the age data.
+ */
+const emptyPackagesClient: PackagesClient = {
+  listVersions: () => Promise.resolve([]),
+};
+
+const FIXED_NOW = (): Date => new Date("2026-09-11T00:00:00.000Z");
 
 /** Wraps a real `RegistryReader` so its `listTags` throws exactly once, then behaves normally — simulating an operational pre-snapshot failure without touching `FakeGhcr` itself. */
 function registryThatFailsListTagsOnce(inner: RegistryReader): RegistryReader {
@@ -672,7 +691,12 @@ describe("applyPlan: expiry seam, shipped with the null producer (issue #22)", (
   function withNullExpiry(verification: VerificationOptions): VerificationOptions {
     return {
       ...verification,
-      expiry: { producer: nullExpiryProducer, policyFor: () => anyPolicy },
+      expiry: {
+        producer: nullExpiryProducer,
+        policyFor: () => anyPolicy,
+        packages: emptyPackagesClient,
+        now: FIXED_NOW,
+      },
     };
   }
 
@@ -779,7 +803,7 @@ describe("applyPlan: expiry seam, deliberate expiry (a tag the producer classifi
   /** A producer that always retires exactly the tags named in `expiring`, with an empty floor and nothing unclassifiable. */
   function producerExpiring(...expiring: Tag[]): ExpiryProducer {
     return {
-      produce: (tags) => ({
+      produce: ({ tags }) => ({
         expiry: new Set(tags.filter((t) => expiring.includes(t))),
         floor: new Set(),
         unclassifiable: new Set(),
@@ -809,7 +833,12 @@ describe("applyPlan: expiry seam, deliberate expiry (a tag the producer classifi
       registry: fake.registryReader(),
       canary: { path: canaryPath, tag: canaryTag },
       sink,
-      expiry: { producer: producerExpiring(tag("retired")), policyFor: () => anyPolicy },
+      expiry: {
+        producer: producerExpiring(tag("retired")),
+        policyFor: () => anyPolicy,
+        packages: emptyPackagesClient,
+        now: FIXED_NOW,
+      },
     };
 
     const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
@@ -849,6 +878,8 @@ describe("applyPlan: expiry seam, deliberate expiry (a tag the producer classifi
       expiry: {
         producer: producerExpiring(tag("not-yet-retired")),
         policyFor: () => anyPolicy,
+        packages: emptyPackagesClient,
+        now: FIXED_NOW,
       },
     };
 
@@ -884,7 +915,7 @@ describe("applyPlan: expiry seam, MISBEHAVING producer fails the run closed", ()
     // contains `canary`: irrelevant noise this producer should ignore,
     // same as a real one would for a tag outside its own package.
     const misbehavingProducer: ExpiryProducer = {
-      produce: (tags) => {
+      produce: ({ tags }) => {
         const target = tags.filter((t) => t === tag("newest"));
         return { expiry: new Set(target), floor: new Set(target), unclassifiable: new Set() };
       },
@@ -896,7 +927,12 @@ describe("applyPlan: expiry seam, MISBEHAVING producer fails the run closed", ()
       registry: fake.registryReader(),
       canary: { path: canaryPath, tag: canaryTag },
       sink,
-      expiry: { producer: misbehavingProducer, policyFor: () => anyPolicy },
+      expiry: {
+        producer: misbehavingProducer,
+        policyFor: () => anyPolicy,
+        packages: emptyPackagesClient,
+        now: FIXED_NOW,
+      },
     };
 
     const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
@@ -940,7 +976,7 @@ describe("applyPlan: expiry seam, MISBEHAVING producer fails the run closed", ()
     // above: `canary` is filtered out as irrelevant noise, leaving only
     // the tag this test cares about.
     const misbehavingProducer: ExpiryProducer = {
-      produce: (tags) => {
+      produce: ({ tags }) => {
         const target = tags.filter((t) => t !== tag("canary"));
         // Admits it cannot classify anything, yet still retires it.
         return { expiry: new Set(target), floor: new Set(), unclassifiable: new Set(target) };
@@ -953,7 +989,12 @@ describe("applyPlan: expiry seam, MISBEHAVING producer fails the run closed", ()
       registry: fake.registryReader(),
       canary: { path: canaryPath, tag: canaryTag },
       sink,
-      expiry: { producer: misbehavingProducer, policyFor: () => anyPolicy },
+      expiry: {
+        producer: misbehavingProducer,
+        policyFor: () => anyPolicy,
+        packages: emptyPackagesClient,
+        now: FIXED_NOW,
+      },
     };
 
     const plan = planWithPackages([
@@ -974,5 +1015,175 @@ describe("applyPlan: expiry seam, MISBEHAVING producer fails the run closed", ()
       tags: [tag("mystery"), tag("also-mystery")],
     });
     expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
+  });
+});
+
+describe("applyPlan: expiry seam, budget suppression is per package (issue #27, TEST 5)", () => {
+  it("reports notExpired normally for a package processed before exhaustion, and suppresses-with-reason only the package whose OWN group was skipped for budget", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake
+      .setTag(tag("stale-a"), digest("sha256:stale-a"))
+      .setManifest(digest("sha256:stale-a"), {})
+      .setTag(tag("stale-b"), digest("sha256:stale-b"))
+      .setManifest(digest("sha256:stale-b"), {})
+      .setManifest(digest("sha256:v1"), {})
+      .setManifest(digest("sha256:v10"), {})
+      .setManifest(digest("sha256:v11"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:v1"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    fake.addVersion({
+      id: 10,
+      digest: digest("sha256:v10"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    fake.addVersion({
+      id: 11,
+      digest: digest("sha256:v11"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+
+    // A hand-written producer, not the real one: this test's own concern
+    // is the PER-PACKAGE suppression wiring in `applyPlan`, not window
+    // arithmetic — "stale-a"/"stale-b" never actually disappear, so
+    // without suppression both would land in `notExpiredTags` for BOTH
+    // packages (`FakeGhcr.listTags` is not path-scoped, same caveat as
+    // the tests above).
+    const producer: ExpiryProducer = {
+      produce: ({ tags }) => ({
+        expiry: new Set(tags.filter((t) => t === tag("stale-a") || t === tag("stale-b"))),
+        floor: new Set(),
+        unclassifiable: new Set(),
+      }),
+    };
+
+    const { mutator } = fake.mutator();
+    const { sink } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+      expiry: {
+        producer,
+        policyFor: () => anyPolicy,
+        packages: emptyPackagesClient,
+        now: FIXED_NOW,
+      },
+    };
+
+    // pkgA's group (1 member) fits budget 1 in full; pkgB's group (2
+    // members) then has zero budget left and is skipped in full —
+    // `applyGroup`'s group-granular rule (`apply.ts:294`), never a
+    // partial spend.
+    const plan = planWithPackages([
+      { packageName: pkgA, groups: [group(1, [1])] },
+      { packageName: pkgB, groups: [group(10, [10, 11])] },
+    ]);
+    const result = await applyPlan(plan, mutator, { budget: 1, verification });
+
+    expect(result.abortedFor).toBeUndefined();
+    expect(result.packages).toHaveLength(2);
+
+    const [resultA, resultB] = result.packages;
+    expect(resultA?.groups[0]?.status).toBe("completed");
+    expect(resultA?.notExpiredSuppressedReason).toBeUndefined();
+    expect(resultA?.notExpiredTags.map((t) => t.tag).sort()).toEqual(
+      [tag("stale-a"), tag("stale-b")].sort(),
+    );
+
+    expect(resultB?.groups[0]?.status).toBe("skipped-budget");
+    expect(resultB?.notExpiredSuppressedReason).toBeDefined();
+    expect(resultB?.notExpiredSuppressedReason).toMatch(/budget/i);
+    expect(resultB?.notExpiredTags).toEqual([]);
+  });
+});
+
+describe("applyPlan: expiry seam, the real producer's anti-no-op property (issue #27, TEST 6)", () => {
+  it("a tag alone on an old digest, outside its window, that still resolves post-apply IS notExpired and names that exact tag — a constant-empty OR constant-non-empty producer both fail this", async () => {
+    const OLD = new Date("2020-01-01T00:00:00Z");
+    const YOUNG = new Date("2026-09-05T00:00:00.000Z"); // 6 days before "now" below, inside keepDays
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake
+      // Control: retained (unversioned), still resolves — must NEVER
+      // appear in `notExpiredTags`. A constant-non-empty producer would
+      // wrongly mark this as expiry too, and since it also stays
+      // healthy, it would wrongly appear here alongside the real target
+      // — defeating an exact-match assertion.
+      .setTag(tag("latest"), digest("sha256:live"))
+      .setManifest(digest("sha256:live"), {})
+      // A NEWER sibling of the same kind, on a YOUNG digest: this is
+      // `computeFloorTags`' floor for the "claude-" kind (the greater
+      // version wins regardless of policy), excluded from `expiry` by
+      // the age gate rather than by being retained (`keepPatches: 0`
+      // below excludes every patch tag from retention). Without this,
+      // the lone target below would be its own kind's only member and
+      // therefore ALSO its own floor, which `resolveExpirySet` would
+      // then reject as a floor/expiry overlap before any deletion ran.
+      .setTag(tag("claude-9.9.10"), digest("sha256:target-newer"))
+      .setManifest(digest("sha256:target-newer"), {})
+      // The real target: outside its window under the policy below,
+      // alone on its own digest, and that digest is old.
+      .setTag(tag("claude-9.9.9"), digest("sha256:target"))
+      .setManifest(digest("sha256:target"), {})
+      // Unrelated real deletion, so this is a genuine apply run.
+      .setManifest(digest("sha256:garbage"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    // The independent age read `policyDrivenExpiryProducer` consumes —
+    // via the SAME `fake.packagesClient()` real implementation, not a
+    // hand-rolled stand-in.
+    fake.addVersion({ id: 99, digest: digest("sha256:target"), createdAt: OLD, reportedTags: [] });
+    fake.addVersion({
+      id: 98,
+      digest: digest("sha256:target-newer"),
+      createdAt: YOUNG,
+      reportedTags: [],
+    });
+
+    // `keepPatches: 0` makes ANY patch-level tag fall outside its window
+    // unconditionally, regardless of competing siblings — isolating this
+    // test from the unrelated question of exactly which N wins a window.
+    const targetPolicy: ResolvedPolicy = {
+      keepMajors: 1,
+      keepMinors: 1,
+      keepPatches: 0,
+      keepDays: 30,
+    };
+
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+      expiry: {
+        producer: policyDrivenExpiryProducer, // the REAL producer, not a fake
+        policyFor: () => targetPolicy,
+        packages: fake.packagesClient(),
+        now: () => new Date("2026-09-11T00:00:00.000Z"), // >> 30 days past OLD
+      },
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(deletedVersionIds).toEqual([1]);
+    expect(result.abortedFor).toBeUndefined();
+    expect(incidents).toEqual([]);
+    // The exact-match assertion a constant-empty (would leave this
+    // empty) or constant-non-empty (would also include "latest")
+    // producer both fail.
+    expect(result.packages[0]?.notExpiredTags).toEqual([
+      expect.objectContaining({ tag: tag("claude-9.9.9"), stillResolves: true }) as unknown,
+    ]);
   });
 });

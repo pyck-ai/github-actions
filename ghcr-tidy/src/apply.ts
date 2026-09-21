@@ -10,7 +10,7 @@ import {
 import type { Breaker, TrippedState } from "./breaker.js";
 import type { Journal, MutationTarget } from "./journal.js";
 import type { Mutator } from "./mutator.js";
-import type { RegistryReader } from "./ports.js";
+import type { PackagesClient, RegistryReader } from "./ports.js";
 import {
   checkVolumeAlarm,
   type VolumeAlarmDecision,
@@ -66,17 +66,41 @@ export interface VerificationOptions {
    * test, which reproduces pre-seam behaviour exactly: every disappeared
    * tag is unconditionally a regression, same as before this field
    * existed. When supplied, `producer` is invoked once per package with
-   * THAT package's own pre-apply snapshot tag list and the policy
-   * `policyFor` resolves for it: RECOMPUTED here from the manifest,
-   * never read off `Plan` (which carries no such field at all; see
-   * `verify.ts`'s module doc for why). A producer that fails either of
-   * `resolveExpirySet`'s two safety obligations aborts that package's
-   * own deletions before they are even attempted, see this module's
-   * `ApplyAbortReason` doc for the `"expiry-producer-invalid"` case.
+   * THAT package's `ExpiryProducerInput` — see `verify.ts`'s doc on that
+   * type for exactly what it carries and why `packages` (an INDEPENDENT
+   * Packages API read, never the planner's own `versionsByDigest`) and
+   * `now` are both required here rather than left to the producer to
+   * source itself. `policyFor` resolves the policy per package:
+   * RECOMPUTED here from the manifest, never read off `Plan` (which
+   * carries no such field at all; see `verify.ts`'s module doc for why).
+   * A producer that fails either of `resolveExpirySet`'s two safety
+   * obligations aborts that package's own deletions before they are even
+   * attempted, see this module's `ApplyAbortReason` doc for the
+   * `"expiry-producer-invalid"` case.
    */
   readonly expiry?: {
     readonly producer: ExpiryProducer;
     readonly policyFor: (packageName: PackageName) => ResolvedPolicy;
+    /**
+     * The Packages API client `policyDrivenExpiryProducer` reads
+     * `createdAt` from, called fresh per package at verification time —
+     * see `verify.ts`'s `ExpiryProducerInput.createdAtOf` doc for why
+     * this must be an independent read rather than the planner's
+     * `versionsByDigest` map. `PackagesClient` itself is never cached
+     * anywhere in this codebase (unlike `RegistryReader`, which is —
+     * see `resolve-cache.ts`), so passing the SAME client already used
+     * for planning is safe: this call is a genuine fresh HTTP round
+     * trip either way, not a cache replay.
+     */
+    readonly packages: PackagesClient;
+    /**
+     * Injectable time source for the expiry producer's age gate — NEVER
+     * `Date.now()` inside `applyPlan` or the producer itself, so a run's
+     * classification stays reproducible under test. Called once per
+     * package, immediately before that package's `ExpiryProducerInput`
+     * is assembled.
+     */
+    readonly now: () => Date;
   };
 }
 
@@ -172,9 +196,33 @@ export interface PackageApplyResult {
    * now, but it still resolves. Reported as a separate finding; never
    * aborts the run, see `verify.ts`'s `CompareSnapshotsResult.notExpired`
    * doc for why this is not evidence of damage. Always empty when
-   * `verification.expiry` was not supplied.
+   * `verification.expiry` was not supplied, AND whenever
+   * {@link notExpiredSuppressedReason} is set (see that field's doc) —
+   * never both populated at once.
    */
   readonly notExpiredTags: readonly RegressedTag[];
+  /**
+   * Set, WITH a stated reason, instead of populating
+   * {@link notExpiredTags} when at least one of this package's OWN
+   * groups was `"skipped-budget"` (a crisp, group-granular, per-package
+   * fact — see `applyGroup`'s doc). A budget-truncated package's
+   * remaining "should be gone" candidates are known-deferred work, not a
+   * divergence between the planner and the verifier, so reporting them
+   * as `notExpired` would be exactly the false positive issue #27 fixed
+   * (see the fourth acceptance criterion there): "survived because the
+   * run ran out of budget" must never be indistinguishable from
+   * "survived because something is wrong".
+   *
+   * Deliberately NOT the same as leaving `notExpiredTags` empty with
+   * this field undefined: that combination means "verified clean,
+   * nothing to report"; this field being SET means "cannot report for
+   * this package this cycle" — an operator must be able to tell those
+   * two apart, never told "clean" when the check was actually withheld.
+   * Checked PER PACKAGE, never as a run-global gate on remaining budget,
+   * so a package processed before the budget was exhausted still gets
+   * its real, unsuppressed `notExpiredTags`.
+   */
+  readonly notExpiredSuppressedReason?: string;
 }
 
 /**
@@ -471,19 +519,43 @@ export async function applyPlan(
     }
 
     // The expected-expiry set (`verify.ts`'s `ExpiryProducer`) is
-    // resolved here, per package, from THIS package's own pre-snapshot
-    // tag list and its resolved policy: recomputed at verification
-    // time, never read off `plan` (see `verify.ts`'s module doc for
-    // why). Deliberately checked BEFORE this package's own deletions
-    // start: a producer that fails either safety obligation is not
-    // trusted enough to fall back to an empty set and proceed, so
-    // nothing here is deleted at all, see `ApplyAbortReason`'s
-    // `"expiry-producer-invalid"` doc.
+    // resolved here, per package, from THIS package's own
+    // `ExpiryProducerInput`: recomputed at verification time, never read
+    // off `plan` (see `verify.ts`'s module doc for why). Deliberately
+    // checked BEFORE this package's own deletions start: a producer that
+    // fails either safety obligation is not trusted enough to fall back
+    // to an empty set and proceed, so nothing here is deleted at all,
+    // see `ApplyAbortReason`'s `"expiry-producer-invalid"` doc.
     let expectedExpiry: ReadonlySet<Tag> = new Set();
     if (verification?.expiry) {
       const policy = verification.expiry.policyFor(pkgPlan.packageName);
       const tags = preSnapshot ? [...preSnapshot.keys()] : [];
-      const resolution = resolveExpirySet(verification.expiry.producer, tags, policy);
+      // `digestOf` needs no new I/O — it is the SAME pre-apply
+      // `preSnapshot` already read above, just narrowed to the tags
+      // that actually resolved. `createdAtOf` is the one genuinely new,
+      // INDEPENDENT read: see `verify.ts`'s `ExpiryProducerInput.
+      // createdAtOf` doc for why this must not be the planner's own
+      // `versionsByDigest` map.
+      const digestOf = new Map<Tag, Digest>();
+      if (preSnapshot) {
+        for (const [t, snapshot] of preSnapshot) {
+          if (snapshot.digest !== undefined) {
+            digestOf.set(t, snapshot.digest);
+          }
+        }
+      }
+      const versions = await verification.expiry.packages.listVersions(
+        plan.org,
+        pkgPlan.packageName,
+      );
+      const createdAtOf = new Map<Digest, Date>(versions.map((v) => [v.digest, v.createdAt]));
+      const resolution = resolveExpirySet(verification.expiry.producer, {
+        tags,
+        digestOf,
+        createdAtOf,
+        now: verification.expiry.now(),
+        policy,
+      });
       if (!resolution.ok) {
         return {
           packages,
@@ -522,8 +594,16 @@ export async function applyPlan(
     let republishedTags: readonly RegressedTag[] = [];
     let expiredTags: readonly RegressedTag[] = [];
     let notExpiredTags: readonly RegressedTag[] = [];
+    let notExpiredSuppressedReason: string | undefined;
     let regressionToRecord: RegressionIncident | undefined;
     let abortReason: ApplyAbortReason | undefined;
+
+    // A crisp, PER-PACKAGE, group-granular fact (see `applyGroup`'s
+    // `"skipped-budget"` doc) — never a run-global gate on remaining
+    // budget, so a package processed before the budget ran out still
+    // gets its real `notExpiredTags` below, even if a LATER package in
+    // this same run gets suppressed instead.
+    const hadSkippedBudget = groups.some((g) => g.status === "skipped-budget");
 
     if (verification && registryPath) {
       // A post-snapshot read failure gets exactly the same "unknown"
@@ -565,7 +645,22 @@ export async function applyPlan(
         );
         republishedTags = republished;
         expiredTags = expired;
-        notExpiredTags = notExpired;
+        // See `PackageApplyResult.notExpiredSuppressedReason`'s doc:
+        // a budget-truncated package's remaining "should be gone"
+        // candidates are known-deferred work, not a genuine planner/
+        // verifier divergence, so they are withheld WITH a stated
+        // reason rather than reported as `notExpiredTags` (which would
+        // reproduce exactly the false-positive class issue #27 fixed)
+        // or silently dropped (which would erase the distinction
+        // between "verified clean" and "could not verify").
+        if (hadSkippedBudget) {
+          notExpiredSuppressedReason =
+            "at least one deletion group for this package was skipped for lack of remaining " +
+            "budget; any tag still outside its retention window may simply be awaiting a " +
+            "future, unbudgeted run rather than diverging from the plan";
+        } else {
+          notExpiredTags = notExpired;
+        }
 
         if (regressions.length > 0) {
           regressionToRecord = {
@@ -589,6 +684,7 @@ export async function applyPlan(
       republishedTags,
       expiredTags,
       notExpiredTags,
+      ...(notExpiredSuppressedReason !== undefined && { notExpiredSuppressedReason }),
     });
 
     if (regressionToRecord) {

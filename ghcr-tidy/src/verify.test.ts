@@ -3,6 +3,7 @@ import { digest, registryPathFor, tag, type Digest, type Tag } from "./domain.js
 import { packageName } from "../../registry/package-name.js";
 import type { ResolvedPolicy } from "./manifest/schema.js";
 import { FakeGhcr } from "./fake-ghcr.js";
+import { loadBaseimagesTagDigestAge } from "./__fixtures__/load-baseimages-tag-digest-age.js";
 import {
   checkCanary,
   compareSnapshots,
@@ -12,6 +13,7 @@ import {
   resolveExpirySet,
   snapshotPackage,
   type ExpiryProducer,
+  type ExpiryProducerInput,
   type TagSnapshot,
 } from "./verify.js";
 
@@ -24,6 +26,21 @@ const anyPolicy: ResolvedPolicy = {
   keepPatches: 5,
   keepDays: 30,
 };
+
+/** Pinned per issue #27's corpus test: ages are continuous floats, so a drifting clock would silently change the answer and rot the test. */
+const PINNED_NOW = new Date("2026-09-21T21:00:00Z");
+
+/** Builds a minimal {@link ExpiryProducerInput}, defaulting every field a given test does not care about. */
+function producerInput(overrides: Partial<ExpiryProducerInput> = {}): ExpiryProducerInput {
+  return {
+    tags: [],
+    digestOf: new Map(),
+    createdAtOf: new Map(),
+    now: PINNED_NOW,
+    policy: anyPolicy,
+    ...overrides,
+  };
+}
 
 function healthy(d: string): TagSnapshot {
   return { resolve: "resolved", digest: digest(d), closure: "resolved" };
@@ -367,7 +384,7 @@ describe("compareSnapshots — the three-part predicate", () => {
   });
 });
 
-describe("resolveExpirySet", () => {
+describe("resolveExpirySet — the two safety obligations, unchanged (test 7)", () => {
   it("ok: true with the producer's expiry set when floor and unclassifiable are disjoint from it", () => {
     const producer: ExpiryProducer = {
       produce: () => ({
@@ -377,7 +394,10 @@ describe("resolveExpirySet", () => {
       }),
     };
 
-    const result = resolveExpirySet(producer, [tag("old-1"), tag("old-2")], anyPolicy);
+    const result = resolveExpirySet(
+      producer,
+      producerInput({ tags: [tag("old-1"), tag("old-2")] }),
+    );
 
     expect(result).toEqual({
       ok: true,
@@ -398,7 +418,7 @@ describe("resolveExpirySet", () => {
       }),
     };
 
-    const result = resolveExpirySet(misbehavingProducer, [tag("newest")], anyPolicy);
+    const result = resolveExpirySet(misbehavingProducer, producerInput({ tags: [tag("newest")] }));
 
     expect(result).toEqual({
       ok: false,
@@ -420,7 +440,7 @@ describe("resolveExpirySet", () => {
       }),
     };
 
-    const result = resolveExpirySet(misbehavingProducer, [tag("mystery")], anyPolicy);
+    const result = resolveExpirySet(misbehavingProducer, producerInput({ tags: [tag("mystery")] }));
 
     expect(result).toEqual({
       ok: false,
@@ -430,7 +450,10 @@ describe("resolveExpirySet", () => {
   });
 
   it("nullExpiryProducer always succeeds with an empty expiry set, for any tags and any policy", () => {
-    const result = resolveExpirySet(nullExpiryProducer, [tag("a"), tag("b"), tag("c")], anyPolicy);
+    const result = resolveExpirySet(
+      nullExpiryProducer,
+      producerInput({ tags: [tag("a"), tag("b"), tag("c")] }),
+    );
 
     expect(result).toEqual({ ok: true, expiry: new Set() });
   });
@@ -516,16 +539,88 @@ describe("compareSnapshots: expected expiry", () => {
 
 describe("policyDrivenExpiryProducer", () => {
   const policy: ResolvedPolicy = { keepMajors: 0, keepMinors: 0, keepPatches: 0, keepDays: 30 };
+  const OLD = new Date("2020-01-01T00:00:00Z");
+  const YOUNG = new Date("2026-09-20T00:00:00Z"); // 1 day before PINNED_NOW
 
-  it("retires exactly the tags the windowing algorithm would exclude, keeps unversioned tags out of expiry, and reports nothing unclassifiable", () => {
+  it("retires exactly the tags the windowing algorithm would exclude, keeps unversioned tags out of expiry, and reports nothing unclassifiable (basic shape, everything alone on its own old digest)", () => {
+    const tags = [tag("latest"), tag("1.0"), tag("2.0")];
+    const digestOf = new Map<Tag, Digest>([
+      [tag("latest"), digest("sha256:a")],
+      [tag("1.0"), digest("sha256:b")],
+      [tag("2.0"), digest("sha256:c")],
+    ]);
+    const createdAtOf = new Map<Digest, Date>([
+      [digest("sha256:a"), OLD],
+      [digest("sha256:b"), OLD],
+      [digest("sha256:c"), OLD],
+    ]);
     const result = policyDrivenExpiryProducer.produce(
-      [tag("latest"), tag("1.0"), tag("2.0")],
-      policy,
+      producerInput({ tags, digestOf, createdAtOf, policy }),
     );
     expect(result.unclassifiable).toEqual(new Set());
     expect(result.expiry.has(tag("latest"))).toBe(false);
-    // Both "1.0" and "2.0" fall outside a top-0-majors window.
+    // Both "1.0" and "2.0" fall outside a top-0-majors window, are each
+    // alone on their own digest, and that digest is old.
     expect(result.expiry).toEqual(new Set([tag("1.0"), tag("2.0")]));
+  });
+
+  it("TEST 1 (conjunction): a digest carrying one retained and one non-retained tag yields an EMPTY expiry for both, even though the digest is old — pinned independently of the age half", () => {
+    const retainedTag = tag("golang-2"); // sole member of its kind -> retained major
+    const staleTag = tag("claude-9.9.9"); // different kind, non-retained under keepMinors:0
+    const sharedDigest = digest("sha256:shared");
+    const kindPolicy: ResolvedPolicy = {
+      keepMajors: 1,
+      keepMinors: 0,
+      keepPatches: 0,
+      keepDays: 30,
+    };
+
+    const result = policyDrivenExpiryProducer.produce(
+      producerInput({
+        tags: [retainedTag, staleTag],
+        digestOf: new Map([
+          [retainedTag, sharedDigest],
+          [staleTag, sharedDigest],
+        ]),
+        createdAtOf: new Map([[sharedDigest, OLD]]), // old enough to pass keepDays on its own
+        policy: kindPolicy,
+      }),
+    );
+
+    expect(result.expiry).toEqual(new Set());
+  });
+
+  it("TEST 2 (age gate): the same non-retained tag is absent from expiry on a young digest, and present on an old one", () => {
+    const staleTag = tag("claude-9.9.9");
+    const younger: ExpiryProducerInput = producerInput({
+      tags: [staleTag],
+      digestOf: new Map([[staleTag, digest("sha256:young")]]),
+      createdAtOf: new Map([[digest("sha256:young"), YOUNG]]),
+      policy,
+    });
+    const older: ExpiryProducerInput = producerInput({
+      tags: [staleTag],
+      digestOf: new Map([[staleTag, digest("sha256:old")]]),
+      createdAtOf: new Map([[digest("sha256:old"), OLD]]),
+      policy,
+    });
+
+    expect(policyDrivenExpiryProducer.produce(younger).expiry.has(staleTag)).toBe(false);
+    expect(policyDrivenExpiryProducer.produce(older).expiry.has(staleTag)).toBe(true);
+  });
+
+  it("a tag with no known digest, or a digest with no known createdAt, is never asserted expected-to-expire (fails safe on unknown facts)", () => {
+    const orphanTag = tag("claude-9.9.9"); // resolves to a digest never reported by createdAtOf
+    const unresolvedTag = tag("claude-8.8.8"); // never resolved at all, absent from digestOf
+    const result = policyDrivenExpiryProducer.produce(
+      producerInput({
+        tags: [orphanTag, unresolvedTag],
+        digestOf: new Map([[orphanTag, digest("sha256:unknown-age")]]),
+        createdAtOf: new Map(), // deliberately empty
+        policy,
+      }),
+    );
+    expect(result.expiry).toEqual(new Set());
   });
 
   it("resolveExpirySet never rejects the real producer's own output: floor and expiry stay disjoint at the recommended policy", () => {
@@ -544,8 +639,88 @@ describe("policyDrivenExpiryProducer", () => {
       tag("2.0.0"),
       tag("latest"),
     ];
-    const result = resolveExpirySet(policyDrivenExpiryProducer, tags, generous);
+    const digestOf = new Map(tags.map((t) => [t, digest(`sha256:${t}`)]));
+    const createdAtOf = new Map([...digestOf.values()].map((d) => [d, OLD] as const));
+    const result = resolveExpirySet(
+      policyDrivenExpiryProducer,
+      producerInput({ tags, digestOf, createdAtOf, policy: generous }),
+    );
     expect(result.ok).toBe(true);
+  });
+
+  it("TEST 3 (the safety direction): a tag INSIDE the keepDays window that then disappears is a regression, never expired — the hole issue #27 closes", () => {
+    const inWindowTag = tag("claude-9.9.9"); // outside its semver window, but its digest is YOUNG
+    const d = digest("sha256:in-window");
+    const input = producerInput({
+      tags: [inWindowTag],
+      digestOf: new Map([[inWindowTag, d]]),
+      createdAtOf: new Map([[d, YOUNG]]),
+      policy,
+    });
+    const resolution = resolveExpirySet(policyDrivenExpiryProducer, input);
+    expect(resolution.ok).toBe(true);
+    if (!resolution.ok) return;
+    // The keepDays gate must have excluded it: it is NOT in the expiry
+    // set despite failing the semver window on its own.
+    expect(resolution.expiry.has(inWindowTag)).toBe(false);
+
+    // Simulating this tag being wrongly deleted anyway (e.g. a broken
+    // INFLIGHT gate): `compareSnapshots` (untouched by this fix) must
+    // classify it as a REGRESSION, never `expired`, precisely because
+    // the resolved `expectedExpiry` set does not contain it.
+    const pre = new Map<Tag, TagSnapshot>([[inWindowTag, healthy("sha256:in-window")]]);
+    const post = new Map<Tag, TagSnapshot>([[inWindowTag, notFound()]]);
+    const result = compareSnapshots(pre, post, { expectedExpiry: resolution.expiry });
+
+    expect(result.expired).toEqual([]);
+    expect(result.regressions).toHaveLength(1);
+    expect(result.regressions[0]?.tag).toBe(inWindowTag);
+  });
+});
+
+describe("policyDrivenExpiryProducer — TEST 4: corpus silence at the shipped default policy", () => {
+  const byPackage = loadBaseimagesTagDigestAge();
+  const policy: ResolvedPolicy = { keepMajors: 1, keepMinors: 3, keepPatches: 5, keepDays: 30 };
+
+  /**
+   * Runs the real producer against one package's ground-truth corpus at
+   * the PINNED instant and asserts the residual is exactly zero — the
+   * literal meaning of "notExpired is empty on a correct run": every
+   * tag either resolves normally forever or is a genuine, correctly
+   * classified expiry candidate. Nothing here simulates a snapshot: an
+   * empty `expiry` set makes `compareSnapshots`'s `notExpired` bucket
+   * empty for ANY post-apply outcome, by construction (see
+   * `compareSnapshots`'s doc — membership in `expectedExpiry` is the
+   * only way into that bucket), so asserting the set itself is the
+   * direct, sufficient claim.
+   */
+  function assertZeroResidual(packageName: string, expectedTagCount: number): void {
+    const pkg = byPackage.get(packageName);
+    expect(pkg).toBeDefined();
+    if (!pkg) return;
+    expect(pkg.tags).toHaveLength(expectedTagCount);
+
+    const input = producerInput({
+      tags: pkg.tags,
+      digestOf: pkg.digestOf,
+      createdAtOf: pkg.createdAtOf,
+      policy,
+    });
+    const result = policyDrivenExpiryProducer.produce(input);
+    expect(result.unclassifiable).toEqual(new Set());
+
+    const resolution = resolveExpirySet(policyDrivenExpiryProducer, input);
+    expect(resolution.ok).toBe(true);
+    if (!resolution.ok) return;
+    expect(resolution.expiry).toEqual(new Set());
+  }
+
+  it("all-in-one: residual is zero (114 tags, matching the issue's ground truth of naive 40, -18 digest existential, -22 keepDays)", () => {
+    assertZeroResidual("all-in-one", 114);
+  });
+
+  it("agent: residual is zero (132 tags, matching the issue's ground truth of naive 60, -24 digest existential, -36 keepDays)", () => {
+    assertZeroResidual("agent", 132);
   });
 });
 

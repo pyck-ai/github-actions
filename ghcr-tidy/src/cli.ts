@@ -786,7 +786,14 @@ function summarizeApplyResult(plan: Plan, result: ApplyResult): string {
           `(not a regression): ${pkg.expiredTags.map((t) => t.tag).join(", ")}`,
       );
     }
-    if (pkg.notExpiredTags.length > 0) {
+    if (pkg.notExpiredSuppressedReason !== undefined) {
+      // See `apply.ts`'s `PackageApplyResult.notExpiredSuppressedReason`
+      // doc: printed explicitly rather than silently omitted, so
+      // "cannot report" is never confused with "nothing to report".
+      lines.push(
+        `  ${pkg.packageName}: notExpired check withheld for this package (${pkg.notExpiredSuppressedReason})`,
+      );
+    } else if (pkg.notExpiredTags.length > 0) {
       lines.push(
         `  ${pkg.packageName}: ${String(pkg.notExpiredTags.length)} tag(s) expected to expire ` +
           `but still resolve (not a regression): ` +
@@ -980,6 +987,14 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
       expiry: {
         producer: policyDrivenExpiryProducer,
         policyFor: () => policy,
+        // Deliberately `packagesClient`, not a fresh client: it is never
+        // cached (unlike `registry`/`verificationRegistry` — see
+        // `verify.ts`'s `ExpiryProducerInput.createdAtOf` doc and
+        // `buildRegistryAdapters`'s doc on why the registry side needs
+        // two DISTINCT readers), so calling it again here is already a
+        // genuine independent read, not a cache replay of planning's.
+        packages: packagesClient,
+        now: () => clock.now(),
       },
       // Printed to stdout BEFORE `sink.record` (which calls the
       // breaker, a network operation) is even attempted — so the
