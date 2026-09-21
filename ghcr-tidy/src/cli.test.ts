@@ -10,6 +10,7 @@ import { memoryJournal } from "./journal.js";
 import { parsePlan } from "./persisted-plan.js";
 import {
   buildPackageTokenMap,
+  decorateRegistry,
   parseArgv,
   resolveArgv,
   resolveBreakerToken,
@@ -1009,5 +1010,79 @@ describe("resolveBreakerToken — never let the delete:packages PAT double as th
 
   it("falls back to the registry token as a last resort when neither is configured — the pre-fix (and still-supported single-token) behaviour", () => {
     expect(resolveBreakerToken({}, {}, "registry-token")).toBe("registry-token");
+  });
+});
+
+describe("decorateRegistry: verification must not replay planning's cache", () => {
+  /**
+   * Regression coverage for the bug where `buildRegistryAdapters` handed
+   * the SAME cached reader to both `runPlanning` and
+   * `VerificationOptions.registry`. `resolve-cache.ts` never invalidates,
+   * so a digest already resolved during planning would be served the
+   * same, pre-deletion answer forever after, and post-apply verification
+   * (the canary and both snapshots) could never observe damage it should
+   * be catching. This test goes through the real
+   * `createCachingRegistryReader`/`createLimiter` decorator stack (via
+   * `decorateRegistry`, the exact function `buildRegistryAdapters` calls)
+   * instead of a bare fake reader, so it actually exercises the wiring
+   * this bug lived in.
+   */
+  it("planningRegistry keeps serving a stale resolution while verificationRegistry observes the registry's current state", async () => {
+    const path = registryPathFor("acme", packageName("widget"));
+    const fake = new FakeGhcr();
+    fake.setTag(tag("v1"), digest("sha256:d1")).setManifest(digest("sha256:d1"), {});
+
+    const { planningRegistry, verificationRegistry } = decorateRegistry(fake.registryReader(), 4);
+
+    // "Planning" resolves the tag once, populating the cache.
+    const planned = await planningRegistry.resolve(path, tag("v1"));
+    expect(planned).toMatchObject({ status: "success", digest: digest("sha256:d1") });
+
+    // The registry changes between planning and verification (e.g. the
+    // manifest this tag pointed at was deleted during apply).
+    fake.setManifest(digest("sha256:d1"), { notFound: true });
+
+    // planningRegistry replays its cached answer: this is by design (see
+    // `resolve-cache.ts`'s doc), it is what makes it unsafe for
+    // verification specifically.
+    const rePlanned = await planningRegistry.resolve(path, tag("v1"));
+    expect(rePlanned).toMatchObject({ status: "success", digest: digest("sha256:d1") });
+
+    // verificationRegistry, the reader `buildRegistryAdapters` now wires
+    // to `VerificationOptions.registry`, is NOT cached and observes the
+    // change.
+    const verified = await verificationRegistry.resolve(path, tag("v1"));
+    expect(verified).toMatchObject({ status: "not-found" });
+  });
+
+  it("still shares one rate limiter between planningRegistry and verificationRegistry, so verification stays bounded by --jobs", async () => {
+    const path = registryPathFor("acme", packageName("widget"));
+    const fake = new FakeGhcr();
+    for (let i = 0; i < 5; i += 1) {
+      fake.setTag(tag(`t${String(i)}`), digest(`sha256:d${String(i)}`));
+      fake.setManifest(digest(`sha256:d${String(i)}`), {});
+    }
+
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const raw = fake.registryReader();
+    const instrumented: RegistryReader = {
+      listTags: (p) => raw.listTags(p),
+      resolve: async (p, ref) => {
+        concurrent += 1;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        const result = await raw.resolve(p, ref);
+        concurrent -= 1;
+        return result;
+      },
+    };
+
+    const { planningRegistry, verificationRegistry } = decorateRegistry(instrumented, 2);
+    await Promise.all([
+      ...[0, 1].map((i) => planningRegistry.resolve(path, tag(`t${String(i)}`))),
+      ...[2, 3, 4].map((i) => verificationRegistry.resolve(path, tag(`t${String(i)}`))),
+    ]);
+
+    expect(maxConcurrent).toBeLessThanOrEqual(2);
   });
 });

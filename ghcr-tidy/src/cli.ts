@@ -377,6 +377,20 @@ function requireToken(env: NodeJS.ProcessEnv): string {
  * This is the ONLY place either decorator is applied: `planPackage` and
  * everything it calls stay unaware that concurrency is bounded at all.
  *
+ * The two decorators are not handed to every caller as one bundle,
+ * though: this function returns both `planningRegistry` (cached, for
+ * `runPlanning`) and `verificationRegistry` (rate-limited only, for
+ * `VerificationOptions.registry`), and the two are never the same
+ * object. A verifier that reads its own plan-time cache back to itself
+ * cannot detect what changed: `resolve-cache.ts` never invalidates or
+ * evicts, so every post-apply resolve of a digest already seen during
+ * planning would be served the PRE-DELETION answer, and the pre/post
+ * snapshots around a deletion (`apply.ts`) would come out byte-identical
+ * for anything the plan had already touched: exactly the class of bug
+ * that let a multi-arch orphan go undetected in production. Verification
+ * must observe the registry as it actually is at verification time, so
+ * it gets the rate-limited reader with no cache in front of it.
+ *
  * `canaryPackage`, when given, is registered in the same `pathFor` token
  * map as every selected package — the apply canary is a property of the
  * WHOLE RUN, not of whichever packages `--package` happened to select,
@@ -423,6 +437,32 @@ export function buildPackageTokenMap(
 }
 
 /**
+ * Applies the two decorators `buildRegistryAdapters` puts around the raw,
+ * network-backed registry reader, returning `planningRegistry` (cached +
+ * rate-limited) and `verificationRegistry` (rate-limited only) as two
+ * DISTINCT objects over the same underlying `raw` reader (see
+ * `buildRegistryAdapters`'s doc for why verification must never be handed
+ * the cached one). Extracted as its own pure function (no token exchange,
+ * no octokit) specifically so this wiring is unit-testable directly
+ * against a fake `RegistryReader`, exercising the actual
+ * `createCachingRegistryReader`/`createLimiter` decorators rather than a
+ * bare double that bypasses them entirely: mirroring
+ * {@link buildPackageTokenMap}'s reason for being its own function.
+ */
+export function decorateRegistry(
+  raw: RegistryReader,
+  jobs: number,
+): { planningRegistry: RegistryReader; verificationRegistry: RegistryReader } {
+  const limit = createLimiter(jobs);
+  const verificationRegistry: RegistryReader = {
+    listTags: (p) => limit(() => raw.listTags(p)),
+    resolve: (p, ref) => limit(() => raw.resolve(p, ref)),
+  };
+  const planningRegistry = createCachingRegistryReader(verificationRegistry);
+  return { planningRegistry, verificationRegistry };
+}
+
+/**
  * Which token `githubIssueBreaker` should authenticate with — deliberately
  * SEPARATE from the registry/Packages-API token, which for `apply` is
  * typically a `delete:packages`-scoped PAT with no issues access (see
@@ -454,7 +494,10 @@ function buildRegistryAdapters(
   jobs: number,
   canaryPackage?: PackageName,
 ): {
-  registry: RegistryReader;
+  /** Cached + rate-limited. For `runPlanning` ONLY: never pass this to `VerificationOptions.registry`. */
+  planningRegistry: RegistryReader;
+  /** Rate-limited, NOT cached. For `VerificationOptions.registry` (canary + both snapshots); see this function's doc for why verification must not share planning's cache. */
+  verificationRegistry: RegistryReader;
   packages: PackagesClient;
   pathFor: (p: PackageName) => RegistryPath;
 } {
@@ -473,14 +516,9 @@ function buildRegistryAdapters(
     }
     return getRegistryToken(token, name, { cache: tokenCache });
   });
-  const limit = createLimiter(jobs);
-  const limitedRegistry: RegistryReader = {
-    listTags: (p) => limit(() => rawRegistry.listTags(p)),
-    resolve: (p, ref) => limit(() => rawRegistry.resolve(p, ref)),
-  };
-  const registry = createCachingRegistryReader(limitedRegistry);
+  const { planningRegistry, verificationRegistry } = decorateRegistry(rawRegistry, jobs);
   const packages = createPackagesClient(octokit);
-  return { registry, packages, pathFor };
+  return { planningRegistry, verificationRegistry, packages, pathFor };
 }
 
 interface PlanRunResult {
@@ -651,7 +689,7 @@ async function runPlanCommand(args: ParsedArgs, deps: CliDeps): Promise<number> 
       octokit,
       jobs,
     );
-    registry = deps.registry ?? adapters.registry;
+    registry = deps.registry ?? adapters.planningRegistry;
     packagesClient = deps.packages ?? adapters.packages;
   }
 
@@ -790,9 +828,16 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
   const octokit = token !== undefined ? createOctokit(token) : undefined;
 
   let registry: RegistryReader;
+  let verificationRegistry: RegistryReader;
   let packagesClient: PackagesClient;
   if (deps.registry && deps.packages) {
+    // Tests inject a single bare fake here, with no caching decorator in
+    // front of it at all, so reusing it for both planning and
+    // verification is correct in that world, not a reintroduction of
+    // the production bug (see `buildRegistryAdapters`'s doc for why
+    // production keeps the two separate).
     registry = deps.registry;
+    verificationRegistry = deps.registry;
     packagesClient = deps.packages;
   } else {
     // token/octokit are guaranteed defined here: needsOctokit is true
@@ -807,7 +852,8 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
       jobs,
       canaryPackageForRegistry,
     );
-    registry = adapters.registry;
+    registry = adapters.planningRegistry;
+    verificationRegistry = adapters.verificationRegistry;
     packagesClient = adapters.packages;
   }
 
@@ -897,7 +943,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
       throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
     }
     verification = {
-      registry,
+      registry: verificationRegistry,
       canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
       sink: breakerRegressionSink(breaker),
       // Printed to stdout BEFORE `sink.record` (which calls the

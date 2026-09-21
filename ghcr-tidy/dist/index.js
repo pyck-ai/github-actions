@@ -10184,6 +10184,7 @@ var __webpack_exports__ = {};
 // EXPORTS
 __nccwpck_require__.d(__webpack_exports__, {
   QH: () => (/* binding */ buildPackageTokenMap),
+  BE: () => (/* binding */ decorateRegistry),
   SB: () => (/* binding */ parseArgv),
   rf: () => (/* binding */ resolveArgv),
   u9: () => (/* binding */ resolveBreakerToken),
@@ -16170,6 +16171,20 @@ function requireToken(env) {
  * This is the ONLY place either decorator is applied: `planPackage` and
  * everything it calls stay unaware that concurrency is bounded at all.
  *
+ * The two decorators are not handed to every caller as one bundle,
+ * though: this function returns both `planningRegistry` (cached, for
+ * `runPlanning`) and `verificationRegistry` (rate-limited only, for
+ * `VerificationOptions.registry`), and the two are never the same
+ * object. A verifier that reads its own plan-time cache back to itself
+ * cannot detect what changed: `resolve-cache.ts` never invalidates or
+ * evicts, so every post-apply resolve of a digest already seen during
+ * planning would be served the PRE-DELETION answer, and the pre/post
+ * snapshots around a deletion (`apply.ts`) would come out byte-identical
+ * for anything the plan had already touched: exactly the class of bug
+ * that let a multi-arch orphan go undetected in production. Verification
+ * must observe the registry as it actually is at verification time, so
+ * it gets the rate-limited reader with no cache in front of it.
+ *
  * `canaryPackage`, when given, is registered in the same `pathFor` token
  * map as every selected package — the apply canary is a property of the
  * WHOLE RUN, not of whichever packages `--package` happened to select,
@@ -16210,6 +16225,28 @@ function buildPackageTokenMap(registryOwner, entries, canaryPackage) {
     return pathToName;
 }
 /**
+ * Applies the two decorators `buildRegistryAdapters` puts around the raw,
+ * network-backed registry reader, returning `planningRegistry` (cached +
+ * rate-limited) and `verificationRegistry` (rate-limited only) as two
+ * DISTINCT objects over the same underlying `raw` reader (see
+ * `buildRegistryAdapters`'s doc for why verification must never be handed
+ * the cached one). Extracted as its own pure function (no token exchange,
+ * no octokit) specifically so this wiring is unit-testable directly
+ * against a fake `RegistryReader`, exercising the actual
+ * `createCachingRegistryReader`/`createLimiter` decorators rather than a
+ * bare double that bypasses them entirely: mirroring
+ * {@link buildPackageTokenMap}'s reason for being its own function.
+ */
+function decorateRegistry(raw, jobs) {
+    const limit = createLimiter(jobs);
+    const verificationRegistry = {
+        listTags: (p) => limit(() => raw.listTags(p)),
+        resolve: (p, ref) => limit(() => raw.resolve(p, ref)),
+    };
+    const planningRegistry = createCachingRegistryReader(verificationRegistry);
+    return { planningRegistry, verificationRegistry };
+}
+/**
  * Which token `githubIssueBreaker` should authenticate with — deliberately
  * SEPARATE from the registry/Packages-API token, which for `apply` is
  * typically a `delete:packages`-scoped PAT with no issues access (see
@@ -16242,14 +16279,9 @@ function buildRegistryAdapters(token, owner, registryOwner, entries, octokit, jo
         }
         return getRegistryToken(token, name, { cache: tokenCache });
     });
-    const limit = createLimiter(jobs);
-    const limitedRegistry = {
-        listTags: (p) => limit(() => rawRegistry.listTags(p)),
-        resolve: (p, ref) => limit(() => rawRegistry.resolve(p, ref)),
-    };
-    const registry = createCachingRegistryReader(limitedRegistry);
+    const { planningRegistry, verificationRegistry } = decorateRegistry(rawRegistry, jobs);
     const packages = createPackagesClient(octokit);
-    return { registry, packages, pathFor };
+    return { planningRegistry, verificationRegistry, packages, pathFor };
 }
 /** One line per {@link PackagePlanResult}, terse enough for {@link runPlanning}'s per-package progress lines — NOT the multi-line detail `formatPlanSummary` prints at the end of a run. */
 function progressOutcomeSummary(result) {
@@ -16378,7 +16410,7 @@ async function runPlanCommand(args, deps) {
         const token = requireToken(process.env);
         const octokit = createOctokit(token);
         const adapters = buildRegistryAdapters(token, manifest.owner, registryOwner, entries, octokit, jobs);
-        registry = deps.registry ?? adapters.registry;
+        registry = deps.registry ?? adapters.planningRegistry;
         packagesClient = deps.packages ?? adapters.packages;
     }
     const { outcomes, plan } = await runPlanning(manifest, entries, registry, packagesClient, clock, jobs, args.deleteBrokenRoots, deps.progress);
@@ -16484,9 +16516,16 @@ async function runApplyCommand(args, deps) {
     const token = needsOctokit ? requireToken(process.env) : undefined;
     const octokit = token !== undefined ? createOctokit(token) : undefined;
     let registry;
+    let verificationRegistry;
     let packagesClient;
     if (deps.registry && deps.packages) {
+        // Tests inject a single bare fake here, with no caching decorator in
+        // front of it at all, so reusing it for both planning and
+        // verification is correct in that world, not a reintroduction of
+        // the production bug (see `buildRegistryAdapters`'s doc for why
+        // production keeps the two separate).
         registry = deps.registry;
+        verificationRegistry = deps.registry;
         packagesClient = deps.packages;
     }
     else {
@@ -16494,7 +16533,8 @@ async function runApplyCommand(args, deps) {
         // whenever this branch is reached (deps.registry or deps.packages
         // missing implies needsOctokit).
         const adapters = buildRegistryAdapters(token, manifest.owner, registryOwner, entries, octokit, jobs, canaryPackageForRegistry);
-        registry = adapters.registry;
+        registry = adapters.planningRegistry;
+        verificationRegistry = adapters.verificationRegistry;
         packagesClient = adapters.packages;
     }
     // The breaker is mandatory, unconditionally — see this module's doc and
@@ -16566,7 +16606,7 @@ async function runApplyCommand(args, deps) {
             throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
         }
         verification = {
-            registry,
+            registry: verificationRegistry,
             canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
             sink: breakerRegressionSink(breaker),
             // Printed to stdout BEFORE `sink.record` (which calls the
@@ -16718,9 +16758,10 @@ if (isDirectRun) {
 /* c8 ignore stop */
 
 var __webpack_exports__buildPackageTokenMap = __webpack_exports__.QH;
+var __webpack_exports__decorateRegistry = __webpack_exports__.BE;
 var __webpack_exports__parseArgv = __webpack_exports__.SB;
 var __webpack_exports__resolveArgv = __webpack_exports__.rf;
 var __webpack_exports__resolveBreakerToken = __webpack_exports__.u9;
 var __webpack_exports__runCommand = __webpack_exports__.d1;
 var __webpack_exports__tokenizeArgs = __webpack_exports__.vL;
-export { __webpack_exports__buildPackageTokenMap as buildPackageTokenMap, __webpack_exports__parseArgv as parseArgv, __webpack_exports__resolveArgv as resolveArgv, __webpack_exports__resolveBreakerToken as resolveBreakerToken, __webpack_exports__runCommand as runCommand, __webpack_exports__tokenizeArgs as tokenizeArgs };
+export { __webpack_exports__buildPackageTokenMap as buildPackageTokenMap, __webpack_exports__decorateRegistry as decorateRegistry, __webpack_exports__parseArgv as parseArgv, __webpack_exports__resolveArgv as resolveArgv, __webpack_exports__resolveBreakerToken as resolveBreakerToken, __webpack_exports__runCommand as runCommand, __webpack_exports__tokenizeArgs as tokenizeArgs };
