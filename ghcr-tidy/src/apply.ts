@@ -1,5 +1,6 @@
 import type { PackageName } from "../../registry/package-name.js";
 import { registryPathFor, type Digest, type RegistryPath, type Tag } from "./domain.js";
+import type { ResolvedPolicy } from "./manifest/schema.js";
 import {
   assertGroupsAreWellFormed,
   type Plan,
@@ -18,8 +19,11 @@ import {
 import {
   checkCanary,
   compareSnapshots,
+  resolveExpirySet,
   snapshotPackage,
   type CanaryFailureReason,
+  type ExpiryFailureReason,
+  type ExpiryProducer,
   type RegressedTag,
   type RegressionIncident,
   type RegressionSink,
@@ -56,6 +60,24 @@ export interface VerificationOptions {
    * flow.
    */
   readonly onIncident?: (incident: RegressionIncident) => void;
+  /**
+   * Optional seam for INTENDED tag expiry (`verify.ts`'s
+   * `ExpiryProducer`). Omitted entirely by every existing caller and
+   * test, which reproduces pre-seam behaviour exactly: every disappeared
+   * tag is unconditionally a regression, same as before this field
+   * existed. When supplied, `producer` is invoked once per package with
+   * THAT package's own pre-apply snapshot tag list and the policy
+   * `policyFor` resolves for it: RECOMPUTED here from the manifest,
+   * never read off `Plan` (which carries no such field at all; see
+   * `verify.ts`'s module doc for why). A producer that fails either of
+   * `resolveExpirySet`'s two safety obligations aborts that package's
+   * own deletions before they are even attempted, see this module's
+   * `ApplyAbortReason` doc for the `"expiry-producer-invalid"` case.
+   */
+  readonly expiry?: {
+    readonly producer: ExpiryProducer;
+    readonly policyFor: (packageName: PackageName) => ResolvedPolicy;
+  };
 }
 
 export interface ApplyOptions {
@@ -132,6 +154,27 @@ export interface PackageApplyResult {
    * never aborts anything.
    */
   readonly republishedTags: readonly RegressedTag[];
+  /**
+   * Tags `compareSnapshots` found `expired` for this package
+   * (`verify.ts`'s `CompareSnapshotsResult.expired` doc): a pre-snapshot
+   * tag disappeared exactly as the resolved policy's expiry producer
+   * said it would. Deliberate destruction, not damage: never trips the
+   * breaker, never aborts the run, but always reported here, never
+   * silently folded into a clean-run "nothing to see" summary: an
+   * operator must be able to see intentional removals alongside
+   * everything else a run did. Always empty when `verification.expiry`
+   * was not supplied.
+   */
+  readonly expiredTags: readonly RegressedTag[];
+  /**
+   * Tags `compareSnapshots` found `notExpired` for this package: the
+   * resolved policy's expiry producer expected this tag to be gone by
+   * now, but it still resolves. Reported as a separate finding; never
+   * aborts the run, see `verify.ts`'s `CompareSnapshotsResult.notExpired`
+   * doc for why this is not evidence of damage. Always empty when
+   * `verification.expiry` was not supplied.
+   */
+  readonly notExpiredTags: readonly RegressedTag[];
 }
 
 /**
@@ -156,6 +199,14 @@ export interface PackageApplyResult {
  * pre- and post-snapshot failed operationally and there is no per-tag
  * data at all) — but verification could not vouch for this package
  * either, so the run stops without tripping the breaker.
+ * `"expiry-producer-invalid"` means `verification.expiry`'s producer
+ * violated one of `verify.ts`'s `resolveExpirySet` obligations for this
+ * package: `reason` names which one, `tags` are the offending tags.
+ * Checked immediately after this package's PRE-snapshot and before any
+ * of ITS OWN deletions are attempted: a producer already shown to be
+ * untrustworthy is not trusted enough to fall back to an empty expiry
+ * set and proceed, so nothing for this package (or anything after it)
+ * is deleted. Every package processed before it keeps its result.
  */
 export type ApplyAbortReason =
   | { readonly kind: "breaker-tripped"; readonly state: TrippedState }
@@ -176,6 +227,12 @@ export type ApplyAbortReason =
       readonly kind: "verification-unavailable";
       readonly packageName: PackageName;
       readonly tags: readonly RegressedTag[];
+    }
+  | {
+      readonly kind: "expiry-producer-invalid";
+      readonly packageName: PackageName;
+      readonly reason: ExpiryFailureReason;
+      readonly tags: readonly Tag[];
     };
 
 /** Total number of individual version deletions this plan would attempt across every package and group, budget permitting — what the volume alarm (`volume-alarm.ts`) compares against its baseline. */
@@ -413,6 +470,36 @@ export async function applyPlan(
       preSnapshotFailed = pre.failed;
     }
 
+    // The expected-expiry set (`verify.ts`'s `ExpiryProducer`) is
+    // resolved here, per package, from THIS package's own pre-snapshot
+    // tag list and its resolved policy: recomputed at verification
+    // time, never read off `plan` (see `verify.ts`'s module doc for
+    // why). Deliberately checked BEFORE this package's own deletions
+    // start: a producer that fails either safety obligation is not
+    // trusted enough to fall back to an empty set and proceed, so
+    // nothing here is deleted at all, see `ApplyAbortReason`'s
+    // `"expiry-producer-invalid"` doc.
+    let expectedExpiry: ReadonlySet<Tag> = new Set();
+    if (verification?.expiry) {
+      const policy = verification.expiry.policyFor(pkgPlan.packageName);
+      const tags = preSnapshot ? [...preSnapshot.keys()] : [];
+      const resolution = resolveExpirySet(verification.expiry.producer, tags, policy);
+      if (!resolution.ok) {
+        return {
+          packages,
+          attempted: totalAttempted,
+          remainingBudget,
+          abortedFor: {
+            kind: "expiry-producer-invalid",
+            packageName: pkgPlan.packageName,
+            reason: resolution.reason,
+            tags: resolution.tags,
+          },
+        };
+      }
+      expectedExpiry = resolution.expiry;
+    }
+
     const groups: GroupApplyResult[] = [];
     for (const group of pkgPlan.groups) {
       const { result, attempted } = await applyGroup(
@@ -428,11 +515,13 @@ export async function applyPlan(
     }
 
     // Computed BEFORE `packages.push` below (rather than three separate
-    // pushes at each abort site) so `republishedTags` — genuinely useful
-    // context, not damage — is present on this package's result exactly
-    // once, in the same place, regardless of whether this package also
-    // aborts the run.
+    // pushes at each abort site) so `republishedTags`/`expiredTags`/
+    // `notExpiredTags` (genuinely useful context, not damage) are
+    // present on this package's result exactly once, in the same place,
+    // regardless of whether this package also aborts the run.
     let republishedTags: readonly RegressedTag[] = [];
+    let expiredTags: readonly RegressedTag[] = [];
+    let notExpiredTags: readonly RegressedTag[] = [];
     let regressionToRecord: RegressionIncident | undefined;
     let abortReason: ApplyAbortReason | undefined;
 
@@ -465,15 +554,18 @@ export async function applyPlan(
           tags: [],
         };
       } else {
-        const { regressions, unverified, republished } = compareSnapshots(
+        const { regressions, unverified, republished, expired, notExpired } = compareSnapshots(
           preSnapshot ?? new Map(),
           post.snapshot,
           {
             preSnapshotFailed,
             postSnapshotFailed: post.failed,
+            expectedExpiry,
           },
         );
         republishedTags = republished;
+        expiredTags = expired;
+        notExpiredTags = notExpired;
 
         if (regressions.length > 0) {
           regressionToRecord = {
@@ -491,7 +583,13 @@ export async function applyPlan(
       }
     }
 
-    packages.push({ packageName: pkgPlan.packageName, groups, republishedTags });
+    packages.push({
+      packageName: pkgPlan.packageName,
+      groups,
+      republishedTags,
+      expiredTags,
+      notExpiredTags,
+    });
 
     if (regressionToRecord) {
       // Recorded locally BEFORE the sink (which may make network calls,

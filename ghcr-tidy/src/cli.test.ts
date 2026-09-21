@@ -552,6 +552,49 @@ describe("apply subcommand", () => {
     expect(entries.length).toBeGreaterThan(0);
   });
 
+  it("wires the shipped null expiry producer with no observable effect: a clean apply's summary never mentions expiry at all (issue #22, AC 8)", async () => {
+    const manifestPath = await writeManifest(VALID_MANIFEST);
+    const fake = widgetWorld();
+    fake.setTag(tag("canary"), digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { breaker, trips } = memoryBreaker();
+
+    const logs: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      logs.push(String(chunk));
+      return true;
+    });
+
+    const exitCode = await runCommand(
+      [
+        "apply",
+        "--apply",
+        "--manifest",
+        manifestPath,
+        "--budget",
+        "10",
+        "--out",
+        path.join(tmpDir, "plan.json"),
+        "--canary-package",
+        "widget",
+        "--canary-tag",
+        "canary",
+      ],
+      baseDeps(fake, { mutator, breaker }),
+    );
+    spy.mockRestore();
+
+    expect(exitCode).toBe(0);
+    expect(deletedVersionIds).toEqual([2]);
+    expect(trips).toEqual([]);
+    // The shipped producer always returns the empty set, so no package
+    // can ever have an expired or notExpired finding, and the run
+    // summary this test's own byte-identical guarantee rests on must
+    // never mention either.
+    const output = logs.join("");
+    expect(output).not.toMatch(/expired/i);
+  });
+
   it("exits 1 (findings) when a deletion is abandoned (registry rejects part of the plan)", async () => {
     const manifestPath = await writeManifest(VALID_MANIFEST);
     const fake = widgetWorld();

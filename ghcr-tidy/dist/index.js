@@ -15378,6 +15378,18 @@ async function snapshotTag(path, t, registry, cache) {
  * list. Snapshotting what the planner believed (its keep-roots) would
  * inherit whatever the planner got wrong; snapshotting the registry
  * itself does not.
+ *
+ * The same principle governs {@link ExpiryProducer}: the tag list it
+ * classifies is THIS function's own read, taken fresh at verification
+ * time, and its result (`expectedExpiry` on {@link CompareSnapshotsOptions})
+ * is likewise recomputed here rather than read off the `Plan`, which
+ * carries no such field at all. A plan-supplied "these tags were meant
+ * to go" list would be snapshotting what the planner believed all over
+ * again, one layer up: a planner bug would produce a wrong intended set,
+ * and a verifier that trusted it would certify that wrong set as
+ * correct. Recomputing from the registry's own tag list plus the
+ * resolved policy keeps the check independent of the planner it is
+ * meant to catch mistakes in.
  */
 async function snapshotPackage(path, registry) {
     const tags = await registry.listTags(path);
@@ -15443,6 +15455,54 @@ function toFinding(t, pre, post) {
     };
 }
 /**
+ * The producer this change ships: always the empty set for every
+ * argument, unconditionally. With this producer, {@link resolveExpirySet}
+ * always succeeds with an empty expiry set, so `compareSnapshots`
+ * classifies every tag exactly as it did before this seam existed. A
+ * later change supplies the real, policy-driven producer this seam
+ * exists for.
+ */
+const nullExpiryProducer = {
+    produce: () => ({ expiry: new Set(), floor: new Set(), unclassifiable: new Set() }),
+};
+/**
+ * The two safety obligations an {@link ExpiryProducer} must satisfy,
+ * enforced HERE rather than merely documented, so a future producer
+ * cannot quietly weaken them just by getting its own bookkeeping wrong:
+ *
+ * 1. FLOOR. `expiry` and `floor` must be disjoint: the producer's own
+ *    floor set (e.g. the newest tag of every kind) can never be
+ *    retired, regardless of any window parameter, so a bug in window
+ *    arithmetic cannot suppress this guarantee.
+ * 2. FAIL CLOSED ON UNCLASSIFIABLE. `expiry` must never contain a tag
+ *    the producer itself reports as `unclassifiable`: an unrecognised
+ *    tag's disappearance must always be treated as a candidate
+ *    regression, never silently accepted as intended.
+ *
+ * A producer that violates either obligation fails the run closed for
+ * that package: see `apply.ts`'s handling of an `ok: false`
+ * {@link ExpiryResolution}, which aborts before that package's own
+ * deletions are even attempted rather than falling back to an empty
+ * expiry set and proceeding. A producer that already broke one
+ * invariant is not trusted enough to fall back on for the other.
+ *
+ * With {@link nullExpiryProducer}, both sets are always empty, so both
+ * checks are vacuous and this function always returns `ok: true` with
+ * an empty `expiry` set.
+ */
+function resolveExpirySet(producer, tags, policy) {
+    const { expiry, floor, unclassifiable } = producer.produce(tags, policy);
+    const floorOverlap = [...expiry].filter((t) => floor.has(t));
+    if (floorOverlap.length > 0) {
+        return { ok: false, reason: "floor-overlap", tags: floorOverlap };
+    }
+    const unclassifiableOverlap = [...expiry].filter((t) => unclassifiable.has(t));
+    if (unclassifiableOverlap.length > 0) {
+        return { ok: false, reason: "unclassifiable-in-expiry", tags: unclassifiableOverlap };
+    }
+    return { ok: true, expiry };
+}
+/**
  * The three-part regression predicate. For every tag present in `pre`:
  *
  * 1. it must still resolve;
@@ -15465,9 +15525,20 @@ function toFinding(t, pre, post) {
  * it into `preExisting` — but a merely `"unknown"` post state still only
  * ever lands in `unverified`, never `regressions`, same as everywhere
  * else in this predicate.
+ *
+ * `options.expectedExpiry` only changes the outcome for a tag that WAS
+ * healthy in `pre` (see {@link CompareSnapshotsResult.expired} and
+ * {@link CompareSnapshotsResult.notExpired}): a healthy tag now confirmed
+ * broken lands in `expired` instead of `regressions` when it is a
+ * member, and a healthy tag that is STILL healthy lands in `notExpired`
+ * instead of silently passing (or `republished`) when it is a member.
+ * Every other branch of this predicate is unaffected by it, so an empty
+ * (or omitted) `expectedExpiry` reproduces the pre-expiry-seam
+ * classification exactly.
  */
 function compareSnapshots(pre, post, options = {}) {
     const postSnapshotFailed = options.postSnapshotFailed ?? false;
+    const expectedExpiry = options.expectedExpiry ?? new Set();
     function effectivePostState(t) {
         if (postSnapshotFailed) {
             // See `CompareSnapshotsOptions.postSnapshotFailed`'s doc: the read
@@ -15491,10 +15562,23 @@ function compareSnapshots(pre, post, options = {}) {
     const preExisting = [];
     const unverified = [];
     const republished = [];
+    const expired = [];
+    const notExpired = [];
     for (const [t, preState] of entries) {
         const postState = effectivePostState(t);
+        const isExpected = expectedExpiry.has(t);
         if (isHealthy(preState)) {
             if (isHealthy(postState)) {
+                if (isExpected) {
+                    // The policy expected this tag to be retired by now, but it
+                    // still resolves: the two-sided half of the check (see
+                    // `CompareSnapshotsResult.notExpired`'s doc). Reported on its
+                    // own regardless of whether the digest also happens to have
+                    // changed: "still here" is the fact worth surfacing, not
+                    // whether it moved while staying here.
+                    notExpired.push(toFinding(t, preState, postState));
+                    continue;
+                }
                 if (preState.digest === postState.digest) {
                     continue;
                 }
@@ -15514,6 +15598,13 @@ function compareSnapshots(pre, post, options = {}) {
                 // regression: see this module's doc on why `isUnknown` must never
                 // trip the breaker.
                 unverified.push(toFinding(t, preState, postState));
+            }
+            else if (isExpected) {
+                // isConfirmedBroken(postState) AND the policy said this tag
+                // should go: deliberate retirement, not damage, see
+                // `CompareSnapshotsResult.expired`'s doc for why this is its own
+                // bucket rather than a flag on a regression finding.
+                expired.push(toFinding(t, preState, postState));
             }
             else {
                 // isConfirmedBroken(postState): either the tag itself now 404s,
@@ -15546,7 +15637,7 @@ function compareSnapshots(pre, post, options = {}) {
         }
         // Else: improved (now resolves) — no confirmed new damage to act on.
     }
-    return { regressions, preExisting, unverified, republished };
+    return { regressions, preExisting, unverified, republished, expired, notExpired };
 }
 /** An in-memory `RegressionSink` for tests: records every incident, in order, with no I/O. `incidents` is a live reference. */
 function memoryRegressionSink() {
@@ -15756,6 +15847,35 @@ async function applyPlan(plan, mutator, options) {
             preSnapshot = pre.snapshot;
             preSnapshotFailed = pre.failed;
         }
+        // The expected-expiry set (`verify.ts`'s `ExpiryProducer`) is
+        // resolved here, per package, from THIS package's own pre-snapshot
+        // tag list and its resolved policy: recomputed at verification
+        // time, never read off `plan` (see `verify.ts`'s module doc for
+        // why). Deliberately checked BEFORE this package's own deletions
+        // start: a producer that fails either safety obligation is not
+        // trusted enough to fall back to an empty set and proceed, so
+        // nothing here is deleted at all, see `ApplyAbortReason`'s
+        // `"expiry-producer-invalid"` doc.
+        let expectedExpiry = new Set();
+        if (verification?.expiry) {
+            const policy = verification.expiry.policyFor(pkgPlan.packageName);
+            const tags = preSnapshot ? [...preSnapshot.keys()] : [];
+            const resolution = resolveExpirySet(verification.expiry.producer, tags, policy);
+            if (!resolution.ok) {
+                return {
+                    packages,
+                    attempted: totalAttempted,
+                    remainingBudget,
+                    abortedFor: {
+                        kind: "expiry-producer-invalid",
+                        packageName: pkgPlan.packageName,
+                        reason: resolution.reason,
+                        tags: resolution.tags,
+                    },
+                };
+            }
+            expectedExpiry = resolution.expiry;
+        }
         const groups = [];
         for (const group of pkgPlan.groups) {
             const { result, attempted } = await applyGroup(pkgPlan.packageName, group, mutator, options.journal, remainingBudget);
@@ -15764,11 +15884,13 @@ async function applyPlan(plan, mutator, options) {
             totalAttempted += attempted;
         }
         // Computed BEFORE `packages.push` below (rather than three separate
-        // pushes at each abort site) so `republishedTags` — genuinely useful
-        // context, not damage — is present on this package's result exactly
-        // once, in the same place, regardless of whether this package also
-        // aborts the run.
+        // pushes at each abort site) so `republishedTags`/`expiredTags`/
+        // `notExpiredTags` (genuinely useful context, not damage) are
+        // present on this package's result exactly once, in the same place,
+        // regardless of whether this package also aborts the run.
         let republishedTags = [];
+        let expiredTags = [];
+        let notExpiredTags = [];
         let regressionToRecord;
         let abortReason;
         if (verification && registryPath) {
@@ -15800,11 +15922,14 @@ async function applyPlan(plan, mutator, options) {
                 };
             }
             else {
-                const { regressions, unverified, republished } = compareSnapshots(preSnapshot ?? new Map(), post.snapshot, {
+                const { regressions, unverified, republished, expired, notExpired } = compareSnapshots(preSnapshot ?? new Map(), post.snapshot, {
                     preSnapshotFailed,
                     postSnapshotFailed: post.failed,
+                    expectedExpiry,
                 });
                 republishedTags = republished;
+                expiredTags = expired;
+                notExpiredTags = notExpired;
                 if (regressions.length > 0) {
                     regressionToRecord = {
                         packageName: pkgPlan.packageName,
@@ -15821,7 +15946,13 @@ async function applyPlan(plan, mutator, options) {
                 }
             }
         }
-        packages.push({ packageName: pkgPlan.packageName, groups, republishedTags });
+        packages.push({
+            packageName: pkgPlan.packageName,
+            groups,
+            republishedTags,
+            expiredTags,
+            notExpiredTags,
+        });
         if (regressionToRecord) {
             // Recorded locally BEFORE the sink (which may make network calls,
             // e.g. `breaker.ts`'s `githubIssueBreaker`) is even attempted —
@@ -15901,6 +16032,7 @@ function classifyApplyExit(plan, result) {
 }
 
 ;// CONCATENATED MODULE: ./ghcr-tidy/src/cli.ts
+
 
 
 
@@ -16445,6 +16577,10 @@ function formatAbortReason(reason) {
     if (reason.kind === "verification-unavailable") {
         return `verification-unavailable (${String(reason.tags.length)} tag(s) could not be confirmed healthy or broken in package ${reason.packageName} — not treated as a regression, breaker not tripped)`;
     }
+    if (reason.kind === "expiry-producer-invalid") {
+        return (`expiry-producer-invalid (package ${reason.packageName}, ${reason.reason}: ` +
+            `${reason.tags.join(", ")}, breaker not tripped, run stopped closed)`);
+    }
     return reason.kind;
 }
 function summarizeApplyResult(plan, result) {
@@ -16466,6 +16602,19 @@ function summarizeApplyResult(plan, result) {
             lines.push(`  ${pkg.packageName}: ${String(pkg.republishedTags.length)} tag(s) republished by ` +
                 `something else during this run (not a regression): ` +
                 `${pkg.republishedTags.map((t) => t.tag).join(", ")}`);
+        }
+        // Deliberate destruction, not damage (see `verify.ts`'s
+        // `CompareSnapshotsResult.expired` doc): reported here, same as
+        // `republishedTags`, so an operator can always see intentional
+        // removals alongside everything else this run did.
+        if (pkg.expiredTags.length > 0) {
+            lines.push(`  ${pkg.packageName}: ${String(pkg.expiredTags.length)} tag(s) expired as intended ` +
+                `(not a regression): ${pkg.expiredTags.map((t) => t.tag).join(", ")}`);
+        }
+        if (pkg.notExpiredTags.length > 0) {
+            lines.push(`  ${pkg.packageName}: ${String(pkg.notExpiredTags.length)} tag(s) expected to expire ` +
+                `but still resolve (not a regression): ` +
+                `${pkg.notExpiredTags.map((t) => t.tag).join(", ")}`);
         }
     }
     const header = `attempted ${String(result.attempted)} of ${String(plannedDeletionCount(plan))} planned deletion(s), ` +
@@ -16605,10 +16754,34 @@ async function runApplyCommand(args, deps) {
         catch (error) {
             throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
         }
+        // Resolved from `entries` (the manifest), NEVER from `plan`: see
+        // `verify.ts`'s module doc on why the expiry seam must not read
+        // "what the planner believed". `plan.packages` is always a subset
+        // of `entries` (built from exactly those entries by `runPlanning`),
+        // so this map always has an entry for any package `resolveExpirySet`
+        // is actually invoked for.
+        const policyByPackage = new Map(entries.map((e) => [e.match, e]));
         verification = {
             registry: verificationRegistry,
             canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
             sink: breakerRegressionSink(breaker),
+            // Ships the null producer: every existing consumer and test that
+            // never reasoned about expiry stays byte-identical. A future
+            // change swaps this for the real, policy-driven producer without
+            // touching this wiring shape.
+            expiry: {
+                producer: nullExpiryProducer,
+                policyFor: (pkg) => {
+                    const entry = policyByPackage.get(pkg);
+                    if (!entry) {
+                        // Unreachable in practice (see this block's comment above),
+                        // guarded rather than silently defaulting to an arbitrary
+                        // policy.
+                        throw new Error(`no configured package entry for "${pkg}" to resolve its expiry policy from`);
+                    }
+                    return resolvePolicy(entry, manifest);
+                },
+            },
             // Printed to stdout BEFORE `sink.record` (which calls the
             // breaker, a network operation) is even attempted — so the
             // incident survives a breaker outage instead of vanishing behind

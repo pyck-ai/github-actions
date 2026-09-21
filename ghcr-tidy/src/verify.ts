@@ -1,5 +1,6 @@
 import type { PackageName } from "../../registry/package-name.js";
 import { digest, type Digest, type RegistryPath, type Tag } from "./domain.js";
+import type { ResolvedPolicy } from "./manifest/schema.js";
 import type { PersistedGroupMember } from "./persisted-plan.js";
 import type { RegistryReader } from "./ports.js";
 import { skipReasonFor } from "./skip-reason.js";
@@ -124,6 +125,18 @@ async function snapshotTag(
  * list. Snapshotting what the planner believed (its keep-roots) would
  * inherit whatever the planner got wrong; snapshotting the registry
  * itself does not.
+ *
+ * The same principle governs {@link ExpiryProducer}: the tag list it
+ * classifies is THIS function's own read, taken fresh at verification
+ * time, and its result (`expectedExpiry` on {@link CompareSnapshotsOptions})
+ * is likewise recomputed here rather than read off the `Plan`, which
+ * carries no such field at all. A plan-supplied "these tags were meant
+ * to go" list would be snapshotting what the planner believed all over
+ * again, one layer up: a planner bug would produce a wrong intended set,
+ * and a verifier that trusted it would certify that wrong set as
+ * correct. Recomputing from the registry's own tag list plus the
+ * resolved policy keeps the check independent of the planner it is
+ * meant to catch mistakes in.
  */
 export async function snapshotPackage(
   path: RegistryPath,
@@ -240,8 +253,116 @@ function toFinding(t: Tag, pre: TagSnapshot, post: TagSnapshot): RegressedTag {
   };
 }
 
+/**
+ * What one call to {@link ExpiryProducer.produce} returns for a single
+ * package's PRE-snapshot tag list: which tags the resolved policy
+ * INTENDS to retire (`expiry`), which tags must never be retired
+ * regardless of any window arithmetic (`floor`), and which tags the
+ * producer could not classify at all (`unclassifiable`). A correct
+ * producer returns three disjoint sets; {@link resolveExpirySet} enforces
+ * this rather than trusting it, since it is exactly the property a buggy
+ * producer would get wrong.
+ */
+export interface ExpiryProducerResult {
+  readonly expiry: ReadonlySet<Tag>;
+  readonly floor: ReadonlySet<Tag>;
+  readonly unclassifiable: ReadonlySet<Tag>;
+}
+
+/**
+ * Produces the INTENDED expiry set for one package: which currently-live
+ * tags the resolved retention policy has decided to retire. Takes the
+ * tag list {@link snapshotPackage} already read from the registry for
+ * this package's PRE-apply snapshot (never anything from `Plan`, which
+ * carries no such field) and that package's fully-resolved policy
+ * (`manifest/schema.ts`'s `ResolvedPolicy`, recomputed from the manifest
+ * at verification time, independently of planning's own resolution of
+ * the same manifest).
+ *
+ * WHAT THIS CATCHES: everything from the planner's keep-root rule
+ * downward, retention's age/count arithmetic, reachability, deletion
+ * grouping, the delete loop itself, since the verifier never touches
+ * those stages and instead independently re-derives which tags it
+ * expects to be gone.
+ *
+ * WHAT THIS CANNOT CATCH: both the real planner and the real producer
+ * call the SAME classify/window functions to decide what should have
+ * expired. A bug there is invisible to this check, because both sides
+ * agree on the wrong answer: a shared pure function is a shared failure
+ * mode, not a gap in this seam's architecture. The mitigation is
+ * property-based testing over the real tag corpus, not more layers of
+ * checking, so nobody later mistakes this check for stronger than it
+ * is. {@link resolveExpirySet}'s two obligations at least bound how
+ * wrong a producer implementation can go, independently of that shared
+ * code.
+ */
+export interface ExpiryProducer {
+  produce(tags: readonly Tag[], policy: ResolvedPolicy): ExpiryProducerResult;
+}
+
+/**
+ * The producer this change ships: always the empty set for every
+ * argument, unconditionally. With this producer, {@link resolveExpirySet}
+ * always succeeds with an empty expiry set, so `compareSnapshots`
+ * classifies every tag exactly as it did before this seam existed. A
+ * later change supplies the real, policy-driven producer this seam
+ * exists for.
+ */
+export const nullExpiryProducer: ExpiryProducer = {
+  produce: () => ({ expiry: new Set(), floor: new Set(), unclassifiable: new Set() }),
+};
+
+/** Why {@link resolveExpirySet} rejected a producer's output; see that function's doc for what each case means. */
+export type ExpiryFailureReason = "floor-overlap" | "unclassifiable-in-expiry";
+
+export type ExpiryResolution =
+  | { readonly ok: true; readonly expiry: ReadonlySet<Tag> }
+  | { readonly ok: false; readonly reason: ExpiryFailureReason; readonly tags: readonly Tag[] };
+
+/**
+ * The two safety obligations an {@link ExpiryProducer} must satisfy,
+ * enforced HERE rather than merely documented, so a future producer
+ * cannot quietly weaken them just by getting its own bookkeeping wrong:
+ *
+ * 1. FLOOR. `expiry` and `floor` must be disjoint: the producer's own
+ *    floor set (e.g. the newest tag of every kind) can never be
+ *    retired, regardless of any window parameter, so a bug in window
+ *    arithmetic cannot suppress this guarantee.
+ * 2. FAIL CLOSED ON UNCLASSIFIABLE. `expiry` must never contain a tag
+ *    the producer itself reports as `unclassifiable`: an unrecognised
+ *    tag's disappearance must always be treated as a candidate
+ *    regression, never silently accepted as intended.
+ *
+ * A producer that violates either obligation fails the run closed for
+ * that package: see `apply.ts`'s handling of an `ok: false`
+ * {@link ExpiryResolution}, which aborts before that package's own
+ * deletions are even attempted rather than falling back to an empty
+ * expiry set and proceeding. A producer that already broke one
+ * invariant is not trusted enough to fall back on for the other.
+ *
+ * With {@link nullExpiryProducer}, both sets are always empty, so both
+ * checks are vacuous and this function always returns `ok: true` with
+ * an empty `expiry` set.
+ */
+export function resolveExpirySet(
+  producer: ExpiryProducer,
+  tags: readonly Tag[],
+  policy: ResolvedPolicy,
+): ExpiryResolution {
+  const { expiry, floor, unclassifiable } = producer.produce(tags, policy);
+  const floorOverlap = [...expiry].filter((t) => floor.has(t));
+  if (floorOverlap.length > 0) {
+    return { ok: false, reason: "floor-overlap", tags: floorOverlap };
+  }
+  const unclassifiableOverlap = [...expiry].filter((t) => unclassifiable.has(t));
+  if (unclassifiableOverlap.length > 0) {
+    return { ok: false, reason: "unclassifiable-in-expiry", tags: unclassifiableOverlap };
+  }
+  return { ok: true, expiry };
+}
+
 export interface CompareSnapshotsResult {
-  /** A HEALTHY (or unverifiable) pre-snapshot tag is now CONFIRMED broken (a real 404 evidence), or an unverifiable pre-snapshot tag is now confirmed broken post-apply — see this module's doc. This is the ONLY bucket that trips the breaker (`breaker.ts`'s `breakerRegressionSink`): every finding in it is backed by direct 404 evidence, never by a merely-unreadable tag, and never by a mere digest change on an otherwise-healthy tag (see {@link republished}). Aborts the run. */
+  /** A HEALTHY (or unverifiable) pre-snapshot tag is now CONFIRMED broken (a real 404 evidence), or an unverifiable pre-snapshot tag is now confirmed broken post-apply — see this module's doc. This is the ONLY bucket that trips the breaker (`breaker.ts`'s `breakerRegressionSink`): every finding in it is backed by direct 404 evidence, never by a merely-unreadable tag, and never by a mere digest change on an otherwise-healthy tag (see {@link republished}), and never a tag the expiry producer's `expiry` set said should go (see {@link expired}). Aborts the run. */
   readonly regressions: readonly RegressedTag[];
   /** Broken in BOTH pre and post — not caused by this run, reported but does not abort. */
   readonly preExisting: readonly RegressedTag[];
@@ -275,6 +396,33 @@ export interface CompareSnapshotsResult {
    * expected concurrent activity as a safety incident.
    */
   readonly republished: readonly RegressedTag[];
+  /**
+   * A HEALTHY pre-snapshot tag disappeared, exactly as
+   * `CompareSnapshotsOptions.expectedExpiry` said it should: deliberate
+   * retirement, not damage. Deliberately a SEPARATE bucket from
+   * `regressions` rather than a flag on a regression finding: an
+   * operator reading a run summary needs to see "this run destroyed N
+   * things on purpose" as a fact distinct from "this run destroyed N
+   * things it should not have", not the same list with an asterisk.
+   * Never trips the breaker and never aborts the run, but see
+   * `apply.ts`'s `PackageApplyResult.expiredTags` doc for why it must
+   * still always be reported: deliberate destruction is still
+   * destruction, and an operator must never be told nothing happened
+   * when something real did.
+   */
+  readonly expired: readonly RegressedTag[];
+  /**
+   * A tag `CompareSnapshotsOptions.expectedExpiry` said should have
+   * disappeared but which still resolves (tag AND full closure) after
+   * this run: the two-sided half of the expiry check. The policy can
+   * be wrong in either direction, and a tag that failed to retire is as
+   * worth surfacing as one that retired when it should not have. Never
+   * trips the breaker and never aborts the run: an intended deletion
+   * that simply did not happen this cycle (e.g. it was not yet
+   * reachable for deletion under `graceDays`, or the run's budget ran
+   * out before its group) is not evidence of damage.
+   */
+  readonly notExpired: readonly RegressedTag[];
 }
 
 export interface CompareSnapshotsOptions {
@@ -303,6 +451,20 @@ export interface CompareSnapshotsOptions {
    * tripped the breaker on a real apply run.
    */
   readonly postSnapshotFailed?: boolean;
+  /**
+   * The tag set {@link resolveExpirySet} validated as this package's
+   * intended expiry, computed from THIS package's own pre-snapshot tag
+   * list, never from `pre`/`post` here: `compareSnapshots` itself
+   * remains a pure comparison function and never calls an
+   * {@link ExpiryProducer} itself. Defaults to the empty set: with no
+   * `expectedExpiry` at all (every existing caller, before this option
+   * existed), classification is byte-identical to before this option
+   * was added, since a healthy tag that disappears is unconditionally a
+   * regression. Membership only changes classification for a tag that
+   * was healthy in `pre`, see {@link CompareSnapshotsResult.expired}
+   * and {@link CompareSnapshotsResult.notExpired}.
+   */
+  readonly expectedExpiry?: ReadonlySet<Tag>;
 }
 
 /**
@@ -328,6 +490,16 @@ export interface CompareSnapshotsOptions {
  * it into `preExisting` — but a merely `"unknown"` post state still only
  * ever lands in `unverified`, never `regressions`, same as everywhere
  * else in this predicate.
+ *
+ * `options.expectedExpiry` only changes the outcome for a tag that WAS
+ * healthy in `pre` (see {@link CompareSnapshotsResult.expired} and
+ * {@link CompareSnapshotsResult.notExpired}): a healthy tag now confirmed
+ * broken lands in `expired` instead of `regressions` when it is a
+ * member, and a healthy tag that is STILL healthy lands in `notExpired`
+ * instead of silently passing (or `republished`) when it is a member.
+ * Every other branch of this predicate is unaffected by it, so an empty
+ * (or omitted) `expectedExpiry` reproduces the pre-expiry-seam
+ * classification exactly.
  */
 export function compareSnapshots(
   pre: ReadonlyMap<Tag, TagSnapshot>,
@@ -335,6 +507,7 @@ export function compareSnapshots(
   options: CompareSnapshotsOptions = {},
 ): CompareSnapshotsResult {
   const postSnapshotFailed = options.postSnapshotFailed ?? false;
+  const expectedExpiry = options.expectedExpiry ?? new Set<Tag>();
 
   function effectivePostState(t: Tag): TagSnapshot {
     if (postSnapshotFailed) {
@@ -361,12 +534,25 @@ export function compareSnapshots(
   const preExisting: RegressedTag[] = [];
   const unverified: RegressedTag[] = [];
   const republished: RegressedTag[] = [];
+  const expired: RegressedTag[] = [];
+  const notExpired: RegressedTag[] = [];
 
   for (const [t, preState] of entries) {
     const postState = effectivePostState(t);
+    const isExpected = expectedExpiry.has(t);
 
     if (isHealthy(preState)) {
       if (isHealthy(postState)) {
+        if (isExpected) {
+          // The policy expected this tag to be retired by now, but it
+          // still resolves: the two-sided half of the check (see
+          // `CompareSnapshotsResult.notExpired`'s doc). Reported on its
+          // own regardless of whether the digest also happens to have
+          // changed: "still here" is the fact worth surfacing, not
+          // whether it moved while staying here.
+          notExpired.push(toFinding(t, preState, postState));
+          continue;
+        }
         if (preState.digest === postState.digest) {
           continue;
         }
@@ -386,6 +572,12 @@ export function compareSnapshots(
         // regression: see this module's doc on why `isUnknown` must never
         // trip the breaker.
         unverified.push(toFinding(t, preState, postState));
+      } else if (isExpected) {
+        // isConfirmedBroken(postState) AND the policy said this tag
+        // should go: deliberate retirement, not damage, see
+        // `CompareSnapshotsResult.expired`'s doc for why this is its own
+        // bucket rather than a flag on a regression finding.
+        expired.push(toFinding(t, preState, postState));
       } else {
         // isConfirmedBroken(postState): either the tag itself now 404s,
         // or it still resolves but its closure does not — both are real,
@@ -418,7 +610,7 @@ export function compareSnapshots(
     // Else: improved (now resolves) — no confirmed new damage to act on.
   }
 
-  return { regressions, preExisting, unverified, republished };
+  return { regressions, preExisting, unverified, republished, expired, notExpired };
 }
 
 /**

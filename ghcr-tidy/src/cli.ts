@@ -38,7 +38,7 @@ import {
   type ApplyResult,
   type VerificationOptions,
 } from "./apply.js";
-import type { CanaryFailureReason } from "./verify.js";
+import { nullExpiryProducer, type CanaryFailureReason } from "./verify.js";
 import type { PackagesClient, RegistryReader } from "./ports.js";
 
 /**
@@ -739,6 +739,12 @@ function formatAbortReason(reason: ApplyAbortReason): string {
   if (reason.kind === "verification-unavailable") {
     return `verification-unavailable (${String(reason.tags.length)} tag(s) could not be confirmed healthy or broken in package ${reason.packageName} — not treated as a regression, breaker not tripped)`;
   }
+  if (reason.kind === "expiry-producer-invalid") {
+    return (
+      `expiry-producer-invalid (package ${reason.packageName}, ${reason.reason}: ` +
+      `${reason.tags.join(", ")}, breaker not tripped, run stopped closed)`
+    );
+  }
   return reason.kind;
 }
 
@@ -768,6 +774,23 @@ function summarizeApplyResult(plan: Plan, result: ApplyResult): string {
         `  ${pkg.packageName}: ${String(pkg.republishedTags.length)} tag(s) republished by ` +
           `something else during this run (not a regression): ` +
           `${pkg.republishedTags.map((t) => t.tag).join(", ")}`,
+      );
+    }
+    // Deliberate destruction, not damage (see `verify.ts`'s
+    // `CompareSnapshotsResult.expired` doc): reported here, same as
+    // `republishedTags`, so an operator can always see intentional
+    // removals alongside everything else this run did.
+    if (pkg.expiredTags.length > 0) {
+      lines.push(
+        `  ${pkg.packageName}: ${String(pkg.expiredTags.length)} tag(s) expired as intended ` +
+          `(not a regression): ${pkg.expiredTags.map((t) => t.tag).join(", ")}`,
+      );
+    }
+    if (pkg.notExpiredTags.length > 0) {
+      lines.push(
+        `  ${pkg.packageName}: ${String(pkg.notExpiredTags.length)} tag(s) expected to expire ` +
+          `but still resolve (not a regression): ` +
+          `${pkg.notExpiredTags.map((t) => t.tag).join(", ")}`,
       );
     }
   }
@@ -942,10 +965,36 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
     } catch (error) {
       throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
     }
+    // Resolved from `entries` (the manifest), NEVER from `plan`: see
+    // `verify.ts`'s module doc on why the expiry seam must not read
+    // "what the planner believed". `plan.packages` is always a subset
+    // of `entries` (built from exactly those entries by `runPlanning`),
+    // so this map always has an entry for any package `resolveExpirySet`
+    // is actually invoked for.
+    const policyByPackage = new Map(entries.map((e) => [e.match, e]));
     verification = {
       registry: verificationRegistry,
       canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
       sink: breakerRegressionSink(breaker),
+      // Ships the null producer: every existing consumer and test that
+      // never reasoned about expiry stays byte-identical. A future
+      // change swaps this for the real, policy-driven producer without
+      // touching this wiring shape.
+      expiry: {
+        producer: nullExpiryProducer,
+        policyFor: (pkg) => {
+          const entry = policyByPackage.get(pkg);
+          if (!entry) {
+            // Unreachable in practice (see this block's comment above),
+            // guarded rather than silently defaulting to an arbitrary
+            // policy.
+            throw new Error(
+              `no configured package entry for "${pkg}" to resolve its expiry policy from`,
+            );
+          }
+          return resolvePolicy(entry, manifest);
+        },
+      },
       // Printed to stdout BEFORE `sink.record` (which calls the
       // breaker, a network operation) is even attempted — so the
       // incident survives a breaker outage instead of vanishing behind

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { packageName } from "../../registry/package-name.js";
-import { digest, registryPathFor, tag } from "./domain.js";
+import { digest, registryPathFor, tag, type Tag } from "./domain.js";
+import type { ResolvedPolicy } from "./manifest/schema.js";
 import { FakeGhcr } from "./fake-ghcr.js";
-import { memoryRegressionSink } from "./verify.js";
+import { memoryRegressionSink, nullExpiryProducer, type ExpiryProducer } from "./verify.js";
 import type { RegistryReader } from "./ports.js";
 import { PLAN_SCHEMA_VERSION, type Plan, type PersistedDeletionGroup } from "./persisted-plan.js";
 import {
@@ -42,6 +43,14 @@ function planWithPackages(
 function withHealthyCanary(fake: FakeGhcr): FakeGhcr {
   return fake.setTag(canaryTag, digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
 }
+
+/** A minimal, fully-resolved policy for tests that only care about it being threaded through, not its values. */
+const anyPolicy: ResolvedPolicy = {
+  protectedTagPatterns: [],
+  keepLast: 10,
+  keepDays: 30,
+  graceDays: 30,
+};
 
 /** Wraps a real `RegistryReader` so its `listTags` throws exactly once, then behaves normally — simulating an operational pre-snapshot failure without touching `FakeGhcr` itself. */
 function registryThatFailsListTagsOnce(inner: RegistryReader): RegistryReader {
@@ -647,5 +656,323 @@ describe("applyPlan — post-apply verification: pre-flight canary", () => {
       tag: canaryTag,
       reason: { kind: "error", message: "simulated network failure" },
     });
+  });
+});
+
+describe("applyPlan: expiry seam, shipped with the null producer (issue #22)", () => {
+  /**
+   * AC 8's end-to-end pin: with `nullExpiryProducer`, `verification.expiry`
+   * present or absent must make NO observable difference to a run. Each
+   * scenario below re-runs one of this file's existing setups twice, once
+   * with `verification.expiry` wired to the null producer and once
+   * without it, and asserts the two results are identical (same
+   * attempted/remainingBudget/abortedFor/groups) with an empty `expired`
+   * and `notExpired` bucket on every package either way.
+   */
+  function withNullExpiry(verification: VerificationOptions): VerificationOptions {
+    return {
+      ...verification,
+      expiry: { producer: nullExpiryProducer, policyFor: () => anyPolicy },
+    };
+  }
+
+  it("clean apply: identical result with and without the null producer wired", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake
+      .setTag(tag("latest"), digest("sha256:live"))
+      .setManifest(digest("sha256:live"), {})
+      .setManifest(digest("sha256:garbage"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+
+    const { mutator: mutatorA } = fake.mutator();
+    const { sink: sinkA } = memoryRegressionSink();
+    const verificationA: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink: sinkA,
+    };
+    const resultWithoutExpiry = await applyPlan(plan, mutatorA, {
+      budget: 100,
+      verification: verificationA,
+    });
+
+    // A second, independent fake world identical to the first: `apply`
+    // mutates registry state as a side effect of deletion, so the same
+    // fake cannot be replayed for a second run.
+    const fake2 = withHealthyCanary(new FakeGhcr());
+    fake2
+      .setTag(tag("latest"), digest("sha256:live"))
+      .setManifest(digest("sha256:live"), {})
+      .setManifest(digest("sha256:garbage"), {});
+    fake2.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    const { mutator: mutatorB } = fake2.mutator();
+    const { sink: sinkB } = memoryRegressionSink();
+    const verificationB: VerificationOptions = withNullExpiry({
+      registry: fake2.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink: sinkB,
+    });
+    const resultWithExpiry = await applyPlan(plan, mutatorB, {
+      budget: 100,
+      verification: verificationB,
+    });
+
+    expect(resultWithExpiry.attempted).toBe(resultWithoutExpiry.attempted);
+    expect(resultWithExpiry.remainingBudget).toBe(resultWithoutExpiry.remainingBudget);
+    expect(resultWithExpiry.abortedFor).toEqual(resultWithoutExpiry.abortedFor);
+    expect(resultWithExpiry.packages[0]?.groups).toEqual(resultWithoutExpiry.packages[0]?.groups);
+    expect(resultWithExpiry.packages[0]?.republishedTags).toEqual(
+      resultWithoutExpiry.packages[0]?.republishedTags,
+    );
+    // The property AC 8 actually pins: the null producer never produces
+    // a finding.
+    expect(resultWithExpiry.packages[0]?.expiredTags).toEqual([]);
+    expect(resultWithExpiry.packages[0]?.notExpiredTags).toEqual([]);
+  });
+
+  it("regression by disappearance: still aborts identically with the null producer wired (an unclassified-by-policy tag is never treated as intended)", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:live"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    fake.setDeleteSideEffect(1, () => fake.setManifest(digest("sha256:live"), { notFound: true }));
+
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    const verification: VerificationOptions = withNullExpiry({
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+    });
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(attemptedVersionIds).toEqual([1]);
+    expect(result.abortedFor).toEqual({
+      kind: "regression",
+      packageName: pkgA,
+      tags: [expect.objectContaining({ tag: tag("latest"), stillResolves: false }) as unknown],
+    });
+    expect(incidents).toHaveLength(1);
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
+  });
+});
+
+describe("applyPlan: expiry seam, deliberate expiry (a tag the producer classifies as expired)", () => {
+  /** A producer that always retires exactly the tags named in `expiring`, with an empty floor and nothing unclassifiable. */
+  function producerExpiring(...expiring: Tag[]): ExpiryProducer {
+    return {
+      produce: (tags) => ({
+        expiry: new Set(tags.filter((t) => expiring.includes(t))),
+        floor: new Set(),
+        unclassifiable: new Set(),
+      }),
+    };
+  }
+
+  it("a tag the producer expires does not trip the breaker and is reported under expiredTags, not as a regression", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake
+      .setTag(tag("retired"), digest("sha256:old"))
+      .setManifest(digest("sha256:old"), {})
+      .setManifest(digest("sha256:garbage"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:old"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    // This run's own deletion retires the tag exactly as the (fake)
+    // policy intended.
+    fake.setDeleteSideEffect(1, () => fake.setManifest(digest("sha256:old"), { notFound: true }));
+
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+      expiry: { producer: producerExpiring(tag("retired")), policyFor: () => anyPolicy },
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(deletedVersionIds).toEqual([1]);
+    expect(result.abortedFor).toBeUndefined();
+    expect(incidents).toEqual([]);
+    expect(result.packages[0]?.expiredTags).toEqual([
+      expect.objectContaining({ tag: tag("retired"), stillResolves: false }) as unknown,
+    ]);
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_OK);
+  });
+
+  it("a tag the producer expected to expire but which still resolves is reported under notExpiredTags and does NOT abort the run", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake
+      .setTag(tag("not-yet-retired"), digest("sha256:kept"))
+      .setManifest(digest("sha256:kept"), {})
+      .setManifest(digest("sha256:garbage"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:garbage"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    // "not-yet-retired" is never touched by this run's own deletion: it
+    // is still healthy pre AND post, despite the producer expecting it
+    // to be gone.
+
+    const { mutator, deletedVersionIds } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+      expiry: {
+        producer: producerExpiring(tag("not-yet-retired")),
+        policyFor: () => anyPolicy,
+      },
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(deletedVersionIds).toEqual([1]);
+    expect(result.abortedFor).toBeUndefined();
+    expect(incidents).toEqual([]);
+    expect(result.packages[0]?.notExpiredTags).toEqual([
+      expect.objectContaining({ tag: tag("not-yet-retired"), stillResolves: true }) as unknown,
+    ]);
+    expect(result.packages[0]?.expiredTags).toEqual([]);
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_OK);
+  });
+});
+
+describe("applyPlan: expiry seam, MISBEHAVING producer fails the run closed", () => {
+  it("aborts with expiry-producer-invalid, BEFORE this package's own deletions, when the producer's expiry set overlaps its floor set", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake.setTag(tag("newest"), digest("sha256:a")).setManifest(digest("sha256:a"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:a"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+
+    // Deliberately broken: puts the same tag in both `expiry` and
+    // `floor`. Filtered to the tag this test cares about, because
+    // `FakeGhcr.listTags` is not path-scoped (it returns every tag set
+    // on the fake, including the canary's), so `tags` here also
+    // contains `canary`: irrelevant noise this producer should ignore,
+    // same as a real one would for a tag outside its own package.
+    const misbehavingProducer: ExpiryProducer = {
+      produce: (tags) => {
+        const target = tags.filter((t) => t === tag("newest"));
+        return { expiry: new Set(target), floor: new Set(target), unclassifiable: new Set() };
+      },
+    };
+
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { sink, incidents } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+      expiry: { producer: misbehavingProducer, policyFor: () => anyPolicy },
+    };
+
+    const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    // Nothing for this package was ever attempted: the producer's own
+    // invariant broke before any deletion was even started.
+    expect(attemptedVersionIds).toEqual([]);
+    expect(result.attempted).toBe(0);
+    expect(result.remainingBudget).toBe(100);
+    expect(result.packages).toEqual([]);
+    expect(incidents).toEqual([]); // not a regression, never reaches the breaker
+    expect(result.abortedFor).toEqual({
+      kind: "expiry-producer-invalid",
+      packageName: pkgA,
+      reason: "floor-overlap",
+      tags: [tag("newest")],
+    });
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
+  });
+
+  it("aborts with expiry-producer-invalid when the producer's expiry set contains a tag it itself reports unclassifiable, and never touches a LATER package", async () => {
+    const fake = withHealthyCanary(new FakeGhcr());
+    fake.setTag(tag("mystery"), digest("sha256:a")).setManifest(digest("sha256:a"), {});
+    fake.addVersion({
+      id: 1,
+      digest: digest("sha256:a"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    fake.setTag(tag("also-mystery"), digest("sha256:b")).setManifest(digest("sha256:b"), {});
+    fake.addVersion({
+      id: 10,
+      digest: digest("sha256:c"),
+      createdAt: new Date(),
+      reportedTags: [],
+    });
+    fake.setManifest(digest("sha256:c"), {});
+
+    // Same `FakeGhcr` path-scoping caveat as the floor-overlap test
+    // above: `canary` is filtered out as irrelevant noise, leaving only
+    // the tag this test cares about.
+    const misbehavingProducer: ExpiryProducer = {
+      produce: (tags) => {
+        const target = tags.filter((t) => t !== tag("canary"));
+        // Admits it cannot classify anything, yet still retires it.
+        return { expiry: new Set(target), floor: new Set(), unclassifiable: new Set(target) };
+      },
+    };
+
+    const { mutator, attemptedVersionIds } = fake.mutator();
+    const { sink } = memoryRegressionSink();
+    const verification: VerificationOptions = {
+      registry: fake.registryReader(),
+      canary: { path: canaryPath, tag: canaryTag },
+      sink,
+      expiry: { producer: misbehavingProducer, policyFor: () => anyPolicy },
+    };
+
+    const plan = planWithPackages([
+      { packageName: pkgA, groups: [group(1, [1])] },
+      { packageName: pkgB, groups: [group(10, [10])] },
+    ]);
+    const result = await applyPlan(plan, mutator, { budget: 100, verification });
+
+    expect(attemptedVersionIds).toEqual([]); // pkgB's group 10 was never attempted either
+    expect(result.abortedFor).toEqual({
+      kind: "expiry-producer-invalid",
+      packageName: pkgA,
+      reason: "unclassifiable-in-expiry",
+      // `FakeGhcr.listTags` is not path-scoped, so pkgA's own
+      // pre-snapshot already includes `also-mystery` (set for pkgB
+      // below) alongside `mystery`, both are legitimately in scope for
+      // this producer's obligation check on pkgA's tag list.
+      tags: [tag("mystery"), tag("also-mystery")],
+    });
+    expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
   });
 });

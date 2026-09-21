@@ -59,7 +59,14 @@ attempted, budget partially spent) is worse than none.
   resolves, to the same digest, with its full manifest closure intact, and
   aborting the run on any regression. A pre-flight canary on a known-good tag
   distinguishes a bad registry day from damage the run caused; damage
-  confirmed broken before the run is reported separately. A post-apply
+  confirmed broken before the run is reported separately. Verification also
+  carries a seam for INTENDED tag expiry (a resolved policy's own retirement
+  decision, recomputed independently at verification time, never read off
+  the plan): a tag it expected gone is reported as `expired`, not a
+  regression, and a tag it expected gone but which still resolves is
+  reported separately without aborting anything. Today this ships wired to
+  a null producer that always returns the empty set, so it has no observable
+  effect; a later change supplies the real, policy-driven producer. A post-apply
   regression also opens a labelled issue with a cold-read incident report and
   trips a circuit breaker: every later run checks that issue before touching
   anything (including the canary) and refuses all deletions while it is
