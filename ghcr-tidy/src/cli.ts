@@ -38,7 +38,7 @@ import {
   type ApplyResult,
   type VerificationOptions,
 } from "./apply.js";
-import { nullExpiryProducer, type CanaryFailureReason } from "./verify.js";
+import { policyDrivenExpiryProducer, type CanaryFailureReason } from "./verify.js";
 import type { PackagesClient, RegistryReader } from "./ports.js";
 
 /**
@@ -580,7 +580,7 @@ async function runPlanning(
       progress(`[ghcr-tidy] (${String(n)}/${String(total)}) planning ${entry.match}...\n`);
       const startedAt = Date.now();
 
-      const policy = resolvePolicy(entry, manifest);
+      const policy = resolvePolicy(manifest);
       const result = await planPackage({
         org: manifest.owner,
         registryOwner: manifest.owner,
@@ -590,11 +590,11 @@ async function runPlanning(
         clock,
         policy: {
           retention: {
-            protectedTagPatterns: policy.protectedTagPatterns,
-            keepLast: policy.keepLast,
-            keepDays: policy.keepDays,
+            keepMajors: policy.keepMajors,
+            keepMinors: policy.keepMinors,
+            keepPatches: policy.keepPatches,
           },
-          graceDays: policy.graceDays,
+          keepDays: policy.keepDays,
         },
         deleteBrokenRoots,
       });
@@ -965,35 +965,21 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
     } catch (error) {
       throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
     }
-    // Resolved from `entries` (the manifest), NEVER from `plan`: see
-    // `verify.ts`'s module doc on why the expiry seam must not read
-    // "what the planner believed". `plan.packages` is always a subset
-    // of `entries` (built from exactly those entries by `runPlanning`),
-    // so this map always has an entry for any package `resolveExpirySet`
-    // is actually invoked for.
-    const policyByPackage = new Map(entries.map((e) => [e.match, e]));
+    // Retention is a single global policy (no per-package override — see
+    // `manifest/schema.ts`'s `ResolvedPolicy` doc), so it is resolved
+    // ONCE here and reused for every package `resolveExpirySet` is
+    // invoked for. `policyFor` keeps its per-package shape (matching
+    // `verify.ts`'s `ExpiryProducer.produce` signature) purely so the
+    // seam stays general if a future policy ever does vary by package;
+    // today it always returns the same value.
+    const policy = resolvePolicy(manifest);
     verification = {
       registry: verificationRegistry,
       canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
       sink: breakerRegressionSink(breaker),
-      // Ships the null producer: every existing consumer and test that
-      // never reasoned about expiry stays byte-identical. A future
-      // change swaps this for the real, policy-driven producer without
-      // touching this wiring shape.
       expiry: {
-        producer: nullExpiryProducer,
-        policyFor: (pkg) => {
-          const entry = policyByPackage.get(pkg);
-          if (!entry) {
-            // Unreachable in practice (see this block's comment above),
-            // guarded rather than silently defaulting to an arbitrary
-            // policy.
-            throw new Error(
-              `no configured package entry for "${pkg}" to resolve its expiry policy from`,
-            );
-          }
-          return resolvePolicy(entry, manifest);
-        },
+        producer: policyDrivenExpiryProducer,
+        policyFor: () => policy,
       },
       // Printed to stdout BEFORE `sink.record` (which calls the
       // breaker, a network operation) is even attempted — so the

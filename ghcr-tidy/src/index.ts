@@ -11,7 +11,23 @@ export { skipReasonFor, type SkipReason } from "./skip-reason.js";
 
 export type { RegistryReader, PackagesClient, PackageVersionRecord, Clock } from "./ports.js";
 
-export { computeKeepRoots, type LiveRoot, type RetentionPolicy } from "./retain.js";
+export {
+  computeKeepRoots,
+  computeRetainedTags,
+  computeFloorTags,
+  type LiveRoot,
+  type RetentionPolicy,
+} from "./retain.js";
+
+export {
+  parseTag,
+  kindKeyOf,
+  compareVersionsAscending,
+  type ParsedTag,
+  type VersionedTag,
+  type UnversionedTag,
+  type TagLevel,
+} from "./tag-kind.js";
 
 export { buildLiveRoots, type BuildLiveRootsResult } from "./roots.js";
 
@@ -122,6 +138,9 @@ export {
   checkCanary,
   compareSnapshots,
   memoryRegressionSink,
+  nullExpiryProducer,
+  policyDrivenExpiryProducer,
+  resolveExpirySet,
   type ResolveState,
   type TagSnapshot,
   type RegressedTag,
@@ -131,4 +150,25 @@ export {
   type CompareSnapshotsOptions,
   type RegressionIncident,
   type RegressionSink,
+  type ExpiryProducer,
+  type ExpiryProducerResult,
+  type ExpiryResolution,
+  type ExpiryFailureReason,
 } from "./verify.js";
+
+export {
+  resolvePolicy,
+  validateManifest,
+  ManifestError,
+  DEFAULT_KEEP_MAJORS,
+  DEFAULT_KEEP_MINORS,
+  DEFAULT_KEEP_PATCHES,
+  DEFAULT_KEEP_DAYS,
+  type Manifest,
+  type ManifestPackageEntry,
+  type ManifestCanary,
+  type RetentionConfig,
+  type ResolvedPolicy,
+} from "./manifest/schema.js";
+
+export { parseManifest } from "./manifest/parse.js";

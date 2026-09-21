@@ -68,10 +68,15 @@ function widgetWorld(): FakeGhcr {
  * A fake world mirroring the live `baseimages/rover` incident this
  * remediation exists for: one tagged root whose only child is a
  * CONFIRMED 404 (an already-garbage-collected descendant), and a healthy
- * canary tag for `apply` tests. `keepLast: 0`/`keepDays: 0`/`graceDays: 0`
- * on the manifest below (see `VALID_MANIFEST_ZERO_GRACE`) so the broken
- * root is old enough to actually land in DELETE once excluded from
- * KEEP_ROOTS.
+ * canary tag for `apply` tests. `retention.keepDays: 0` on the manifest
+ * below (see `VALID_MANIFEST_ZERO_GRACE`) so the broken root is old
+ * enough to actually land in DELETE once excluded from KEEP_ROOTS. The
+ * root's own tag ("0.38") is an ordinary versioned tag, and the windowing
+ * algorithm RETAINS it: `0` is the kind's only major, so `keepMajors: 1`
+ * below keeps it. What excludes this root from KEEP_ROOTS is
+ * `--delete-broken-roots`, which every test using this world passes, and
+ * that is precisely the path these tests exercise. Nothing here relies on
+ * a per-tag allow-list, which no longer exists.
  */
 function brokenRootWorld(): FakeGhcr {
   const fake = new FakeGhcr();
@@ -86,10 +91,11 @@ function brokenRootWorld(): FakeGhcr {
 const VALID_MANIFEST_ZERO_GRACE = `
 version: 1
 owner: acme
-keepLast: 1
-keepDays: 0
-graceDays: 0
-protectedTags: []
+retention:
+  keepMajors: 1
+  keepMinors: 1
+  keepPatches: 1
+  keepDays: 0
 packages:
   - match: widget
 `;

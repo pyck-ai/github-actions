@@ -46,10 +46,10 @@ function withHealthyCanary(fake: FakeGhcr): FakeGhcr {
 
 /** A minimal, fully-resolved policy for tests that only care about it being threaded through, not its values. */
 const anyPolicy: ResolvedPolicy = {
-  protectedTagPatterns: [],
-  keepLast: 10,
+  keepMajors: 1,
+  keepMinors: 3,
+  keepPatches: 5,
   keepDays: 30,
-  graceDays: 30,
 };
 
 /** Wraps a real `RegistryReader` so its `listTags` throws exactly once, then behaves normally — simulating an operational pre-snapshot failure without touching `FakeGhcr` itself. */

@@ -14219,12 +14219,17 @@ var dist = __nccwpck_require__(8815);
 
 /**
  * `.ghcr-tidy.yaml` config manifest schema (version 1): which packages
- * `ghcr-tidy` manages and, optionally, retention overrides for each.
+ * `ghcr-tidy` manages and, optionally, a global retention override.
  *
- * CLOSED schema: an unknown top-level or per-package field is a hard error,
- * never a silently-ignored one. A silently ignored key in a deletion tool's
- * config produces a green run that did the wrong thing — the exact failure
- * class this strictness exists to remove.
+ * CLOSED schema: an unknown top-level, per-package, or `retention` field
+ * is a hard error, never a silently-ignored one. A silently ignored key
+ * in a deletion tool's config produces a green run that did the wrong
+ * thing — the exact failure class this strictness exists to remove. This
+ * is also the migration mechanism for the retention redesign this
+ * schema ships: `keepLast`, `protectedTags`, `graceDays`, `policy`, and
+ * any per-package retention override are all REMOVED fields, so a
+ * manifest still using any of them fails validation loudly rather than
+ * being silently reinterpreted under the new algorithm.
  *
  * `packages[].match` is a FULL package name (`registry/package-name.ts`'s
  * `PackageName`), never a `(prefix, image)` pair to be joined here or
@@ -14234,16 +14239,20 @@ var dist = __nccwpck_require__(8815);
  * `PackageName` type exists to make structurally impossible. A manifest
  * author who needs `baseimages/golang` writes exactly that string.
  */
-/** `keepLast`/`keepDays`/`graceDays` default to 30/30/10-ish floors — see the per-field docs below for the exact defaults and, critically, why `keepDays` and `graceDays` are two separate knobs that must not be conflated. */
-const DEFAULT_KEEP_LAST = 10;
-/** `keepDays` protects TAGGED ROOTS (via `retain.ts`'s `RetentionPolicy`) — a root younger than this is kept regardless of tag or count. Deliberately equal to {@link DEFAULT_GRACE_DAYS} and not to be diverged from casually: both are a 30-day floor agreed for this project: lowering either deletes inside it. */
+/**
+ * Defaults for `retention`'s four knobs, applied field by field when the
+ * manifest omits `retention` entirely or omits an individual field
+ * within it. `keepDays` is the primary safety control: it is the ONLY
+ * age-based check left in this tool (see `plan.ts`'s `PlanPolicy.keepDays`
+ * doc), so lowering it is the single most dangerous edit available in
+ * this configuration — it, not `keepMajors`/`keepMinors`/`keepPatches`,
+ * is what bounds how much a first run under a tightened policy can ever
+ * delete.
+ */
+const DEFAULT_KEEP_MAJORS = 1;
+const DEFAULT_KEEP_MINORS = 3;
+const DEFAULT_KEEP_PATCHES = 5;
 const DEFAULT_KEEP_DAYS = 30;
-/** `graceDays` protects EVERY version regardless of tags (`plan.ts`'s `INFLIGHT`) — a digest pushed by a build that has not yet been tagged. See {@link DEFAULT_KEEP_DAYS}'s doc for why this is a separate knob from `keepDays`, both defaulting to the same 30-day floor. */
-const DEFAULT_GRACE_DAYS = 30;
-/** Tags matching any of these patterns are protected (digest-scoped — see `retain.ts`), and so is every other tag sharing that digest. */
-const DEFAULT_PROTECTED_TAGS = ["^latest$", "^alpine$", "^debian$"];
-/** `policy: "cache"` (see {@link ManifestPackageEntry.policy}) keeps every LIVE (tagged) root unconditionally — implemented as a protected-tag pattern matching every tag, so `retain.ts`'s existing digest-scoped protection logic does the work with no special-cased branch of its own. */
-const CACHE_POLICY_PATTERN = "^.*$";
 /** A manifest failed structural validation. Carries the location (a dotted/bracketed path) where it failed. */
 class ManifestError extends Error {
     location;
@@ -14274,28 +14283,7 @@ function validateNonNegativeInt(value, field, location) {
         schema_fail(`${location}.${field}`, `"${field}" must be a non-negative integer`);
     }
 }
-function validateProtectedTags(value, location) {
-    if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) {
-        schema_fail(location, `"protectedTags" must be an array of strings`);
-    }
-    for (const pattern of value) {
-        try {
-            new RegExp(pattern);
-        }
-        catch (error) {
-            schema_fail(location, `"protectedTags" entry ${JSON.stringify(pattern)} is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-    return value;
-}
-const PACKAGE_ENTRY_FIELDS = [
-    "match",
-    "policy",
-    "keepLast",
-    "keepDays",
-    "graceDays",
-    "protectedTags",
-];
+const PACKAGE_ENTRY_FIELDS = ["match"];
 function validatePackageEntry(raw, location, seenMatches) {
     if (!schema_isPlainObject(raw)) {
         schema_fail(location, "package entry must be an object");
@@ -14315,30 +14303,7 @@ function validatePackageEntry(raw, location, seenMatches) {
         schema_fail(`${location}.match`, `duplicate package "${match}" — each package may be listed once`);
     }
     seenMatches.add(match);
-    if (raw.policy !== undefined && raw.policy !== "cache") {
-        schema_fail(`${location}.policy`, `"policy" must be "cache" if present, got ${JSON.stringify(raw.policy)}`);
-    }
-    if (raw.keepLast !== undefined) {
-        validateNonNegativeInt(raw.keepLast, "keepLast", location);
-    }
-    if (raw.keepDays !== undefined) {
-        validateNonNegativeInt(raw.keepDays, "keepDays", location);
-    }
-    if (raw.graceDays !== undefined) {
-        validateNonNegativeInt(raw.graceDays, "graceDays", location);
-    }
-    let protectedTags;
-    if (raw.protectedTags !== undefined) {
-        protectedTags = validateProtectedTags(raw.protectedTags, `${location}.protectedTags`);
-    }
-    return {
-        match,
-        ...(raw.policy !== undefined && { policy: raw.policy }),
-        ...(raw.keepLast !== undefined && { keepLast: raw.keepLast }),
-        ...(raw.keepDays !== undefined && { keepDays: raw.keepDays }),
-        ...(raw.graceDays !== undefined && { graceDays: raw.graceDays }),
-        ...(protectedTags !== undefined && { protectedTags }),
-    };
+    return { match };
 }
 const CANARY_FIELDS = ["package", "tag"];
 function validateCanary(raw, location) {
@@ -14368,29 +14333,48 @@ function validateCanary(raw, location) {
     }
     return { package: pkg, tag: canaryTag };
 }
-const MANIFEST_TOP_LEVEL_FIELDS = [
-    "version",
-    "owner",
-    "packages",
-    "keepLast",
-    "keepDays",
-    "graceDays",
-    "protectedTags",
-    "canary",
-];
+const RETENTION_FIELDS = ["keepMajors", "keepMinors", "keepPatches", "keepDays"];
+function validateRetention(raw, location) {
+    if (!schema_isPlainObject(raw)) {
+        schema_fail(location, `"retention" must be an object`);
+    }
+    checkUnknownFields(raw, RETENTION_FIELDS, location);
+    if (raw.keepMajors !== undefined) {
+        validateNonNegativeInt(raw.keepMajors, "keepMajors", location);
+    }
+    if (raw.keepMinors !== undefined) {
+        validateNonNegativeInt(raw.keepMinors, "keepMinors", location);
+    }
+    if (raw.keepPatches !== undefined) {
+        validateNonNegativeInt(raw.keepPatches, "keepPatches", location);
+    }
+    if (raw.keepDays !== undefined) {
+        validateNonNegativeInt(raw.keepDays, "keepDays", location);
+    }
+    return {
+        ...(raw.keepMajors !== undefined && { keepMajors: raw.keepMajors }),
+        ...(raw.keepMinors !== undefined && { keepMinors: raw.keepMinors }),
+        ...(raw.keepPatches !== undefined && { keepPatches: raw.keepPatches }),
+        ...(raw.keepDays !== undefined && { keepDays: raw.keepDays }),
+    };
+}
+const MANIFEST_TOP_LEVEL_FIELDS = ["version", "owner", "packages", "retention", "canary"];
 /**
  * Validates a manifest already parsed from YAML into a plain JS value
  * (`unknown`). Pure — no I/O, no network.
  *
- * Rejects: any unrecognised top-level or per-package field (including
- * under `canary`); a missing or non-`1` `version`; a missing/empty
- * `owner`; a duplicate `match` across `packages`; a `match` (or
- * `canary.package`) that is not a syntactically valid {@link PackageName};
- * an empty/missing `canary.tag`; and a malformed `protectedTags` regex
- * anywhere. Does NOT reject an empty `packages` array — see
- * {@link Manifest.packages}'s doc for why. Does NOT reject a missing
- * `canary` — see {@link Manifest.canary}'s doc for why that is optional
- * rather than required.
+ * Rejects: any unrecognised top-level, per-package, or `retention` field
+ * (including under `canary`) — in particular every field this schema
+ * removed (`keepLast`, `protectedTags`, `graceDays`, `policy`, and any
+ * per-package retention override) now fails with `unknown field "..."`
+ * naming the offending key; a missing or non-`1` `version`; a
+ * missing/empty `owner`; a duplicate `match` across `packages`; a
+ * `match` (or `canary.package`) that is not a syntactically valid
+ * {@link PackageName}; an empty/missing `canary.tag`; and a negative or
+ * non-integer `retention` field anywhere. Does NOT reject an empty
+ * `packages` array — see {@link Manifest.packages}'s doc for why. Does
+ * NOT reject a missing `canary` or a missing `retention` — see those
+ * fields' docs for why both are optional.
  */
 function validateManifest(raw) {
     if (!schema_isPlainObject(raw)) {
@@ -14411,18 +14395,9 @@ function validateManifest(raw) {
     }
     const seenMatches = new Set();
     const packages = raw.packages.map((entry, idx) => validatePackageEntry(entry, `packages[${String(idx)}]`, seenMatches));
-    if (raw.keepLast !== undefined) {
-        validateNonNegativeInt(raw.keepLast, "keepLast", "<root>");
-    }
-    if (raw.keepDays !== undefined) {
-        validateNonNegativeInt(raw.keepDays, "keepDays", "<root>");
-    }
-    if (raw.graceDays !== undefined) {
-        validateNonNegativeInt(raw.graceDays, "graceDays", "<root>");
-    }
-    let protectedTags;
-    if (raw.protectedTags !== undefined) {
-        protectedTags = validateProtectedTags(raw.protectedTags, "protectedTags");
+    let retention;
+    if (raw.retention !== undefined) {
+        retention = validateRetention(raw.retention, "retention");
     }
     let canary;
     if (raw.canary !== undefined) {
@@ -14432,45 +14407,18 @@ function validateManifest(raw) {
         version: 1,
         owner: raw.owner,
         packages,
-        ...(raw.keepLast !== undefined && { keepLast: raw.keepLast }),
-        ...(raw.keepDays !== undefined && { keepDays: raw.keepDays }),
-        ...(raw.graceDays !== undefined && { graceDays: raw.graceDays }),
-        ...(protectedTags !== undefined && { protectedTags }),
+        ...(retention !== undefined && { retention }),
         ...(canary !== undefined && { canary }),
     };
 }
-/**
- * Resolves `entry`'s effective retention policy: per-package override,
- * falling back to the manifest-level override, falling back to the
- * hardcoded default — in that order, field by field.
- *
- * `policy: "cache"` short-circuits `protectedTagPatterns` to
- * {@link CACHE_POLICY_PATTERN} (every tag is protected, hence every live
- * root is a keep-root) and makes `keepLast`/`keepDays`/`protectedTags`
- * moot for THIS package — they are not read at all, rather than read and
- * then overridden, so a manifest author who sets both `policy: "cache"`
- * and e.g. `keepLast: 3` on the same entry does not get a confusing
- * silent precedence rule to memorise; `keepLast` there is simply inert.
- * `graceDays` is resolved and applied identically regardless of `policy`
- * — it protects untagged children, an orthogonal concern from root
- * retention (see `retain.ts`'s `RetentionPolicy` doc).
- */
-function resolvePolicy(entry, manifest) {
-    const graceDays = entry.graceDays ?? manifest.graceDays ?? DEFAULT_GRACE_DAYS;
-    if (entry.policy === "cache") {
-        return {
-            protectedTagPatterns: [new RegExp(CACHE_POLICY_PATTERN)],
-            keepLast: 0,
-            keepDays: 0,
-            graceDays,
-        };
-    }
-    const protectedTagsRaw = entry.protectedTags ?? manifest.protectedTags ?? DEFAULT_PROTECTED_TAGS;
+/** Resolves `manifest.retention`, field by field, against the hardcoded defaults. */
+function resolvePolicy(manifest) {
+    const r = manifest.retention;
     return {
-        protectedTagPatterns: protectedTagsRaw.map((p) => new RegExp(p)),
-        keepLast: entry.keepLast ?? manifest.keepLast ?? DEFAULT_KEEP_LAST,
-        keepDays: entry.keepDays ?? manifest.keepDays ?? DEFAULT_KEEP_DAYS,
-        graceDays,
+        keepMajors: r?.keepMajors ?? DEFAULT_KEEP_MAJORS,
+        keepMinors: r?.keepMinors ?? DEFAULT_KEEP_MINORS,
+        keepPatches: r?.keepPatches ?? DEFAULT_KEEP_PATCHES,
+        keepDays: r?.keepDays ?? DEFAULT_KEEP_DAYS,
     };
 }
 
@@ -14504,77 +14452,254 @@ function parseManifest(content, sourcePath) {
     }
 }
 
-;// CONCATENATED MODULE: ./ghcr-tidy/src/retain.ts
-const MS_PER_DAY = 86_400_000;
-function isProtectedByTag(tags, patterns) {
-    if (patterns.length === 0) {
-        return false;
-    }
-    for (const t of tags) {
-        if (patterns.some((p) => p.test(t))) {
-            return true;
+;// CONCATENATED MODULE: ./ghcr-tidy/src/tag-kind.ts
+/**
+ * Matches every maximal digit-and-dot run in a tag. Boundary conditions
+ * (start-or-`-` on the left, end-or-`-` on the right) are checked by
+ * {@link parseTag} against each match's surrounding characters, not baked
+ * into this pattern, because a lookbehind/lookahead version of the same
+ * rule is far harder to read and to prove correct than a plain scan.
+ */
+const NUMERIC_RUN_RE = /\d+(?:\.\d+)*/g;
+/**
+ * Parses one tag per this module's rule. Never throws: every input string
+ * is either {@link VersionedTag} or {@link UnversionedTag} — see AC 1
+ * (every one of the 362 corpus tags decomposes without error).
+ */
+function parseTag(raw) {
+    const s = raw;
+    let best;
+    NUMERIC_RUN_RE.lastIndex = 0;
+    let match;
+    while ((match = NUMERIC_RUN_RE.exec(s)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        const leftOk = start === 0 || s[start - 1] === "-";
+        const rightOk = end === s.length || s[end] === "-";
+        if (leftOk && rightOk) {
+            // Keep scanning: iterating left-to-right and overwriting `best` on
+            // every qualifying match leaves `best` set to the LAST one found.
+            best = { start, end, text: match[0] };
         }
     }
-    return false;
-}
-/**
- * Age in days of a root, from the matching `PackageVersionRecord`, or
- * `undefined` if the root's digest has no matching entry in the Packages
- * API listing (e.g. a digest pushed so recently that API is not yet
- * consistent). Age `undefined` is NOT the same as age `0`: see
- * {@link isRetainedByAge}.
- */
-function ageDaysOf(d, versionsByDigest, now) {
-    const v = versionsByDigest.get(d);
-    if (!v) {
-        return undefined;
+    if (!best) {
+        return { kind: "unversioned", literal: s };
     }
-    return (now.getTime() - v.createdAt.getTime()) / MS_PER_DAY;
+    const version = best.text.split(".").map(Number);
+    if (version.length > 3) {
+        return { kind: "unversioned", literal: s };
+    }
+    return {
+        kind: "versioned",
+        prefix: s.slice(0, best.start),
+        suffix: s.slice(best.end),
+        version,
+        level: version.length,
+    };
 }
 /**
- * A root whose age cannot be determined (no matching Packages API entry)
- * is retained unconditionally. This is the fail-safe choice, not an
- * oversight: an unknown age might mean "younger than keepDays", and
- * treating unknown as "old enough to prune" would delete a digest we have
- * no evidence is safe to delete.
+ * The grouping key for {@link ParsedTag}s that share a kind: same
+ * `(prefix, suffix)` for a versioned tag, or the tag's own literal string
+ * for an unversioned one (always a singleton). Package-scoping is the
+ * caller's responsibility — this module operates on one package's tag
+ * list at a time (see `retain.ts`'s `computeRetainedTags`), so no package
+ * name needs to be folded into the key here.
  */
-function isRetainedByAge(ageDays, keepDays) {
-    return ageDays === undefined || ageDays < keepDays;
+function kindKeyOf(parsed) {
+    return parsed.kind === "unversioned"
+        ? `u\u0000${parsed.literal}`
+        : `v\u0000${parsed.prefix}\u0000${parsed.suffix}`;
 }
 /**
- * `KEEP_ROOTS = { d in LIVE_ROOTS : retain(d) }`.
- *
- * `retain(d)` is true if ANY of: `d` carries a protected tag (digest-scoped
- * — protecting the digest `latest` points at protects every other tag on
- * that same digest, by construction, since {@link LiveRoot.tags} is
- * already the full set of tags sharing that digest), `d` is among the
- * newest `keepLast` roots by creation time, or `d` is younger than
- * `keepDays` (see {@link isRetainedByAge} for the unknown-age case).
- *
- * Deterministic: same input roots + versions + policy + now always
- * produces the same keep set, because the newest-N ranking uses a stable
- * sort and set iteration order in this module never depends on insertion
- * from an external, non-deterministic source (the ordering that reaches
- * this function is the caller's business; this function iterates strictly
- * in the order given).
+ * Ascending numeric comparison of two version tuples, padding the
+ * shorter with trailing zeros — `[3]` compares equal to `[3, 0, 0]`. Used
+ * to rank candidates within a level's window and to find a kind's newest
+ * member across levels (see `retain.ts`'s `computeFloorTags`).
  */
-function computeKeepRoots(roots, versionsByDigest, policy, now) {
+function compareVersionsAscending(a, b) {
+    const len = Math.max(a.length, b.length);
+    for (let i = 0; i < len; i += 1) {
+        const diff = (a[i] ?? 0) - (b[i] ?? 0);
+        if (diff !== 0) {
+            return diff;
+        }
+    }
+    return 0;
+}
+
+;// CONCATENATED MODULE: ./ghcr-tidy/src/retain.ts
+
+/** Descending-version top-N, used at every one of the three fixed levels below. */
+function topN(items, n, versionOf) {
+    return [...items]
+        .sort((a, b) => compareVersionsAscending(versionOf(b), versionOf(a)))
+        .slice(0, Math.max(0, n));
+}
+/**
+ * `RETAINED(tags)`: which of `tags` the resolved policy decided to keep,
+ * per this module's doc. Pure and package-scoped — `tags` must be every
+ * tag of ONE package (kinds are grouped within this call only, never
+ * merged across packages).
+ *
+ * Implements the version LATTICE correction to the naive per-tag
+ * algorithm (see the issue this ships for): windows range over every
+ * VERSION that occurs anywhere in a kind, not over the tags that happen
+ * to exist at each level. `majorSet` below is built from EVERY versioned
+ * entry regardless of level, so a kind whose only member is
+ * `alpine-3.23` (minor level, major `3` with no `alpine-3` tag anywhere —
+ * `golang`'s real shape) still produces a major candidate `3`. The same
+ * reasoning applies one level down: a kind's minor candidates are drawn
+ * from every entry at level 2 OR 3 (`|v| >= 2`), so a patch tag whose
+ * minor has no literal minor-level tag still contributes its minor to
+ * the window.
+ *
+ * A patch tag's own window (`keptPatches`) is built ONLY from
+ * three-component versions. This is what stops a minor alias like
+ * `1.26` from ever competing against a patch tag like `1.26.5` for a
+ * place in the patch window — the separation is structural (different
+ * source sets), not a guard that could be forgotten.
+ *
+ * The nesting is a fixed three levels (major/minor/patch), matching the
+ * tag generator's fixed three-component version grammar — written as
+ * such rather than as an open-ended loop, since a loop would imply a
+ * fourth level is meaningful, which `tag-kind.ts`'s parse rule already
+ * forbids (more than 3 components is unversioned).
+ */
+function computeRetainedTags(tags, policy) {
+    const retained = new Set();
+    const kinds = new Map();
+    for (const t of tags) {
+        const parsed = parseTag(t);
+        if (parsed.kind === "unversioned") {
+            // Always-retained singleton kind — see this module's and
+            // `tag-kind.ts`'s doc for why no allow-list is needed here.
+            retained.add(t);
+            continue;
+        }
+        const key = kindKeyOf(parsed);
+        const list = kinds.get(key) ?? [];
+        list.push({ tag: t, version: parsed.version, level: parsed.level });
+        kinds.set(key, list);
+    }
+    for (const entries of kinds.values()) {
+        const byMajor = new Map();
+        for (const e of entries) {
+            const major = e.version[0] ?? 0;
+            const list = byMajor.get(major) ?? [];
+            list.push(e);
+            byMajor.set(major, list);
+        }
+        const keptMajors = topN([...byMajor.keys()], policy.keepMajors, (m) => [m]);
+        for (const major of keptMajors) {
+            const majorEntries = byMajor.get(major) ?? [];
+            for (const e of majorEntries) {
+                if (e.level === 1) {
+                    retained.add(e.tag);
+                }
+            }
+            const byMinor = new Map();
+            for (const e of majorEntries) {
+                if (e.level < 2) {
+                    continue;
+                }
+                const minor = e.version[1] ?? 0;
+                const list = byMinor.get(minor) ?? [];
+                list.push(e);
+                byMinor.set(minor, list);
+            }
+            const keptMinors = topN([...byMinor.keys()], policy.keepMinors, (m) => [major, m]);
+            for (const minor of keptMinors) {
+                const minorEntries = byMinor.get(minor) ?? [];
+                for (const e of minorEntries) {
+                    if (e.level === 2) {
+                        retained.add(e.tag);
+                    }
+                }
+                const patchEntries = minorEntries.filter((e) => e.level === 3);
+                const keptPatches = topN(patchEntries, policy.keepPatches, (e) => e.version);
+                for (const e of keptPatches) {
+                    retained.add(e.tag);
+                }
+            }
+        }
+    }
+    return retained;
+}
+/**
+ * The floor set for `verify.ts`'s `ExpiryProducer`: the single newest
+ * literal tag of every kind, computed directly from the version lattice
+ * rather than from {@link computeRetainedTags}'s policy-windowed result —
+ * an independent safety net so that a misconfigured policy (e.g.
+ * `keepMajors: 0`) cannot, by itself, cause the currently-newest build of
+ * a kind to be reported as intended expiry. `verify.ts`'s
+ * `resolveExpirySet` enforces that `expiry` and `floor` stay disjoint; at
+ * the recommended policy this floor is already a subset of
+ * {@link computeRetainedTags}'s result and never fires that check, but it
+ * exists to catch the case where it would not be.
+ *
+ * An unversioned tag's floor is itself: a singleton kind's only member is
+ * trivially its own newest.
+ */
+function computeFloorTags(tags) {
+    const floor = new Set();
+    const newestByKind = new Map();
+    for (const t of tags) {
+        const parsed = parseTag(t);
+        if (parsed.kind === "unversioned") {
+            floor.add(t);
+            continue;
+        }
+        const key = kindKeyOf(parsed);
+        const entry = { tag: t, version: parsed.version, level: parsed.level };
+        const current = newestByKind.get(key);
+        if (!current || compareVersionsAscending(entry.version, current.version) > 0) {
+            newestByKind.set(key, entry);
+        }
+    }
+    for (const entry of newestByKind.values()) {
+        floor.add(entry.tag);
+    }
+    return floor;
+}
+/**
+ * `KEEP_ROOTS = { r in LIVE_ROOTS : exists t in r.tags . RETAINED(t) }` —
+ * a single existential over {@link computeRetainedTags}'s result,
+ * replacing the old multi-clause `computeKeepRoots` (protected-tag
+ * pattern, newest-`keepLast`, root-level `keepDays`) entirely. The cross-
+ * reference is keep-ROOT membership, not a filter applied to `DELETE`
+ * afterwards: a retained tag protects its digest's entire manifest
+ * closure via `plan.ts`'s reachability walk seeded from this set, so
+ * filtering `DELETE` after the fact would keep an index's tag while
+ * still deleting the platform manifests it points at — the exact
+ * broken-root corruption `deleteBrokenRoots` exists to remediate.
+ *
+ * Purely additive, like the clauses it replaces: no rule anywhere in
+ * this module ever removes a digest from the keep set once added.
+ * Deletion happens only by absence, in `plan.ts`'s
+ * `ALL \ (REACHABLE union INFLIGHT)` subtraction.
+ *
+ * Age plays NO part here — see {@link RetentionPolicy}'s doc for where
+ * it lives instead (`plan.ts`'s `PlanPolicy.keepDays`, applied uniformly
+ * to every version). A tagged root can therefore be deleted purely for
+ * falling outside its kind's kept window, once old enough: this is a
+ * deliberate capability, not a regression of the old root protection —
+ * it is what makes it possible to ever retire a frozen series at all.
+ */
+function computeKeepRoots(roots, policy) {
+    const allTags = [];
+    for (const root of roots) {
+        for (const t of root.tags) {
+            allTags.push(t);
+        }
+    }
+    const retained = computeRetainedTags(allTags, policy);
     const keep = new Set();
     for (const root of roots) {
-        if (isProtectedByTag(root.tags, policy.protectedTagPatterns)) {
-            keep.add(root.digest);
-        }
-    }
-    const knownAge = roots
-        .map((root) => ({ root, createdAt: versionsByDigest.get(root.digest)?.createdAt }))
-        .filter((entry) => entry.createdAt !== undefined)
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    for (const { root } of knownAge.slice(0, Math.max(0, policy.keepLast))) {
-        keep.add(root.digest);
-    }
-    for (const root of roots) {
-        if (isRetainedByAge(ageDaysOf(root.digest, versionsByDigest, now), policy.keepDays)) {
-            keep.add(root.digest);
+        for (const t of root.tags) {
+            if (retained.has(t)) {
+                keep.add(root.digest);
+                break;
+            }
         }
     }
     return keep;
@@ -15044,7 +15169,7 @@ function assertNoSurvivingParent(deleteSet, reachable, edges) {
 
 
 
-const plan_MS_PER_DAY = 86_400_000;
+const MS_PER_DAY = 86_400_000;
 /**
  * Wraps {@link computeReachability} to optionally tolerate a keep-root
  * whose subtree contains a PROVEN not-found descendant (a confirmed
@@ -15080,7 +15205,7 @@ const plan_MS_PER_DAY = 86_400_000;
  * it is simply no longer a keep-root, so `planPackage`'s ordinary
  * `ALL \ (REACHABLE union INFLIGHT)` set subtraction picks it up exactly
  * like any other digest that is not reachable from anything — including
- * still respecting `graceDays`, on the chance a "broken" root is actually
+ * still respecting `keepDays`, on the chance a "broken" root is actually
  * an in-flight push race (the index pushed, its child not yet) rather
  * than settled corruption.
  */
@@ -15123,9 +15248,9 @@ function mergeEdges(a, b) {
  * ```
  * ALL         = Packages API versions (id, digest, createdAt) — version ids and ages ONLY
  * LIVE_ROOTS  = image(TAGMAP), from the REGISTRY tag list (never the Packages API's `tags`)
- * KEEP_ROOTS  = { d in LIVE_ROOTS : retain(d) }
+ * KEEP_ROOTS  = { d in LIVE_ROOTS : exists t in d.tags . RETAINED(t) } — see `retain.ts`
  * REACHABLE   = least fixed point containing KEEP_ROOTS, closed under CHILDREN
- * INFLIGHT    = { v in ALL : age(v) < graceDays }
+ * INFLIGHT    = { v in ALL : age(v) < keepDays }
  * DELETE      = ALL \ (REACHABLE union INFLIGHT)
  * ```
  *
@@ -15161,7 +15286,7 @@ async function planPackage(options) {
     }
     const { roots, rootChildren } = liveRootsResult;
     const now = clock.now();
-    const keepRoots = computeKeepRoots(roots, versionsByDigest, policy.retention, now);
+    const keepRoots = computeKeepRoots(roots, policy.retention);
     const { result: reachResult, brokenRoots } = await computeReachabilityToleratingBrokenRoots(path, keepRoots, rootChildren, registry, options.reachability, options.deleteBrokenRoots ?? false);
     if (reachResult.status === "failed") {
         return {
@@ -15173,8 +15298,8 @@ async function planPackage(options) {
     const { reachable, edges } = reachResult;
     const inflight = new Set();
     for (const v of versions) {
-        const ageDays = (now.getTime() - v.createdAt.getTime()) / plan_MS_PER_DAY;
-        if (ageDays < policy.graceDays) {
+        const ageDays = (now.getTime() - v.createdAt.getTime()) / MS_PER_DAY;
+        if (ageDays < policy.keepDays) {
             inflight.add(v.digest);
         }
     }
@@ -15303,6 +15428,7 @@ function checkVolumeAlarm(plannedCount, options = {}) {
 }
 
 ;// CONCATENATED MODULE: ./ghcr-tidy/src/verify.ts
+
 
 
 async function closureState(path, d, registry, cache) {
@@ -15464,6 +15590,35 @@ function toFinding(t, pre, post) {
  */
 const nullExpiryProducer = {
     produce: () => ({ expiry: new Set(), floor: new Set(), unclassifiable: new Set() }),
+};
+/**
+ * The real, policy-driven producer: retires exactly the tags
+ * `retain.ts`'s `computeRetainedTags` would exclude from the keep set
+ * for the SAME `tags`/`policy` pair `planPackage` itself resolves against
+ * — independently re-derived here, not read off `Plan` (see this
+ * module's doc for why). `unclassifiable` is always empty: `tag-kind.ts`'s
+ * parse rule never fails to classify a tag (AC 1 — every tag decomposes
+ * into a kind, a level, and a version, or is unversioned), so there is
+ * nothing this producer could ever refuse to classify.
+ *
+ * `floor` is computed independently from `computeRetainedTags` (see
+ * `retain.ts`'s `computeFloorTags` doc) rather than derived from it, so a
+ * misconfigured policy cannot, by construction, make this producer's own
+ * `expiry` and `floor` overlap — `resolveExpirySet` still checks this
+ * rather than trusting it, per that function's doc.
+ */
+const policyDrivenExpiryProducer = {
+    produce(tags, policy) {
+        const retained = computeRetainedTags(tags, policy);
+        const floor = computeFloorTags(tags);
+        const expiry = new Set();
+        for (const t of tags) {
+            if (!retained.has(t)) {
+                expiry.add(t);
+            }
+        }
+        return { expiry, floor, unclassifiable: new Set() };
+    },
 };
 /**
  * The two safety obligations an {@link ExpiryProducer} must satisfy,
@@ -16453,7 +16608,7 @@ async function runPlanning(manifest, entries, registry, packagesClient, clock, j
         const n = index + 1;
         progress(`[ghcr-tidy] (${String(n)}/${String(total)}) planning ${entry.match}...\n`);
         const startedAt = Date.now();
-        const policy = resolvePolicy(entry, manifest);
+        const policy = resolvePolicy(manifest);
         const result = await planPackage({
             org: manifest.owner,
             registryOwner: manifest.owner,
@@ -16463,11 +16618,11 @@ async function runPlanning(manifest, entries, registry, packagesClient, clock, j
             clock,
             policy: {
                 retention: {
-                    protectedTagPatterns: policy.protectedTagPatterns,
-                    keepLast: policy.keepLast,
-                    keepDays: policy.keepDays,
+                    keepMajors: policy.keepMajors,
+                    keepMinors: policy.keepMinors,
+                    keepPatches: policy.keepPatches,
                 },
-                graceDays: policy.graceDays,
+                keepDays: policy.keepDays,
             },
             deleteBrokenRoots,
         });
@@ -16754,33 +16909,21 @@ async function runApplyCommand(args, deps) {
         catch (error) {
             throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
         }
-        // Resolved from `entries` (the manifest), NEVER from `plan`: see
-        // `verify.ts`'s module doc on why the expiry seam must not read
-        // "what the planner believed". `plan.packages` is always a subset
-        // of `entries` (built from exactly those entries by `runPlanning`),
-        // so this map always has an entry for any package `resolveExpirySet`
-        // is actually invoked for.
-        const policyByPackage = new Map(entries.map((e) => [e.match, e]));
+        // Retention is a single global policy (no per-package override — see
+        // `manifest/schema.ts`'s `ResolvedPolicy` doc), so it is resolved
+        // ONCE here and reused for every package `resolveExpirySet` is
+        // invoked for. `policyFor` keeps its per-package shape (matching
+        // `verify.ts`'s `ExpiryProducer.produce` signature) purely so the
+        // seam stays general if a future policy ever does vary by package;
+        // today it always returns the same value.
+        const policy = resolvePolicy(manifest);
         verification = {
             registry: verificationRegistry,
             canary: { path: registryPathFor(registryOwner, canaryPkg), tag: canaryTagValue },
             sink: breakerRegressionSink(breaker),
-            // Ships the null producer: every existing consumer and test that
-            // never reasoned about expiry stays byte-identical. A future
-            // change swaps this for the real, policy-driven producer without
-            // touching this wiring shape.
             expiry: {
-                producer: nullExpiryProducer,
-                policyFor: (pkg) => {
-                    const entry = policyByPackage.get(pkg);
-                    if (!entry) {
-                        // Unreachable in practice (see this block's comment above),
-                        // guarded rather than silently defaulting to an arbitrary
-                        // policy.
-                        throw new Error(`no configured package entry for "${pkg}" to resolve its expiry policy from`);
-                    }
-                    return resolvePolicy(entry, manifest);
-                },
+                producer: policyDrivenExpiryProducer,
+                policyFor: () => policy,
             },
             // Printed to stdout BEFORE `sink.record` (which calls the
             // breaker, a network operation) is even attempted — so the

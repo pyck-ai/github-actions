@@ -3,6 +3,7 @@ import { digest, type Digest, type RegistryPath, type Tag } from "./domain.js";
 import type { ResolvedPolicy } from "./manifest/schema.js";
 import type { PersistedGroupMember } from "./persisted-plan.js";
 import type { RegistryReader } from "./ports.js";
+import { computeFloorTags, computeRetainedTags } from "./retain.js";
 import { skipReasonFor } from "./skip-reason.js";
 
 /**
@@ -310,6 +311,36 @@ export interface ExpiryProducer {
  */
 export const nullExpiryProducer: ExpiryProducer = {
   produce: () => ({ expiry: new Set(), floor: new Set(), unclassifiable: new Set() }),
+};
+
+/**
+ * The real, policy-driven producer: retires exactly the tags
+ * `retain.ts`'s `computeRetainedTags` would exclude from the keep set
+ * for the SAME `tags`/`policy` pair `planPackage` itself resolves against
+ * — independently re-derived here, not read off `Plan` (see this
+ * module's doc for why). `unclassifiable` is always empty: `tag-kind.ts`'s
+ * parse rule never fails to classify a tag (AC 1 — every tag decomposes
+ * into a kind, a level, and a version, or is unversioned), so there is
+ * nothing this producer could ever refuse to classify.
+ *
+ * `floor` is computed independently from `computeRetainedTags` (see
+ * `retain.ts`'s `computeFloorTags` doc) rather than derived from it, so a
+ * misconfigured policy cannot, by construction, make this producer's own
+ * `expiry` and `floor` overlap — `resolveExpirySet` still checks this
+ * rather than trusting it, per that function's doc.
+ */
+export const policyDrivenExpiryProducer: ExpiryProducer = {
+  produce(tags, policy) {
+    const retained = computeRetainedTags(tags, policy);
+    const floor = computeFloorTags(tags);
+    const expiry = new Set<Tag>();
+    for (const t of tags) {
+      if (!retained.has(t)) {
+        expiry.add(t);
+      }
+    }
+    return { expiry, floor, unclassifiable: new Set() };
+  },
 };
 
 /** Why {@link resolveExpirySet} rejected a producer's output; see that function's doc for what each case means. */

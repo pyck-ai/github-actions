@@ -3,12 +3,17 @@ import { tag, type Tag } from "../domain.js";
 
 /**
  * `.ghcr-tidy.yaml` config manifest schema (version 1): which packages
- * `ghcr-tidy` manages and, optionally, retention overrides for each.
+ * `ghcr-tidy` manages and, optionally, a global retention override.
  *
- * CLOSED schema: an unknown top-level or per-package field is a hard error,
- * never a silently-ignored one. A silently ignored key in a deletion tool's
- * config produces a green run that did the wrong thing — the exact failure
- * class this strictness exists to remove.
+ * CLOSED schema: an unknown top-level, per-package, or `retention` field
+ * is a hard error, never a silently-ignored one. A silently ignored key
+ * in a deletion tool's config produces a green run that did the wrong
+ * thing — the exact failure class this strictness exists to remove. This
+ * is also the migration mechanism for the retention redesign this
+ * schema ships: `keepLast`, `protectedTags`, `graceDays`, `policy`, and
+ * any per-package retention override are all REMOVED fields, so a
+ * manifest still using any of them fails validation loudly rather than
+ * being silently reinterpreted under the new algorithm.
  *
  * `packages[].match` is a FULL package name (`registry/package-name.ts`'s
  * `PackageName`), never a `(prefix, image)` pair to be joined here or
@@ -19,19 +24,43 @@ import { tag, type Tag } from "../domain.js";
  * author who needs `baseimages/golang` writes exactly that string.
  */
 
-/** `keepLast`/`keepDays`/`graceDays` default to 30/30/10-ish floors — see the per-field docs below for the exact defaults and, critically, why `keepDays` and `graceDays` are two separate knobs that must not be conflated. */
-export const DEFAULT_KEEP_LAST = 10;
-/** `keepDays` protects TAGGED ROOTS (via `retain.ts`'s `RetentionPolicy`) — a root younger than this is kept regardless of tag or count. Deliberately equal to {@link DEFAULT_GRACE_DAYS} and not to be diverged from casually: both are a 30-day floor agreed for this project: lowering either deletes inside it. */
+/**
+ * Defaults for `retention`'s four knobs, applied field by field when the
+ * manifest omits `retention` entirely or omits an individual field
+ * within it. `keepDays` is the primary safety control: it is the ONLY
+ * age-based check left in this tool (see `plan.ts`'s `PlanPolicy.keepDays`
+ * doc), so lowering it is the single most dangerous edit available in
+ * this configuration — it, not `keepMajors`/`keepMinors`/`keepPatches`,
+ * is what bounds how much a first run under a tightened policy can ever
+ * delete.
+ */
+export const DEFAULT_KEEP_MAJORS = 1;
+export const DEFAULT_KEEP_MINORS = 3;
+export const DEFAULT_KEEP_PATCHES = 5;
 export const DEFAULT_KEEP_DAYS = 30;
-/** `graceDays` protects EVERY version regardless of tags (`plan.ts`'s `INFLIGHT`) — a digest pushed by a build that has not yet been tagged. See {@link DEFAULT_KEEP_DAYS}'s doc for why this is a separate knob from `keepDays`, both defaulting to the same 30-day floor. */
-export const DEFAULT_GRACE_DAYS = 30;
-/** Tags matching any of these patterns are protected (digest-scoped — see `retain.ts`), and so is every other tag sharing that digest. */
-export const DEFAULT_PROTECTED_TAGS: readonly string[] = ["^latest$", "^alpine$", "^debian$"];
 
-/** `policy: "cache"` (see {@link ManifestPackageEntry.policy}) keeps every LIVE (tagged) root unconditionally — implemented as a protected-tag pattern matching every tag, so `retain.ts`'s existing digest-scoped protection logic does the work with no special-cased branch of its own. */
-export const CACHE_POLICY_PATTERN = "^.*$";
+export interface ManifestPackageEntry {
+  /** The full GHCR package name, e.g. `"flutter-rfw"` or `"baseimages/golang"`. Never a prefix to be joined — see this module's doc. There is deliberately nothing else on this type: retention is a single global policy, never overridden per package (see `retention.ts`'s module doc for why a package-specific override is exactly the special-casing this schema exists to remove). */
+  readonly match: PackageName;
+}
 
-export type PackagePolicy = "cache";
+/**
+ * The four global retention knobs (`retain.ts`'s `RetentionPolicy` plus
+ * `plan.ts`'s `PlanPolicy.keepDays`), each individually optional and
+ * defaulting per {@link DEFAULT_KEEP_MAJORS} etc. Applied identically to
+ * every package in {@link Manifest.packages} — there is no per-package
+ * override anywhere in this schema.
+ */
+export interface RetentionConfig {
+  /** Newest N majors kept, per kind. */
+  readonly keepMajors?: number;
+  /** Within each kept major, newest N minors kept. */
+  readonly keepMinors?: number;
+  /** Within each kept minor, newest N patches kept. */
+  readonly keepPatches?: number;
+  /** Any version younger than this many days is never deleted, tagged or not — see this module's doc on why this is the primary safety control. */
+  readonly keepDays?: number;
+}
 
 /**
  * A known-good `(package, tag)` pair `apply` resolves BEFORE attempting
@@ -53,28 +82,6 @@ export interface ManifestCanary {
   readonly tag: Tag;
 }
 
-export interface ManifestPackageEntry {
-  /** The full GHCR package name, e.g. `"flutter-rfw"` or `"baseimages/golang"`. Never a prefix to be joined — see this module's doc. */
-  readonly match: PackageName;
-  /**
-   * `"cache"` means: keep every currently-tagged version, regardless of
-   * `keepLast`/`keepDays`/`protectedTags` (which are ignored when this is
-   * set — see {@link CACHE_POLICY_PATTERN}). Intended for buildx-cache-style
-   * packages where every live tag is operationally meaningful and none of
-   * them is "old" in a way that should ever be pruned automatically.
-   * Omitted means the normal retention policy applies.
-   */
-  readonly policy?: PackagePolicy;
-  /** Overrides the manifest-level (or default) `keepLast` for this package only. Ignored when `policy` is `"cache"`. */
-  readonly keepLast?: number;
-  /** Overrides the manifest-level (or default) `keepDays` for this package only. Ignored when `policy` is `"cache"`. */
-  readonly keepDays?: number;
-  /** Overrides the manifest-level (or default) `graceDays` for this package only. Always applies, even under `policy: "cache"` — it protects untagged children, not roots. */
-  readonly graceDays?: number;
-  /** Overrides the manifest-level (or default) `protectedTags` for this package only. Ignored when `policy` is `"cache"`. */
-  readonly protectedTags?: readonly string[];
-}
-
 export interface Manifest {
   readonly version: 1;
   /** The GitHub org that owns every package listed here — both the Packages API `org` and (absent a future need to diverge) the GHCR `/v2/` path owner. */
@@ -89,10 +96,8 @@ export interface Manifest {
    * repo manages zero GHCR packages", which is true for some repos.
    */
   readonly packages: readonly ManifestPackageEntry[];
-  readonly keepLast?: number;
-  readonly keepDays?: number;
-  readonly graceDays?: number;
-  readonly protectedTags?: readonly string[];
+  /** The single global retention policy applied to every package above. Omit entirely to accept every default. */
+  readonly retention?: RetentionConfig;
   /**
    * OPTIONAL, deliberately: `validate` and `plan` are both read-only and
    * work perfectly well with no canary configured at all — only `apply`
@@ -148,33 +153,7 @@ function validateNonNegativeInt(value: unknown, field: string, location: string)
   }
 }
 
-function validateProtectedTags(value: unknown, location: string): readonly string[] {
-  if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) {
-    fail(location, `"protectedTags" must be an array of strings`);
-  }
-  for (const pattern of value) {
-    try {
-      new RegExp(pattern);
-    } catch (error) {
-      fail(
-        location,
-        `"protectedTags" entry ${JSON.stringify(pattern)} is not a valid regular expression: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-  return value;
-}
-
-const PACKAGE_ENTRY_FIELDS = [
-  "match",
-  "policy",
-  "keepLast",
-  "keepDays",
-  "graceDays",
-  "protectedTags",
-];
+const PACKAGE_ENTRY_FIELDS = ["match"];
 
 function validatePackageEntry(
   raw: unknown,
@@ -200,34 +179,7 @@ function validatePackageEntry(
   }
   seenMatches.add(match);
 
-  if (raw.policy !== undefined && raw.policy !== "cache") {
-    fail(
-      `${location}.policy`,
-      `"policy" must be "cache" if present, got ${JSON.stringify(raw.policy)}`,
-    );
-  }
-  if (raw.keepLast !== undefined) {
-    validateNonNegativeInt(raw.keepLast, "keepLast", location);
-  }
-  if (raw.keepDays !== undefined) {
-    validateNonNegativeInt(raw.keepDays, "keepDays", location);
-  }
-  if (raw.graceDays !== undefined) {
-    validateNonNegativeInt(raw.graceDays, "graceDays", location);
-  }
-  let protectedTags: readonly string[] | undefined;
-  if (raw.protectedTags !== undefined) {
-    protectedTags = validateProtectedTags(raw.protectedTags, `${location}.protectedTags`);
-  }
-
-  return {
-    match,
-    ...(raw.policy !== undefined && { policy: raw.policy as PackagePolicy }),
-    ...(raw.keepLast !== undefined && { keepLast: raw.keepLast as number }),
-    ...(raw.keepDays !== undefined && { keepDays: raw.keepDays as number }),
-    ...(raw.graceDays !== undefined && { graceDays: raw.graceDays as number }),
-    ...(protectedTags !== undefined && { protectedTags }),
-  };
+  return { match };
 }
 
 const CANARY_FIELDS = ["package", "tag"];
@@ -261,30 +213,53 @@ function validateCanary(raw: unknown, location: string): ManifestCanary {
   return { package: pkg, tag: canaryTag };
 }
 
-const MANIFEST_TOP_LEVEL_FIELDS = [
-  "version",
-  "owner",
-  "packages",
-  "keepLast",
-  "keepDays",
-  "graceDays",
-  "protectedTags",
-  "canary",
-];
+const RETENTION_FIELDS = ["keepMajors", "keepMinors", "keepPatches", "keepDays"];
+
+function validateRetention(raw: unknown, location: string): RetentionConfig {
+  if (!isPlainObject(raw)) {
+    fail(location, `"retention" must be an object`);
+  }
+  checkUnknownFields(raw, RETENTION_FIELDS, location);
+
+  if (raw.keepMajors !== undefined) {
+    validateNonNegativeInt(raw.keepMajors, "keepMajors", location);
+  }
+  if (raw.keepMinors !== undefined) {
+    validateNonNegativeInt(raw.keepMinors, "keepMinors", location);
+  }
+  if (raw.keepPatches !== undefined) {
+    validateNonNegativeInt(raw.keepPatches, "keepPatches", location);
+  }
+  if (raw.keepDays !== undefined) {
+    validateNonNegativeInt(raw.keepDays, "keepDays", location);
+  }
+
+  return {
+    ...(raw.keepMajors !== undefined && { keepMajors: raw.keepMajors as number }),
+    ...(raw.keepMinors !== undefined && { keepMinors: raw.keepMinors as number }),
+    ...(raw.keepPatches !== undefined && { keepPatches: raw.keepPatches as number }),
+    ...(raw.keepDays !== undefined && { keepDays: raw.keepDays as number }),
+  };
+}
+
+const MANIFEST_TOP_LEVEL_FIELDS = ["version", "owner", "packages", "retention", "canary"];
 
 /**
  * Validates a manifest already parsed from YAML into a plain JS value
  * (`unknown`). Pure — no I/O, no network.
  *
- * Rejects: any unrecognised top-level or per-package field (including
- * under `canary`); a missing or non-`1` `version`; a missing/empty
- * `owner`; a duplicate `match` across `packages`; a `match` (or
- * `canary.package`) that is not a syntactically valid {@link PackageName};
- * an empty/missing `canary.tag`; and a malformed `protectedTags` regex
- * anywhere. Does NOT reject an empty `packages` array — see
- * {@link Manifest.packages}'s doc for why. Does NOT reject a missing
- * `canary` — see {@link Manifest.canary}'s doc for why that is optional
- * rather than required.
+ * Rejects: any unrecognised top-level, per-package, or `retention` field
+ * (including under `canary`) — in particular every field this schema
+ * removed (`keepLast`, `protectedTags`, `graceDays`, `policy`, and any
+ * per-package retention override) now fails with `unknown field "..."`
+ * naming the offending key; a missing or non-`1` `version`; a
+ * missing/empty `owner`; a duplicate `match` across `packages`; a
+ * `match` (or `canary.package`) that is not a syntactically valid
+ * {@link PackageName}; an empty/missing `canary.tag`; and a negative or
+ * non-integer `retention` field anywhere. Does NOT reject an empty
+ * `packages` array — see {@link Manifest.packages}'s doc for why. Does
+ * NOT reject a missing `canary` or a missing `retention` — see those
+ * fields' docs for why both are optional.
  */
 export function validateManifest(raw: unknown): Manifest {
   if (!isPlainObject(raw)) {
@@ -310,18 +285,9 @@ export function validateManifest(raw: unknown): Manifest {
     validatePackageEntry(entry, `packages[${String(idx)}]`, seenMatches),
   );
 
-  if (raw.keepLast !== undefined) {
-    validateNonNegativeInt(raw.keepLast, "keepLast", "<root>");
-  }
-  if (raw.keepDays !== undefined) {
-    validateNonNegativeInt(raw.keepDays, "keepDays", "<root>");
-  }
-  if (raw.graceDays !== undefined) {
-    validateNonNegativeInt(raw.graceDays, "graceDays", "<root>");
-  }
-  let protectedTags: readonly string[] | undefined;
-  if (raw.protectedTags !== undefined) {
-    protectedTags = validateProtectedTags(raw.protectedTags, "protectedTags");
+  let retention: RetentionConfig | undefined;
+  if (raw.retention !== undefined) {
+    retention = validateRetention(raw.retention, "retention");
   }
   let canary: ManifestCanary | undefined;
   if (raw.canary !== undefined) {
@@ -332,59 +298,31 @@ export function validateManifest(raw: unknown): Manifest {
     version: 1,
     owner: raw.owner,
     packages,
-    ...(raw.keepLast !== undefined && { keepLast: raw.keepLast as number }),
-    ...(raw.keepDays !== undefined && { keepDays: raw.keepDays as number }),
-    ...(raw.graceDays !== undefined && { graceDays: raw.graceDays as number }),
-    ...(protectedTags !== undefined && { protectedTags }),
+    ...(retention !== undefined && { retention }),
     ...(canary !== undefined && { canary }),
   };
 }
 
 /**
- * A fully-resolved retention policy for one package: every override layer
- * (per-package, manifest-level, hardcoded default) already applied. See
- * `plan.ts`'s `PlanPolicy` for the shape this feeds.
+ * A fully-resolved retention policy: every field of `manifest.retention`
+ * defaulted per {@link DEFAULT_KEEP_MAJORS} etc. Identical for every
+ * package in the manifest — there is no per-package resolution step any
+ * more, unlike the per-package override chain this replaced.
  */
 export interface ResolvedPolicy {
-  readonly protectedTagPatterns: readonly RegExp[];
-  readonly keepLast: number;
+  readonly keepMajors: number;
+  readonly keepMinors: number;
+  readonly keepPatches: number;
   readonly keepDays: number;
-  readonly graceDays: number;
 }
 
-/**
- * Resolves `entry`'s effective retention policy: per-package override,
- * falling back to the manifest-level override, falling back to the
- * hardcoded default — in that order, field by field.
- *
- * `policy: "cache"` short-circuits `protectedTagPatterns` to
- * {@link CACHE_POLICY_PATTERN} (every tag is protected, hence every live
- * root is a keep-root) and makes `keepLast`/`keepDays`/`protectedTags`
- * moot for THIS package — they are not read at all, rather than read and
- * then overridden, so a manifest author who sets both `policy: "cache"`
- * and e.g. `keepLast: 3` on the same entry does not get a confusing
- * silent precedence rule to memorise; `keepLast` there is simply inert.
- * `graceDays` is resolved and applied identically regardless of `policy`
- * — it protects untagged children, an orthogonal concern from root
- * retention (see `retain.ts`'s `RetentionPolicy` doc).
- */
-export function resolvePolicy(entry: ManifestPackageEntry, manifest: Manifest): ResolvedPolicy {
-  const graceDays = entry.graceDays ?? manifest.graceDays ?? DEFAULT_GRACE_DAYS;
-
-  if (entry.policy === "cache") {
-    return {
-      protectedTagPatterns: [new RegExp(CACHE_POLICY_PATTERN)],
-      keepLast: 0,
-      keepDays: 0,
-      graceDays,
-    };
-  }
-
-  const protectedTagsRaw = entry.protectedTags ?? manifest.protectedTags ?? DEFAULT_PROTECTED_TAGS;
+/** Resolves `manifest.retention`, field by field, against the hardcoded defaults. */
+export function resolvePolicy(manifest: Manifest): ResolvedPolicy {
+  const r = manifest.retention;
   return {
-    protectedTagPatterns: protectedTagsRaw.map((p) => new RegExp(p)),
-    keepLast: entry.keepLast ?? manifest.keepLast ?? DEFAULT_KEEP_LAST,
-    keepDays: entry.keepDays ?? manifest.keepDays ?? DEFAULT_KEEP_DAYS,
-    graceDays,
+    keepMajors: r?.keepMajors ?? DEFAULT_KEEP_MAJORS,
+    keepMinors: r?.keepMinors ?? DEFAULT_KEEP_MINORS,
+    keepPatches: r?.keepPatches ?? DEFAULT_KEEP_PATCHES,
+    keepDays: r?.keepDays ?? DEFAULT_KEEP_DAYS,
   };
 }

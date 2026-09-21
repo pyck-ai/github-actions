@@ -14,9 +14,19 @@ const now = new Date("2026-09-11T00:00:00Z");
 const clock: Clock = { now: () => now };
 
 const defaultPolicy: PlanPolicy = {
-  retention: { protectedTagPatterns: [/^latest$/], keepLast: 1, keepDays: 30 },
-  graceDays: 30,
+  retention: { keepMajors: 1, keepMinors: 3, keepPatches: 5 },
+  keepDays: 30,
 };
+
+/**
+ * A retention policy that keeps NOTHING versioned (top-0 majors at every
+ * kind), used throughout this file for fixtures whose intent is "this
+ * tag is not otherwise protected" — an unversioned tag (e.g. `latest`)
+ * is retained unconditionally regardless of these numbers (see
+ * `tag-kind.ts`'s module doc), so it never needs a pattern to protect it
+ * any more.
+ */
+const noRetention = { keepMajors: 0, keepMinors: 0, keepPatches: 0 };
 
 function options(fake: FakeGhcr, policy: PlanPolicy = defaultPolicy): PlanPackageOptions {
   return {
@@ -30,8 +40,8 @@ function options(fake: FakeGhcr, policy: PlanPolicy = defaultPolicy): PlanPackag
   };
 }
 
-const OLD = "2020-01-01T00:00:00Z"; // far outside keepDays/graceDays
-const RECENT = "2026-09-10T00:00:00Z"; // within keepDays/graceDays (1 day old)
+const OLD = "2020-01-01T00:00:00Z"; // far outside keepDays
+const RECENT = "2026-09-10T00:00:00Z"; // within keepDays (1 day old)
 
 describe("planPackage", () => {
   it("multi-arch index: 4 untagged children (2 platform + 2 attestation) all kept, reachable via BFS", async () => {
@@ -86,17 +96,20 @@ describe("planPackage", () => {
       .setManifest(digest("sha256:c3"), {})
       .setManifest(digest("sha256:c4"), {})
       .setTag(tag("latest"), digest("sha256:kept"))
-      .setTag(tag("v1-old"), digest("sha256:old"))
+      // A versioned tag (not an arbitrary unversioned string): with
+      // `noRetention` (top-0 majors), this kind's windowing excludes it
+      // entirely, so "sha256:old" is not a keep-root and ages out.
+      .setTag(tag("1.0"), digest("sha256:old"))
       .addVersion(version(1, "sha256:kept", RECENT, ["latest"]))
-      .addVersion(version(2, "sha256:old", OLD, ["v1-old"]))
+      .addVersion(version(2, "sha256:old", OLD, ["1.0"]))
       .addVersion(version(3, "sha256:c1", OLD))
       .addVersion(version(4, "sha256:c2", OLD))
       .addVersion(version(5, "sha256:c3", OLD))
       .addVersion(version(6, "sha256:c4", OLD));
 
     const policy: PlanPolicy = {
-      retention: { protectedTagPatterns: [], keepLast: 0, keepDays: 30 },
-      graceDays: 30,
+      retention: noRetention,
+      keepDays: 30,
     };
     const result = await planPackage(options(fake, policy));
 
@@ -116,14 +129,15 @@ describe("planPackage", () => {
       .setManifest(digest("sha256:b"), { children: [{ digest: "sha256:c" }] })
       .setManifest(digest("sha256:c"), {})
       .setTag(tag("latest"), digest("sha256:a"))
-      .setTag(tag("v-old"), digest("sha256:b"))
+      // Versioned, excluded by `noRetention` — see the "aged-out root" test above.
+      .setTag(tag("1.0"), digest("sha256:b"))
       .addVersion(version(1, "sha256:a", RECENT, ["latest"]))
-      .addVersion(version(2, "sha256:b", OLD, ["v-old"]))
+      .addVersion(version(2, "sha256:b", OLD, ["1.0"]))
       .addVersion(version(3, "sha256:c", OLD));
 
     const policy: PlanPolicy = {
-      retention: { protectedTagPatterns: [], keepLast: 0, keepDays: 30 },
-      graceDays: 30,
+      retention: noRetention,
+      keepDays: 30,
     };
     const result = await planPackage(options(fake, policy));
 
@@ -147,8 +161,8 @@ describe("planPackage", () => {
       .addVersion(version(1, "sha256:a", OLD, [])); // Packages API: stale-empty tags
 
     const policy: PlanPolicy = {
-      retention: { protectedTagPatterns: [/^latest$/], keepLast: 0, keepDays: 0 },
-      graceDays: 0,
+      retention: noRetention,
+      keepDays: 0,
     };
     const result = await planPackage(options(fake, policy));
 
@@ -167,8 +181,8 @@ describe("planPackage", () => {
       .addVersion(version(2, "sha256:stale", OLD));
 
     const policy: PlanPolicy = {
-      retention: { protectedTagPatterns: [/^latest$/], keepLast: 0, keepDays: 0 },
-      graceDays: 0,
+      retention: noRetention,
+      keepDays: 0,
     };
     const result = await planPackage(options(fake, policy));
 
@@ -189,8 +203,8 @@ describe("planPackage", () => {
       .addVersion(version(1, "sha256:root", OLD, ["latest"]));
 
     const policy: PlanPolicy = {
-      retention: { protectedTagPatterns: [/^latest$/], keepLast: 0, keepDays: 0 },
-      graceDays: 0,
+      retention: noRetention,
+      keepDays: 0,
     };
     const result = await planPackage(options(fake, policy));
 
@@ -206,8 +220,8 @@ describe("planPackage", () => {
       .addVersion(version(1, "sha256:root", OLD, ["latest"]));
 
     const policy: PlanPolicy = {
-      retention: { protectedTagPatterns: [/^latest$/], keepLast: 0, keepDays: 0 },
-      graceDays: 0,
+      retention: noRetention,
+      keepDays: 0,
     };
     const result = await planPackage(options(fake, policy));
 
@@ -246,8 +260,8 @@ describe("planPackage", () => {
       return fake;
     };
     const policy: PlanPolicy = {
-      retention: { protectedTagPatterns: [], keepLast: 0, keepDays: 30 },
-      graceDays: 30,
+      retention: noRetention,
+      keepDays: 30,
     };
 
     const first = await planPackage(options(build(), policy));
@@ -316,8 +330,8 @@ describe("planPackage", () => {
     ]);
 
     const policy: PlanPolicy = {
-      retention: { protectedTagPatterns: [], keepLast: 0, keepDays: 30 },
-      graceDays: 30,
+      retention: noRetention,
+      keepDays: 30,
     };
 
     const baseline = await planPackage(options(build(), policy));
@@ -359,8 +373,8 @@ describe("planPackage", () => {
     };
 
     const policy: PlanPolicy = {
-      retention: { protectedTagPatterns: [/^latest$/], keepLast: 1, keepDays: 30 },
-      graceDays: 30,
+      retention: noRetention,
+      keepDays: 30,
     };
     const result = await planPackage({ ...options(fake, policy), registry });
 
@@ -386,8 +400,8 @@ describe("planPackage", () => {
     }
 
     const brokenRootPolicy: PlanPolicy = {
-      retention: { protectedTagPatterns: [/^latest$/], keepLast: 0, keepDays: 0 },
-      graceDays: 0,
+      retention: noRetention,
+      keepDays: 0,
     };
 
     it("a root with a genuinely missing descendant IS deleted when the mode is on", async () => {
@@ -454,8 +468,8 @@ describe("planPackage", () => {
         .addVersion(version(1, "sha256:root", RECENT, ["latest"]));
 
       const recentPolicy: PlanPolicy = {
-        retention: { protectedTagPatterns: [/^latest$/], keepLast: 0, keepDays: 0 },
-        graceDays: 30,
+        retention: noRetention,
+        keepDays: 30,
       };
       const result = await planPackage({
         ...options(fake, recentPolicy),
@@ -479,8 +493,8 @@ describe("planPackage", () => {
         .addVersion(version(3, "sha256:old", OLD));
 
       const policy: PlanPolicy = {
-        retention: { protectedTagPatterns: [/^latest$/, /^broken$/], keepLast: 0, keepDays: 0 },
-        graceDays: 0,
+        retention: noRetention,
+        keepDays: 0,
       };
       const result = await planPackage({ ...options(fake, policy), deleteBrokenRoots: true });
 

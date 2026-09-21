@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import { packageName } from "../../../registry/package-name.js";
 import { tag } from "../domain.js";
 import {
-  CACHE_POLICY_PATTERN,
-  DEFAULT_GRACE_DAYS,
   DEFAULT_KEEP_DAYS,
-  DEFAULT_KEEP_LAST,
-  DEFAULT_PROTECTED_TAGS,
+  DEFAULT_KEEP_MAJORS,
+  DEFAULT_KEEP_MINORS,
+  DEFAULT_KEEP_PATCHES,
   ManifestError,
   resolvePolicy,
   validateManifest,
@@ -40,41 +39,31 @@ describe("validateManifest — acceptance", () => {
     expect(m.packages[0]?.match).toBe("baseimages/golang");
   });
 
-  it("accepts policy: cache and per-package overrides", () => {
+  it("accepts a bare package list with no per-package fields beyond match", () => {
     const m = validateManifest(
-      base({
-        packages: [
-          { match: "flutter-rfw/buildcache", policy: "cache" },
-          {
-            match: "flutter-rfw",
-            keepLast: 3,
-            keepDays: 7,
-            graceDays: 5,
-            protectedTags: ["^v\\d"],
-          },
-        ],
-      }),
+      base({ packages: [{ match: "baseimages/buildcache" }, { match: "baseimages/golang" }] }),
     );
-    expect(m.packages[0]).toMatchObject({ match: "flutter-rfw/buildcache", policy: "cache" });
-    expect(m.packages[1]).toMatchObject({
-      match: "flutter-rfw",
-      keepLast: 3,
-      keepDays: 7,
-      graceDays: 5,
-      protectedTags: ["^v\\d"],
-    });
+    expect(m.packages).toEqual([
+      { match: packageName("baseimages/buildcache") },
+      { match: packageName("baseimages/golang") },
+    ]);
   });
 
-  it("accepts top-level retention overrides", () => {
+  it("accepts a full retention block", () => {
     const m = validateManifest(
-      base({ keepLast: 5, keepDays: 15, graceDays: 15, protectedTags: ["^stable$"] }),
+      base({ retention: { keepMajors: 1, keepMinors: 3, keepPatches: 5, keepDays: 30 } }),
     );
-    expect(m).toMatchObject({
-      keepLast: 5,
-      keepDays: 15,
-      graceDays: 15,
-      protectedTags: ["^stable$"],
-    });
+    expect(m.retention).toEqual({ keepMajors: 1, keepMinors: 3, keepPatches: 5, keepDays: 30 });
+  });
+
+  it("accepts a partial retention block, leaving the rest to default at resolve time", () => {
+    const m = validateManifest(base({ retention: { keepDays: 7 } }));
+    expect(m.retention).toEqual({ keepDays: 7 });
+  });
+
+  it("accepts a manifest with no retention block at all", () => {
+    const m = validateManifest(base());
+    expect(m.retention).toBeUndefined();
   });
 
   it("accepts a manifest with no canary at all (validate/plan-only usage)", () => {
@@ -129,10 +118,59 @@ describe("validateManifest — canary rejections", () => {
   });
 });
 
+describe("validateManifest — retention rejections", () => {
+  it("rejects an unknown field under retention", () => {
+    expect(() => validateManifest(base({ retention: { bogus: 1 } }))).toThrow(
+      /unknown field "bogus"/,
+    );
+  });
+
+  it("rejects a retention block that is not an object", () => {
+    expect(() => validateManifest(base({ retention: "nope" }))).toThrow(
+      /"retention" must be an object/,
+    );
+  });
+
+  it("rejects a non-integer or negative value for any retention field", () => {
+    expect(() => validateManifest(base({ retention: { keepMajors: -1 } }))).toThrow(
+      /"keepMajors" must be a non-negative integer/,
+    );
+    expect(() => validateManifest(base({ retention: { keepMinors: 1.5 } }))).toThrow(
+      /"keepMinors" must be a non-negative integer/,
+    );
+    expect(() => validateManifest(base({ retention: { keepPatches: "5" } }))).toThrow(
+      /"keepPatches" must be a non-negative integer/,
+    );
+    expect(() => validateManifest(base({ retention: { keepDays: -1 } }))).toThrow(
+      /"keepDays" must be a non-negative integer/,
+    );
+  });
+});
+
 describe("validateManifest — rejections", () => {
   it("rejects an unknown top-level field", () => {
     expect(() => validateManifest(base({ extra: true }))).toThrow(ManifestError);
     expect(() => validateManifest(base({ extra: true }))).toThrow(/unknown field "extra"/);
+  });
+
+  it("AC 10: rejects every field this schema removed, naming the offending field", () => {
+    expect(() => validateManifest(base({ keepLast: 5 }))).toThrow(/unknown field "keepLast"/);
+    expect(() => validateManifest(base({ protectedTags: ["^latest$"] }))).toThrow(
+      /unknown field "protectedTags"/,
+    );
+    expect(() => validateManifest(base({ graceDays: 30 }))).toThrow(/unknown field "graceDays"/);
+    expect(() => validateManifest(base({ packages: [{ match: "x", policy: "cache" }] }))).toThrow(
+      /unknown field "policy"/,
+    );
+    expect(() => validateManifest(base({ packages: [{ match: "x", keepLast: 3 }] }))).toThrow(
+      /unknown field "keepLast"/,
+    );
+    expect(() => validateManifest(base({ packages: [{ match: "x", keepDays: 3 }] }))).toThrow(
+      /unknown field "keepDays"/,
+    );
+    expect(() =>
+      validateManifest(base({ packages: [{ match: "x", protectedTags: ["^v"] }] })),
+    ).toThrow(/unknown field "protectedTags"/);
   });
 
   it("rejects an unknown per-package field", () => {
@@ -193,51 +231,6 @@ describe("validateManifest — rejections", () => {
     );
   });
 
-  it("rejects an invalid policy value", () => {
-    expect(() => validateManifest(base({ packages: [{ match: "x", policy: "bogus" }] }))).toThrow(
-      /"policy" must be "cache"/,
-    );
-  });
-
-  it("rejects a non-integer or negative keepLast/keepDays/graceDays, per-package and top-level", () => {
-    expect(() => validateManifest(base({ packages: [{ match: "x", keepLast: -1 }] }))).toThrow(
-      /"keepLast" must be a non-negative integer/,
-    );
-    expect(() => validateManifest(base({ packages: [{ match: "x", keepDays: 1.5 }] }))).toThrow(
-      /"keepDays" must be a non-negative integer/,
-    );
-    expect(() => validateManifest(base({ packages: [{ match: "x", graceDays: "10" }] }))).toThrow(
-      /"graceDays" must be a non-negative integer/,
-    );
-    expect(() => validateManifest(base({ keepLast: -1 }))).toThrow(
-      /"keepLast" must be a non-negative integer/,
-    );
-    expect(() => validateManifest(base({ keepDays: -1 }))).toThrow(
-      /"keepDays" must be a non-negative integer/,
-    );
-    expect(() => validateManifest(base({ graceDays: -1 }))).toThrow(
-      /"graceDays" must be a non-negative integer/,
-    );
-  });
-
-  it("rejects a malformed protectedTags regex, per-package and top-level", () => {
-    expect(() =>
-      validateManifest(base({ packages: [{ match: "x", protectedTags: ["("] }] })),
-    ).toThrow(/not a valid regular expression/);
-    expect(() => validateManifest(base({ protectedTags: ["("] }))).toThrow(
-      /not a valid regular expression/,
-    );
-  });
-
-  it("rejects protectedTags that is not an array of strings", () => {
-    expect(() => validateManifest(base({ protectedTags: "not-an-array" }))).toThrow(
-      /"protectedTags" must be an array of strings/,
-    );
-    expect(() => validateManifest(base({ protectedTags: [1, 2] }))).toThrow(
-      /"protectedTags" must be an array of strings/,
-    );
-  });
-
   it("rejects a manifest that is not an object", () => {
     expect(() => validateManifest("nope")).toThrow(/manifest must be an object/);
     expect(() => validateManifest(null)).toThrow(/manifest must be an object/);
@@ -254,60 +247,42 @@ describe("validateManifest — rejections", () => {
 describe("resolvePolicy", () => {
   const manifest: Manifest = { version: 1, owner: "pyck-ai", packages: [] };
 
-  it("applies hardcoded defaults with no overrides anywhere", () => {
-    const p = resolvePolicy({ match: packageName("x") }, manifest);
-    expect(p.keepLast).toBe(DEFAULT_KEEP_LAST);
-    expect(p.keepDays).toBe(DEFAULT_KEEP_DAYS);
-    expect(p.graceDays).toBe(DEFAULT_GRACE_DAYS);
-    expect(p.protectedTagPatterns.map((r) => r.source)).toEqual(
-      DEFAULT_PROTECTED_TAGS.map((s) => new RegExp(s).source),
-    );
+  it("applies hardcoded defaults with no retention block at all", () => {
+    const p = resolvePolicy(manifest);
+    expect(p).toEqual({
+      keepMajors: DEFAULT_KEEP_MAJORS,
+      keepMinors: DEFAULT_KEEP_MINORS,
+      keepPatches: DEFAULT_KEEP_PATCHES,
+      keepDays: DEFAULT_KEEP_DAYS,
+    });
   });
 
-  it("manifest-level overrides beat hardcoded defaults", () => {
+  it("a full retention block overrides every default", () => {
     const m: Manifest = {
       ...manifest,
-      keepLast: 1,
-      keepDays: 2,
-      graceDays: 3,
-      protectedTags: ["^x$"],
+      retention: { keepMajors: 1, keepMinors: 2, keepPatches: 3, keepDays: 7 },
     };
-    const p = resolvePolicy({ match: packageName("x") }, m);
-    expect(p).toMatchObject({ keepLast: 1, keepDays: 2, graceDays: 3 });
-    expect(p.protectedTagPatterns.map((r) => r.source)).toEqual(["^x$"]);
+    expect(resolvePolicy(m)).toEqual({ keepMajors: 1, keepMinors: 2, keepPatches: 3, keepDays: 7 });
   });
 
-  it("per-package overrides beat manifest-level overrides", () => {
-    const m: Manifest = { ...manifest, keepLast: 1, keepDays: 2, graceDays: 3 };
-    const p = resolvePolicy(
-      {
-        match: packageName("x"),
-        keepLast: 10,
-        keepDays: 20,
-        graceDays: 30,
-        protectedTags: ["^y$"],
-      },
-      m,
-    );
-    expect(p).toMatchObject({ keepLast: 10, keepDays: 20, graceDays: 30 });
-    expect(p.protectedTagPatterns.map((r) => r.source)).toEqual(["^y$"]);
+  it("a partial retention block defaults only the missing fields", () => {
+    const m: Manifest = { ...manifest, retention: { keepDays: 7 } };
+    expect(resolvePolicy(m)).toEqual({
+      keepMajors: DEFAULT_KEEP_MAJORS,
+      keepMinors: DEFAULT_KEEP_MINORS,
+      keepPatches: DEFAULT_KEEP_PATCHES,
+      keepDays: 7,
+    });
   });
 
-  it("policy: cache keeps every tag and ignores keepLast/keepDays/protectedTags, but graceDays still resolves normally", () => {
-    const m: Manifest = { ...manifest, graceDays: 9 };
-    const p = resolvePolicy(
-      {
-        match: packageName("x"),
-        policy: "cache",
-        keepLast: 999,
-        keepDays: 999,
-        protectedTags: ["^never-matches-this-specific-pattern$"],
-      },
-      m,
-    );
-    expect(p.protectedTagPatterns.map((r) => r.source)).toEqual([
-      new RegExp(CACHE_POLICY_PATTERN).source,
-    ]);
-    expect(p.graceDays).toBe(9);
+  it("is identical for every package — there is no per-package resolution any more", () => {
+    const m: Manifest = {
+      ...manifest,
+      packages: [{ match: packageName("a") }, { match: packageName("b") }],
+      retention: { keepMajors: 2 },
+    };
+    // `resolvePolicy` takes only the manifest — the same call answers
+    // for every package, unlike the old per-entry override chain.
+    expect(resolvePolicy(m)).toEqual(resolvePolicy(m));
   });
 });

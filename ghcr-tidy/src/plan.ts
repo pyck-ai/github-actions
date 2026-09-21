@@ -18,16 +18,23 @@ import type { SkipReason } from "./skip-reason.js";
 const MS_PER_DAY = 86_400_000;
 
 /**
- * Age-based policy applied to EVERY version regardless of tags — the
- * `graceDays` half of the two-knob age protection described on
- * {@link RetentionPolicy}. Kept as a separate type (rather than folding
- * `graceDays` into `RetentionPolicy`) so the two floors cannot be confused
- * for one call site: `keepDays` is a `retain()` input for ROOTS only,
- * `graceDays` gates membership in `INFLIGHT` for every version in `ALL`.
+ * `retention` is the age-INDEPENDENT half (semver windowing — see
+ * `retain.ts`'s `RetentionPolicy` doc): it decides which TAGS survive,
+ * with no age component of its own at all. `keepDays` is the sole
+ * age-based control left in this tool, applied uniformly to EVERY
+ * version regardless of tags — it is what makes "any version younger
+ * than `keepDays` is never deleted, tagged or not" an independent
+ * guarantee (`INFLIGHT` below) rather than something retention also has
+ * to express. This is the field the old two-knob split (`keepDays` on
+ * roots, `graceDays` on every version) collapsed into: the root-only age
+ * clause that caused the 2026-09-20 incident is gone, and this is the
+ * survivor, carrying `graceDays`'s old semantics under the name the
+ * repo owner actually uses. Lowering it is the single most dangerous
+ * edit available in this tool's configuration.
  */
 export interface PlanPolicy {
   readonly retention: RetentionPolicy;
-  readonly graceDays: number;
+  readonly keepDays: number;
 }
 
 export interface PlanPackageOptions {
@@ -50,7 +57,7 @@ export interface PlanPackageOptions {
    * (see {@link computeReachabilityToleratingBrokenRoots}) so the rest of
    * the package can still be planned, and the broken root's own version
    * falls into `DELETE` through the ordinary `ALL \ (REACHABLE union
-   * INFLIGHT)` set subtraction — still subject to `graceDays` like any
+   * INFLIGHT)` set subtraction — still subject to `keepDays` like any
    * other digest, and still requiring the CLI's separate `--apply` gesture
    * to actually delete anything. See `cli.ts`'s `--delete-broken-roots`.
    */
@@ -95,7 +102,7 @@ export interface PlannedPlan {
    * root actually qualified (see
    * {@link computeReachabilityToleratingBrokenRoots}). Reporting-only:
    * whether a broken root's digest also appears in `groups` depends
-   * entirely on the ordinary `graceDays`/`DELETE` arithmetic, exactly
+   * entirely on the ordinary `keepDays`/`DELETE` arithmetic, exactly
    * like any other digest.
    */
   readonly brokenRootDigests: readonly Digest[];
@@ -144,7 +151,7 @@ export interface ReachabilityWithBrokenRootsResult {
  * it is simply no longer a keep-root, so `planPackage`'s ordinary
  * `ALL \ (REACHABLE union INFLIGHT)` set subtraction picks it up exactly
  * like any other digest that is not reachable from anything — including
- * still respecting `graceDays`, on the chance a "broken" root is actually
+ * still respecting `keepDays`, on the chance a "broken" root is actually
  * an in-flight push race (the index pushed, its child not yet) rather
  * than settled corruption.
  */
@@ -206,9 +213,9 @@ function mergeEdges(
  * ```
  * ALL         = Packages API versions (id, digest, createdAt) — version ids and ages ONLY
  * LIVE_ROOTS  = image(TAGMAP), from the REGISTRY tag list (never the Packages API's `tags`)
- * KEEP_ROOTS  = { d in LIVE_ROOTS : retain(d) }
+ * KEEP_ROOTS  = { d in LIVE_ROOTS : exists t in d.tags . RETAINED(t) } — see `retain.ts`
  * REACHABLE   = least fixed point containing KEEP_ROOTS, closed under CHILDREN
- * INFLIGHT    = { v in ALL : age(v) < graceDays }
+ * INFLIGHT    = { v in ALL : age(v) < keepDays }
  * DELETE      = ALL \ (REACHABLE union INFLIGHT)
  * ```
  *
@@ -247,7 +254,7 @@ export async function planPackage(options: PlanPackageOptions): Promise<PackageP
   const { roots, rootChildren } = liveRootsResult;
 
   const now = clock.now();
-  const keepRoots = computeKeepRoots(roots, versionsByDigest, policy.retention, now);
+  const keepRoots = computeKeepRoots(roots, policy.retention);
 
   const { result: reachResult, brokenRoots } = await computeReachabilityToleratingBrokenRoots(
     path,
@@ -269,7 +276,7 @@ export async function planPackage(options: PlanPackageOptions): Promise<PackageP
   const inflight = new Set<Digest>();
   for (const v of versions) {
     const ageDays = (now.getTime() - v.createdAt.getTime()) / MS_PER_DAY;
-    if (ageDays < policy.graceDays) {
+    if (ageDays < policy.keepDays) {
       inflight.add(v.digest);
     }
   }

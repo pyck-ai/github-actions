@@ -1,7 +1,5 @@
 import type { Digest, Tag } from "./domain.js";
-import type { PackageVersionRecord } from "./ports.js";
-
-const MS_PER_DAY = 86_400_000;
+import { compareVersionsAscending, kindKeyOf, parseTag, type ParsedTag } from "./tag-kind.js";
 
 /** A live, tagged registry root: a digest and the FULL set of tags (from the registry, digest-scoped) that point at it. */
 export interface LiveRoot {
@@ -10,109 +8,225 @@ export interface LiveRoot {
 }
 
 /**
- * Retention policy for {@link computeKeepRoots}. `keepDays` and
- * `graceDays` are deliberately DIFFERENT knobs answering different
- * questions, both defaulting to 30 and not to be diverged from casually:
- * `keepDays` protects TAGGED ROOTS via this policy; `graceDays` (applied
- * separately, in `plan.ts`, against every version regardless of tags)
- * protects digests pushed by a build that has not yet tagged them.
- * Lowering either below the agreed floor deletes inside it.
+ * Uniform, semver-aware retention: keep the newest `keepMajors` majors of
+ * every kind (`tag-kind.ts`'s `(prefix, suffix)` grouping); within each
+ * kept major, the newest `keepMinors` minors; within each kept minor, the
+ * newest `keepPatches` patches. Applied identically to every package —
+ * there is no per-package override anywhere in this policy.
+ *
+ * This is the WHOLE age-independent half of retention. Age lives entirely
+ * in `plan.ts`'s `PlanPolicy.keepDays`, applied to every version
+ * regardless of tags: that is what makes "any version younger than
+ * `keepDays` is never deleted" an independent guarantee rather than
+ * something this policy has to also express. Unversioned tags (`latest`,
+ * `alpine`, `debian-trixie`, every `buildcache` tag) need no field here
+ * at all — they are always-retained singleton kinds by construction (see
+ * `tag-kind.ts`'s module doc).
  */
 export interface RetentionPolicy {
-  /** A tag matching any of these regexes is protected, and so is every OTHER tag sharing its digest (digest-scoped, not tag-scoped). */
-  readonly protectedTagPatterns: readonly RegExp[];
-  /** The newest N roots (by `PackageVersionRecord.createdAt`) are kept regardless of tag or age. */
-  readonly keepLast: number;
-  /** A root younger than this many days is kept regardless of tag or count. */
-  readonly keepDays: number;
+  readonly keepMajors: number;
+  readonly keepMinors: number;
+  readonly keepPatches: number;
 }
 
-function isProtectedByTag(tags: ReadonlySet<Tag>, patterns: readonly RegExp[]): boolean {
-  if (patterns.length === 0) {
-    return false;
-  }
+interface VersionedEntry {
+  readonly tag: Tag;
+  readonly version: readonly number[];
+  readonly level: 1 | 2 | 3;
+}
+
+/** Descending-version top-N, used at every one of the three fixed levels below. */
+function topN<T>(items: readonly T[], n: number, versionOf: (item: T) => readonly number[]): T[] {
+  return [...items]
+    .sort((a, b) => compareVersionsAscending(versionOf(b), versionOf(a)))
+    .slice(0, Math.max(0, n));
+}
+
+/**
+ * `RETAINED(tags)`: which of `tags` the resolved policy decided to keep,
+ * per this module's doc. Pure and package-scoped — `tags` must be every
+ * tag of ONE package (kinds are grouped within this call only, never
+ * merged across packages).
+ *
+ * Implements the version LATTICE correction to the naive per-tag
+ * algorithm (see the issue this ships for): windows range over every
+ * VERSION that occurs anywhere in a kind, not over the tags that happen
+ * to exist at each level. `majorSet` below is built from EVERY versioned
+ * entry regardless of level, so a kind whose only member is
+ * `alpine-3.23` (minor level, major `3` with no `alpine-3` tag anywhere —
+ * `golang`'s real shape) still produces a major candidate `3`. The same
+ * reasoning applies one level down: a kind's minor candidates are drawn
+ * from every entry at level 2 OR 3 (`|v| >= 2`), so a patch tag whose
+ * minor has no literal minor-level tag still contributes its minor to
+ * the window.
+ *
+ * A patch tag's own window (`keptPatches`) is built ONLY from
+ * three-component versions. This is what stops a minor alias like
+ * `1.26` from ever competing against a patch tag like `1.26.5` for a
+ * place in the patch window — the separation is structural (different
+ * source sets), not a guard that could be forgotten.
+ *
+ * The nesting is a fixed three levels (major/minor/patch), matching the
+ * tag generator's fixed three-component version grammar — written as
+ * such rather than as an open-ended loop, since a loop would imply a
+ * fourth level is meaningful, which `tag-kind.ts`'s parse rule already
+ * forbids (more than 3 components is unversioned).
+ */
+export function computeRetainedTags(
+  tags: readonly Tag[],
+  policy: RetentionPolicy,
+): ReadonlySet<Tag> {
+  const retained = new Set<Tag>();
+  const kinds = new Map<string, VersionedEntry[]>();
+
   for (const t of tags) {
-    if (patterns.some((p) => p.test(t))) {
-      return true;
+    const parsed: ParsedTag = parseTag(t);
+    if (parsed.kind === "unversioned") {
+      // Always-retained singleton kind — see this module's and
+      // `tag-kind.ts`'s doc for why no allow-list is needed here.
+      retained.add(t);
+      continue;
+    }
+    const key = kindKeyOf(parsed);
+    const list = kinds.get(key) ?? [];
+    list.push({ tag: t, version: parsed.version, level: parsed.level });
+    kinds.set(key, list);
+  }
+
+  for (const entries of kinds.values()) {
+    const byMajor = new Map<number, VersionedEntry[]>();
+    for (const e of entries) {
+      const major = e.version[0] ?? 0;
+      const list = byMajor.get(major) ?? [];
+      list.push(e);
+      byMajor.set(major, list);
+    }
+
+    const keptMajors = topN([...byMajor.keys()], policy.keepMajors, (m) => [m]);
+    for (const major of keptMajors) {
+      const majorEntries = byMajor.get(major) ?? [];
+      for (const e of majorEntries) {
+        if (e.level === 1) {
+          retained.add(e.tag);
+        }
+      }
+
+      const byMinor = new Map<number, VersionedEntry[]>();
+      for (const e of majorEntries) {
+        if (e.level < 2) {
+          continue;
+        }
+        const minor = e.version[1] ?? 0;
+        const list = byMinor.get(minor) ?? [];
+        list.push(e);
+        byMinor.set(minor, list);
+      }
+
+      const keptMinors = topN([...byMinor.keys()], policy.keepMinors, (m) => [major, m]);
+      for (const minor of keptMinors) {
+        const minorEntries = byMinor.get(minor) ?? [];
+        for (const e of minorEntries) {
+          if (e.level === 2) {
+            retained.add(e.tag);
+          }
+        }
+
+        const patchEntries = minorEntries.filter((e) => e.level === 3);
+        const keptPatches = topN(patchEntries, policy.keepPatches, (e) => e.version);
+        for (const e of keptPatches) {
+          retained.add(e.tag);
+        }
+      }
     }
   }
-  return false;
+
+  return retained;
 }
 
 /**
- * Age in days of a root, from the matching `PackageVersionRecord`, or
- * `undefined` if the root's digest has no matching entry in the Packages
- * API listing (e.g. a digest pushed so recently that API is not yet
- * consistent). Age `undefined` is NOT the same as age `0`: see
- * {@link isRetainedByAge}.
+ * The floor set for `verify.ts`'s `ExpiryProducer`: the single newest
+ * literal tag of every kind, computed directly from the version lattice
+ * rather than from {@link computeRetainedTags}'s policy-windowed result —
+ * an independent safety net so that a misconfigured policy (e.g.
+ * `keepMajors: 0`) cannot, by itself, cause the currently-newest build of
+ * a kind to be reported as intended expiry. `verify.ts`'s
+ * `resolveExpirySet` enforces that `expiry` and `floor` stay disjoint; at
+ * the recommended policy this floor is already a subset of
+ * {@link computeRetainedTags}'s result and never fires that check, but it
+ * exists to catch the case where it would not be.
+ *
+ * An unversioned tag's floor is itself: a singleton kind's only member is
+ * trivially its own newest.
  */
-function ageDaysOf(
-  d: Digest,
-  versionsByDigest: ReadonlyMap<Digest, PackageVersionRecord>,
-  now: Date,
-): number | undefined {
-  const v = versionsByDigest.get(d);
-  if (!v) {
-    return undefined;
+export function computeFloorTags(tags: readonly Tag[]): ReadonlySet<Tag> {
+  const floor = new Set<Tag>();
+  const newestByKind = new Map<string, VersionedEntry>();
+
+  for (const t of tags) {
+    const parsed: ParsedTag = parseTag(t);
+    if (parsed.kind === "unversioned") {
+      floor.add(t);
+      continue;
+    }
+    const key = kindKeyOf(parsed);
+    const entry: VersionedEntry = { tag: t, version: parsed.version, level: parsed.level };
+    const current = newestByKind.get(key);
+    if (!current || compareVersionsAscending(entry.version, current.version) > 0) {
+      newestByKind.set(key, entry);
+    }
   }
-  return (now.getTime() - v.createdAt.getTime()) / MS_PER_DAY;
+
+  for (const entry of newestByKind.values()) {
+    floor.add(entry.tag);
+  }
+
+  return floor;
 }
 
 /**
- * A root whose age cannot be determined (no matching Packages API entry)
- * is retained unconditionally. This is the fail-safe choice, not an
- * oversight: an unknown age might mean "younger than keepDays", and
- * treating unknown as "old enough to prune" would delete a digest we have
- * no evidence is safe to delete.
- */
-function isRetainedByAge(ageDays: number | undefined, keepDays: number): boolean {
-  return ageDays === undefined || ageDays < keepDays;
-}
-
-/**
- * `KEEP_ROOTS = { d in LIVE_ROOTS : retain(d) }`.
+ * `KEEP_ROOTS = { r in LIVE_ROOTS : exists t in r.tags . RETAINED(t) }` —
+ * a single existential over {@link computeRetainedTags}'s result,
+ * replacing the old multi-clause `computeKeepRoots` (protected-tag
+ * pattern, newest-`keepLast`, root-level `keepDays`) entirely. The cross-
+ * reference is keep-ROOT membership, not a filter applied to `DELETE`
+ * afterwards: a retained tag protects its digest's entire manifest
+ * closure via `plan.ts`'s reachability walk seeded from this set, so
+ * filtering `DELETE` after the fact would keep an index's tag while
+ * still deleting the platform manifests it points at — the exact
+ * broken-root corruption `deleteBrokenRoots` exists to remediate.
  *
- * `retain(d)` is true if ANY of: `d` carries a protected tag (digest-scoped
- * — protecting the digest `latest` points at protects every other tag on
- * that same digest, by construction, since {@link LiveRoot.tags} is
- * already the full set of tags sharing that digest), `d` is among the
- * newest `keepLast` roots by creation time, or `d` is younger than
- * `keepDays` (see {@link isRetainedByAge} for the unknown-age case).
+ * Purely additive, like the clauses it replaces: no rule anywhere in
+ * this module ever removes a digest from the keep set once added.
+ * Deletion happens only by absence, in `plan.ts`'s
+ * `ALL \ (REACHABLE union INFLIGHT)` subtraction.
  *
- * Deterministic: same input roots + versions + policy + now always
- * produces the same keep set, because the newest-N ranking uses a stable
- * sort and set iteration order in this module never depends on insertion
- * from an external, non-deterministic source (the ordering that reaches
- * this function is the caller's business; this function iterates strictly
- * in the order given).
+ * Age plays NO part here — see {@link RetentionPolicy}'s doc for where
+ * it lives instead (`plan.ts`'s `PlanPolicy.keepDays`, applied uniformly
+ * to every version). A tagged root can therefore be deleted purely for
+ * falling outside its kind's kept window, once old enough: this is a
+ * deliberate capability, not a regression of the old root protection —
+ * it is what makes it possible to ever retire a frozen series at all.
  */
 export function computeKeepRoots(
   roots: readonly LiveRoot[],
-  versionsByDigest: ReadonlyMap<Digest, PackageVersionRecord>,
   policy: RetentionPolicy,
-  now: Date,
 ): ReadonlySet<Digest> {
+  const allTags: Tag[] = [];
+  for (const root of roots) {
+    for (const t of root.tags) {
+      allTags.push(t);
+    }
+  }
+  const retained = computeRetainedTags(allTags, policy);
+
   const keep = new Set<Digest>();
-
   for (const root of roots) {
-    if (isProtectedByTag(root.tags, policy.protectedTagPatterns)) {
-      keep.add(root.digest);
+    for (const t of root.tags) {
+      if (retained.has(t)) {
+        keep.add(root.digest);
+        break;
+      }
     }
   }
-
-  const knownAge = roots
-    .map((root) => ({ root, createdAt: versionsByDigest.get(root.digest)?.createdAt }))
-    .filter((entry): entry is { root: LiveRoot; createdAt: Date } => entry.createdAt !== undefined)
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-  for (const { root } of knownAge.slice(0, Math.max(0, policy.keepLast))) {
-    keep.add(root.digest);
-  }
-
-  for (const root of roots) {
-    if (isRetainedByAge(ageDaysOf(root.digest, versionsByDigest, now), policy.keepDays)) {
-      keep.add(root.digest);
-    }
-  }
-
   return keep;
 }

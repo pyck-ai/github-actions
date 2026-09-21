@@ -48,9 +48,16 @@ attempted, budget partially spent) is worse than none.
   manifest (closed schema: an unknown key is a hard error, because in a
   deletion tool a silently ignored config key produces a green run that did
   the wrong thing). Package entries carry full package names; there is no
-  repo-prefix concept to concatenate. It computes the delete set
-  (registry-rooted keep set, reachability, grace window), emits a plan, and
-  applies it. Applying requires a persisted plan re-validated via a
+  repo-prefix concept to concatenate. Retention is one uniform, semver-aware
+  algorithm applied identically to every package, with no per-package
+  override: a tag decomposes into a kind and a version by a single lexical
+  rule, and the newest N majors, N minors within each, and N patches within
+  each are kept — a digest is a keep-root if at least one of its tags
+  survives that windowing. Independently, any version younger than
+  `keepDays` is never deleted, tagged or not — the single remaining
+  age-based control, and the most dangerous one to lower. It computes the
+  delete set (registry-rooted keep set, reachability, day window), emits a
+  plan, and applies it. Applying requires a persisted plan re-validated via a
   capability gate (`grantApply`); deletion runs as groups (parent first, a
   failed parent abandons its group) and is only reachable through a
   `Mutator`. After each package's deletions it verifies the registry directly
@@ -64,9 +71,11 @@ attempted, budget partially spent) is worse than none.
   decision, recomputed independently at verification time, never read off
   the plan): a tag it expected gone is reported as `expired`, not a
   regression, and a tag it expected gone but which still resolves is
-  reported separately without aborting anything. Today this ships wired to
-  a null producer that always returns the empty set, so it has no observable
-  effect; a later change supplies the real, policy-driven producer. A post-apply
+  reported separately without aborting anything. This ships wired to the
+  real, policy-driven producer: it retires exactly the tags the retention
+  windowing above would exclude, independently re-derived at verification
+  time rather than read off the plan, so a bug anywhere from the planner's
+  keep-root rule downward is still caught. A post-apply
   regression also opens a labelled issue with a cold-read incident report and
   trips a circuit breaker: every later run checks that issue before touching
   anything (including the canary) and refuses all deletions while it is

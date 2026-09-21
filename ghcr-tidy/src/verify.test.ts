@@ -8,6 +8,7 @@ import {
   compareSnapshots,
   memoryRegressionSink,
   nullExpiryProducer,
+  policyDrivenExpiryProducer,
   resolveExpirySet,
   snapshotPackage,
   type ExpiryProducer,
@@ -18,10 +19,10 @@ const path = registryPathFor("pyck-ai", packageName("golang"));
 
 /** A minimal, fully-resolved policy for tests that only care about it being passed through, not its values. */
 const anyPolicy: ResolvedPolicy = {
-  protectedTagPatterns: [],
-  keepLast: 10,
+  keepMajors: 1,
+  keepMinors: 3,
+  keepPatches: 5,
   keepDays: 30,
-  graceDays: 30,
 };
 
 function healthy(d: string): TagSnapshot {
@@ -510,6 +511,41 @@ describe("compareSnapshots: expected expiry", () => {
     expect(withEmptySet).toEqual(withoutOption);
     expect(withEmptySet.expired).toEqual([]);
     expect(withEmptySet.notExpired).toEqual([]);
+  });
+});
+
+describe("policyDrivenExpiryProducer", () => {
+  const policy: ResolvedPolicy = { keepMajors: 0, keepMinors: 0, keepPatches: 0, keepDays: 30 };
+
+  it("retires exactly the tags the windowing algorithm would exclude, keeps unversioned tags out of expiry, and reports nothing unclassifiable", () => {
+    const result = policyDrivenExpiryProducer.produce(
+      [tag("latest"), tag("1.0"), tag("2.0")],
+      policy,
+    );
+    expect(result.unclassifiable).toEqual(new Set());
+    expect(result.expiry.has(tag("latest"))).toBe(false);
+    // Both "1.0" and "2.0" fall outside a top-0-majors window.
+    expect(result.expiry).toEqual(new Set([tag("1.0"), tag("2.0")]));
+  });
+
+  it("resolveExpirySet never rejects the real producer's own output: floor and expiry stay disjoint at the recommended policy", () => {
+    const generous: ResolvedPolicy = {
+      keepMajors: 1,
+      keepMinors: 3,
+      keepPatches: 5,
+      keepDays: 30,
+    };
+    const tags = [
+      tag("1"),
+      tag("1.0"),
+      tag("1.0.0"),
+      tag("2"),
+      tag("2.0"),
+      tag("2.0.0"),
+      tag("latest"),
+    ];
+    const result = resolveExpirySet(policyDrivenExpiryProducer, tags, generous);
+    expect(result.ok).toBe(true);
   });
 });
 
