@@ -1,20 +1,24 @@
 name: release
 run-name: Release
 
-# Fires on any pushed tag matching v* (v0.1.0, v1.2.3, ...). Publishing only,
-# never releasing: this workflow does not create a GitHub Release and does
-# not move or retag anything.
+# Fires on any pushed tag matching v* (v0.1.0, v1.2.3, ...). Verification
+# only: this workflow publishes nothing, does not create a GitHub Release,
+# and does not move or retag anything. Its whole job is to guarantee that a
+# tag can never point at a commit that fails lint/typecheck/test/build or
+# carries a stale dist/, which is the property consumers rely on when they
+# pin `uses: pyck-ai/github-actions/...@<sha> # vX.Y.Z`. A tag is the unit
+# Renovate tracks, so a bad tag propagates to every consumer automatically;
+# this gate is what makes tagging safe enough to automate.
 on:
   push:
     tags:
       - "v*"
 
-# Keyed on the tag ref so two different tag pushes can publish concurrently,
-# but a re-push of the same tag (e.g. after deleting and recreating it)
-# queues behind any run already in flight instead of racing it. Never
-# cancel a run here: it may already be mid-publish to the registry, and an
-# interrupted `npm publish` is exactly the kind of half-done state this
-# workflow exists to avoid.
+# Keyed on the tag ref so two different tag pushes verify concurrently, but
+# a re-push of the same tag (e.g. after deleting and recreating it) queues
+# behind any run already in flight instead of racing it, so the second run
+# cannot report a verdict on the tag before the first has finished forming
+# one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -24,10 +28,10 @@ permissions: {}
 
 # Deliberately ubuntu-latest, not self-hosted. The self-hosted ARC pool runs
 # an image built by pyck-ai/github-runner, which itself consumes this repo's
-# tooling (ghcr-tidy/ghcr-audit). If publishing a fix to that
-# tooling could only run on that pool, a bad release could wedge the org
-# with no way to publish the fix that unwedges it. This workflow is the
-# break-glass path and must not depend on the thing it may need to repair.
+# tooling (ghcr-tidy/ghcr-audit). If validating a fix to that tooling could
+# only run on that pool, a bad tag could wedge the org with no way to
+# certify the fix that unwedges it. This workflow is the break-glass path
+# and must not depend on the thing it may need to repair.
 
 jobs:
   verify-tag:
@@ -117,39 +121,3 @@ jobs:
                 ;;
             esac
           done
-
-  publish:
-    needs: [verify-tag, verify]
-    # Needs to read the tagged source and write published package versions
-    # to GitHub Packages; nothing else.
-    permissions:
-      contents: read
-      packages: write
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
-          registry-url: "https://npm.pkg.github.com"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Publish package(s) to GitHub Packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if node -p "Boolean(require('./package.json').workspaces)" | grep -q true; then
-            echo "package.json declares workspaces — publishing each workspace"
-            npm publish --workspaces --access public
-          else
-            echo "package.json declares no workspaces — publishing the single root package"
-            npm publish --access public
-          fi

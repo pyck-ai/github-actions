@@ -1,7 +1,8 @@
 {
   "name": "@pyck-ai/github-actions",
   "version": "0.1.0",
-  "description": "Shared TypeScript registry core and CLI tools (ghcr-tidy, ghcr-audit) for pyck-ai GHCR maintenance.",
+  "private": true,
+  "description": "Shared TypeScript registry core and CLI tools (ghcr-tidy, ghcr-audit) for pyck-ai GHCR maintenance. Consumed via GitHub `uses:` workflow refs, never as an npm dependency; `private` blocks publication so a stray `npm publish` cannot contradict that.",
   "type": "module",
   "engines": {
     "node": ">=22"
