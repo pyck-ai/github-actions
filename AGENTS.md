@@ -12,6 +12,11 @@ each one does and how a consumer pins it.
 - `npm run build` — `tsc -p tsconfig.json`.
 - `npm run bundle` — rebuilds `ghcr-tidy/dist/` from `ghcr-tidy/src/`.
 - `npm run format:check` — prettier check (`npm run format` to fix).
+- `task generate` — regenerates `.github/PULL_REQUEST_TEMPLATE.md` and
+  `.github/ISSUE_TEMPLATE/*.yml` from `src/` (`task generate:check` to
+  verify without writing; CI's `community-files.yml` runs the equivalent
+  `go run ./scripts/generate-community-files.go --check`, since `task`
+  isn't preinstalled on GitHub-hosted runners).
 
 ## Traps that have each cost a commit here
 

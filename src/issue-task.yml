@@ -1,0 +1,98 @@
+name: Task
+type: task
+description: >-
+  A foundational unit of work that is neither a defect nor a new feature, often
+  representing necessary internal activities, maintenance, documentation, and
+  preparatory work.
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        A task is a foundational unit of work that is neither a defect nor a new
+        feature. Tasks represent necessary internal activities, maintenance,
+        documentation, and preparatory work that keeps the project healthy and
+        moving forward.
+
+        Common examples include: maintenance work, technical investigations,
+        documentation updates, refactoring, testing infrastructure, build
+        configuration, dependency updates, research, setup activities, process
+        improvements, and organizational work.
+
+        Please provide clear details using the "What, Why, How" approach to help
+        us understand and prioritize the work.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What?
+      description: >-
+        Describe exactly what work needs to be done. Be specific about the scope
+        and deliverables.
+      placeholder: |-
+        Example:
+
+        Document all GraphQL mutations and queries related to inventory
+        movements, including createInventoryItemMovement,
+        executeInventoryItemMovement, and repositoryMovement operations. Create
+        detailed examples showing how to move items between locations, update
+        quantities, and track movement history. Include error handling scenarios
+        and best practices for warehouse operations.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: >-
+        Explain why this task is necessary. What problem does it solve or what
+        value does it provide to the project or team?
+      placeholder: |-
+        Example:
+
+        Customer onboarding teams are spending 3-4 hours explaining inventory
+        movement concepts to new warehouse managers. Existing API documentation
+        focuses on individual mutations but doesn't explain the complete
+        workflow for moving inventory between locations. Clear documentation
+        would reduce onboarding time and help customers implement pyck more
+        efficiently in their warehouses.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: >-
+        List the criteria that define when this task is complete. What
+        deliverables or outcomes indicate successful completion?
+      placeholder: |-
+        Example:
+
+        - [ ] Documentation page created at docs.pyck.cloud/api/inventory-movements
+        - [ ] All 3 inventory movement mutations documented with parameter descriptions
+        - [ ] At least 5 code examples provided covering common scenarios
+        - [ ] Workflow diagram included showing movement state transitions
+        - [ ] Customer success team has reviewed and approved the content
+        - [ ] Documentation is indexed and searchable on docs site
+    validations:
+      required: true
+
+  - type: textarea
+    id: how
+    attributes:
+      label: How? (Optional)
+      description: >-
+        If you have ideas about the approach or methodology for completing this
+        task, describe them here.
+      placeholder: |-
+        Example:
+
+        Review existing GraphQL schema documentation and identify gaps in
+        movement workflow coverage. Interview customer success team about common
+        questions. Create step-by-step guides with code examples for typical
+        scenarios like receiving inventory, moving between locations, and
+        picking for orders. Add diagrams showing the relationship between
+        InventoryItem, Repository, and Movement types.
+    validations:
+      required: false

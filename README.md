@@ -123,6 +123,8 @@ attempted, budget partially spent) is worse than none.
 ghcr-tidy/           action (bundled): action.yml, src/, dist/
 verify-image/        action (plain bash, no bundle): action.yml, run.sh
 registry/            shared: registry API client
+scripts/             generate-community-files.go: regenerates .github/PULL_REQUEST_TEMPLATE.md
+                     and .github/ISSUE_TEMPLATE/*.yml from src/ (`task generate`)
 ```
 
 GitHub requires reusable workflows to sit directly in `.github/workflows/` and
@@ -150,6 +152,18 @@ committed — a stale bundle means a pinned consumer runs different code from th
 source it appears to match. Dependencies are managed by Renovate
 (`.github/renovate.json5`), which rebuilds the bundle automatically via
 `.github/renovate-post-upgrade.sh` after each npm update.
+
+`.github/PULL_REQUEST_TEMPLATE.md` and `.github/ISSUE_TEMPLATE/*.yml` are
+likewise generated, from `src/pull_request.md`/`src/issue-*.yml` by
+`scripts/generate-community-files.go` — edit the source and run `task
+generate`, never the generated file directly. `task generate:check` (what
+`community-files.yml` runs in CI) verifies they're in sync without writing.
+These mirror the org-wide canonical versions in
+[`pyck-ai/.github`](https://github.com/pyck-ai/.github); GitHub only
+auto-propagates a _single_ org-level `ISSUE_TEMPLATE.md`/`PULL_REQUEST_TEMPLATE.md`
+to repos lacking their own copy, not a multi-form `ISSUE_TEMPLATE/` directory of
+YAML forms — hence vendoring a local, generated copy here instead of relying on
+inheritance for the issue forms specifically.
 
 ## Publishing
 

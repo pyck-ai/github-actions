@@ -1,0 +1,30 @@
+name: community-files
+run-name: Community files in sync
+
+# The PR template and issue forms under .github/ are generated from canonical
+# sources in src/ by scripts/generate-community-files.go. This job fails if a
+# generated file was edited directly, or if a source change was not re-synced
+# with `task generate`.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+      - name: Verify generated files are in sync
+        # Not `task generate:check`: this runs on GitHub-hosted ubuntu-latest
+        # (unlike this org's self-hosted runners, `task` isn't preinstalled
+        # there), so call the same underlying command Taskfile.yml wraps.
+        run: go run ./scripts/generate-community-files.go --check

@@ -1,0 +1,12 @@
+version: "3"
+
+tasks:
+  generate:
+    desc: Generate the .github community-health files from src/
+    cmds:
+      - go run ./scripts/generate-community-files.go
+
+  generate:check:
+    desc: Verify the generated .github files are in sync with their sources (CI)
+    cmds:
+      - go run ./scripts/generate-community-files.go --check
