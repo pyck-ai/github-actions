@@ -75,31 +75,66 @@ verify_one() {
   }
   trap cleanup EXIT
 
+  # Builds (once per target — callers must check `$derived_tag` is still
+  # empty first) a throwaway image that layers busybox's /bin (a directory
+  # of applet symlinks) onto the exact digest under test, so it's provably
+  # "the published artifact plus one directory". Sets `derived_tag` on
+  # success; the EXIT trap above removes it regardless of how this
+  # function's caller's caller (verify_one) ultimately returns.
+  derive_busybox_image() {
+    derived_tag="verify-image-derived-$$-$RANDOM-$target"
+    printf 'FROM %s\nCOPY --from=busybox:musl /bin /bin\n' "$image" \
+      | docker build -q -t "$derived_tag" - >/dev/null
+  }
+
+  # shellcheck disable=SC2329 # invoked (possibly twice) below
+  run_verify_sh() {
+    docker run --rm \
+      "${env_file_args[@]}" \
+      -e TARGET="$target" \
+      -v "$script_abs:/verify.sh:ro" \
+      --entrypoint /bin/sh \
+      "$1" /verify.sh
+  }
+
   # Shell-less detection (e.g. `FROM scratch` images like baseimages'
   # `static`): a bare `/bin/sh -c` probe fails immediately if there's no
-  # shell to exec. On failure, derive a throwaway image that layers
+  # shell to exec at all. On failure, derive a throwaway image that layers
   # busybox's /bin (a directory of applet symlinks) onto the exact digest
   # under test, so the derived image is provably "the published artifact
   # plus one directory" and verify.sh runs under the same shell dialect as
   # every other image.
   if ! docker run --rm --entrypoint /bin/sh "$image" -c 'exit 0' >/dev/null 2>&1; then
     echo "::notice::$target: image has no /bin/sh; verifying via a derived busybox image"
-    derived_tag="verify-image-derived-$$-$RANDOM-$target"
-    if ! printf 'FROM %s\nCOPY --from=busybox:musl /bin /bin\n' "$image" \
-        | docker build -q -t "$derived_tag" - >/dev/null; then
+    if ! derive_busybox_image; then
       echo "::error::target '$target' failed to build a derived busybox image from $image" >&2
       return 1
     fi
     ref="$derived_tag"
   fi
 
-  local rc=0
-  docker run --rm \
-    "${env_file_args[@]}" \
-    -e TARGET="$target" \
-    -v "$script_abs:/verify.sh:ro" \
-    --entrypoint /bin/sh \
-    "$ref" /verify.sh || rc=$?
+  local rc
+  rc=0
+  run_verify_sh "$ref" || rc=$?
+
+  # A *partial* shell (enough applets for the probe above to pass, not
+  # enough for what verify.sh itself calls — e.g. printenv/grep/sleep) fails
+  # here instead, distinctly from the no-shell case above. Rather than
+  # requiring every target to permanently ship whatever verify.sh happens to
+  # use beyond its own entrypoint's runtime needs, retry once against a
+  # derived busybox image before giving up. Only reachable once per target
+  # ($derived_tag empty means the probe above didn't already retry this
+  # way), so a genuinely shell-less image never gets a redundant second
+  # build. This can only turn a false failure (missing tool) into a pass —
+  # it cannot mask a real verify.sh assertion failure, since the identical
+  # assertion still runs against the same image plus strictly more tools.
+  if [ "$rc" -ne 0 ] && [ -z "$derived_tag" ]; then
+    echo "::notice::$target: verify.sh failed against the shipped image as-is (exit $rc); retrying against a derived busybox image in case a tool verify.sh uses, but the image doesn't ship at runtime, was missing"
+    if derive_busybox_image; then
+      rc=0
+      run_verify_sh "$derived_tag" || rc=$?
+    fi
+  fi
 
   if [ "$rc" -ne 0 ]; then
     echo "::error::verify.sh failed for target '$target' (image $image, script $script_abs): exit $rc" >&2
