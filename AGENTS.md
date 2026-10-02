@@ -2,8 +2,8 @@
 
 This repo publishes shared CI tooling for the pyck-ai org: the reusable
 workflows `build-image.yml`, `tidy-repo.yml`, `tidy-ghcr.yml`, and the
-actions `verify-image` and `ghcr-tidy`. See [README.md](README.md) for what
-each one does and how a consumer pins it.
+actions `verify-image`, `ghcr-tidy`, and `jev-check`. See
+[README.md](README.md) for what each one does and how a consumer pins it.
 
 ## Commands
 

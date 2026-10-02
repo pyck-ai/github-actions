@@ -14,6 +14,7 @@ copy and silently never reached the others.
 | Image verification       | `pyck-ai/github-actions/verify-image@<sha>`                      |
 | GHCR retention           | `pyck-ai/github-actions/.github/workflows/tidy-ghcr.yml@<sha>`   |
 | GHCR retention CLI step  | `pyck-ai/github-actions/ghcr-tidy@<sha>`                         |
+| Batch jev check          | `pyck-ai/github-actions/jev-check@<sha>`                         |
 
 Pin by commit SHA. `build-image.yml` builds by digest, verifies the pushed
 digest, and only then applies tags — a failed verification means no tag ever
@@ -44,6 +45,33 @@ attempted, budget partially spent) is worse than none.
   (`FROM scratch`) are detected by probing for `/bin/sh` and, on failure,
   verified against a throwaway image built as `FROM <ref>` +
   `COPY --from=busybox:musl /bin /bin`, removed afterwards.
+- **`jev-check`**: a plain-bash composite action, not a CLI. Given an
+  `input-dir` of `*.json` files (each a complete `jev check -j` input
+  object: `{"context": string, "propositions": [string, ...]}`) and an
+  `output-dir`, it runs TypeSafe's jev CLI
+  ([pyck-ai/jev-cli](https://github.com/pyck-ai/jev-cli)) once per input
+  file and, for each `X.json`, writes `X.json` (jev's `-o json` result) on
+  success or `X.error` (jev's stderr plus its exit code) on failure,
+  continuing past a failure so one run reports every broken input rather
+  than one failure per rerun, and failing the step if any input failed.
+  An empty (or all-non-`.json`) `input-dir` is logged and not a failure.
+  Deliberately generic and GitHub-credential-free: this is the batch
+  primitive a caller assembles a workflow around, e.g. pyck-ai/pyck-review's
+  scheduled PR-classification workflow, whose middle job prepares inputs in
+  an earlier job (with GitHub credentials this action never sees) and reads
+  outputs in a later one. The runner is assumed to have only bash and
+  docker, so jev itself runs inside `golang:1.25-alpine` (jev-cli's go.mod
+  requires go 1.25.0), pinned by digest in
+  [`jev-check/run.sh`](./jev-check/run.sh) so a floating tag can't change
+  what a pinned consumer executes; `jev-check/entrypoint.sh` runs inside
+  that container, installing jev via `go install` exactly once per batch
+  (pinned to a commit; jev-cli has no tagged releases yet, so that pin
+  should move to a tag once one exists) rather than once per file. The
+  container runs as the invoking user's own uid:gid, so output files come
+  out owned by the runner user rather than root. The `openrouter-api-key`
+  input is passed into the container by name only (`-e OPENROUTER_API_KEY`,
+  no `=value`), never as a command-line value visible to `docker inspect`
+  or a process listing on the runner host.
 - **`ghcr-tidy`** — GHCR retention, driven by a `.ghcr-tidy.yaml` config
   manifest (closed schema: an unknown key is a hard error, because in a
   deletion tool a silently ignored config key produces a green run that did
@@ -122,6 +150,7 @@ attempted, budget partially spent) is worse than none.
 .github/workflows/   this repo's CI, plus the reusable workflows it publishes
 ghcr-tidy/           action (bundled): action.yml, src/, dist/
 verify-image/        action (plain bash, no bundle): action.yml, run.sh
+jev-check/           action (plain bash, no bundle): action.yml, run.sh, entrypoint.sh
 registry/            shared: registry API client
 ```
 
