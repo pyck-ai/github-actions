@@ -9,10 +9,37 @@
     // minimumReleaseAge, labels, semanticCommits, vulnerability alerts).
     "local>pyck-ai/renovate//presets/default.json5",
   ],
-  // Two surfaces to keep current: the npm dependencies behind the TypeScript tooling,
-  // and the SHA-pinned actions in .github/workflows/ plus the two composite actions
-  // (ghcr-tidy/action.yml, verify-image/action.yml).
-  enabledManagers: ["npm", "github-actions"],
+  // Three surfaces to keep current: the npm dependencies behind the TypeScript tooling,
+  // the SHA-pinned actions in .github/workflows/ plus the two composite actions
+  // (ghcr-tidy/action.yml, verify-image/action.yml), and the digest-pinned jev image
+  // in jev-check/action.yml (the customManagers entry below).
+  //
+  // "custom.regex" MUST be listed here for that customManagers entry to fire.
+  // enabledManagers is NOT mergeable from presets (this repo's own value replaces
+  // any preset's entirely), and a custom manager missing from it is silently inert:
+  // no error, it just never runs.
+  enabledManagers: ["npm", "github-actions", "custom.regex"],
+  customManagers: [
+    {
+      // Keeps the digest of jev-check's default `image` input current. The
+      // annotation comment sits directly above `default:` in jev-check/action.yml:
+      //
+      //   # renovate: datasource=docker depName=ghcr.io/pyck-ai/jev-cli
+      //   default: ghcr.io/pyck-ai/jev-cli:latest@sha256:<hex>
+      //
+      // currentValue is the tag (`latest`, a floating tag that never changes) and
+      // currentDigest the sha256 pin, so Renovate only ever proposes digest updates.
+      // No packageRules needed: the shared org preset (presets/default.json5) already
+      // automerges digest updates and sets minimumReleaseAgeBehaviour
+      // timestamp-optional for digest/pin (they carry no release timestamp).
+      description: "Update the digest-pinned jev image in jev-check/action.yml",
+      customType: "regex",
+      managerFilePatterns: ["/(^|/)action\\.yml$/"],
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>[a-z][a-z.-]+) depName=(?<depName>[^\\s]+)\\n\\s+default: [^\\s:@]+:(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)",
+      ],
+    },
+  ],
   // KEEP THIS IN STEP WITH ci.yml's `node-version`. It is not merely
   // package.json's ">=22" floor, and it does two distinct jobs.
   //

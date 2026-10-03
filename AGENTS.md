@@ -34,3 +34,12 @@ actions `verify-image`, `ghcr-tidy`, and `jev-check`. See
   `.github/renovate-post-upgrade.sh`, wired up in `.github/renovate.json5`. If
   you bump a dependency by hand, run `npm run bundle` and commit the result, or
   `ci.yml`'s `build` job will fail.
+- `jev-check` runs jev from the digest-pinned `ghcr.io/pyck-ai/jev-cli` image
+  (the `image` input, default defined only in `jev-check/action.yml`; no Go
+  toolchain, no `go install`). Renovate keeps that digest current via the
+  custom regex manager in `.github/renovate.json5`, which matches the
+  `# renovate:` annotation on the line directly above the default: keep that
+  annotation and the `default:` line shape intact, and keep `"custom.regex"`
+  in this repo's own `enabledManagers` (not mergeable from presets, silently
+  inert if missing). jev exit `1` (needs review) is a valid result, not a
+  failure.

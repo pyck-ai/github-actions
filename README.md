@@ -60,18 +60,23 @@ attempted, budget partially spent) is worse than none.
   scheduled PR-classification workflow, whose middle job prepares inputs in
   an earlier job (with GitHub credentials this action never sees) and reads
   outputs in a later one. The runner is assumed to have only bash and
-  docker, so jev itself runs inside `golang:1.25-alpine` (jev-cli's go.mod
-  requires go 1.25.0), pinned by digest in
-  [`jev-check/run.sh`](./jev-check/run.sh) so a floating tag can't change
-  what a pinned consumer executes; `jev-check/entrypoint.sh` runs inside
-  that container, installing jev via `go install` exactly once per batch
-  (pinned to a commit; jev-cli has no tagged releases yet, so that pin
-  should move to a tag once one exists) rather than once per file. The
-  container runs as the invoking user's own uid:gid, so output files come
-  out owned by the runner user rather than root. The `openrouter-api-key`
-  input is passed into the container by name only (`-e OPENROUTER_API_KEY`,
-  no `=value`), never as a command-line value visible to `docker inspect`
-  or a process listing on the runner host.
+  docker, and no Go toolchain: jev runs from the prebuilt, static
+  `ghcr.io/pyck-ai/jev-cli` image, which jev-cli's own pipeline builds,
+  verifies, and publishes. The `image` input (optional) defaults to that
+  image pinned by digest, defined once in
+  [`jev-check/action.yml`](./jev-check/action.yml); Renovate keeps the digest
+  current through the custom regex manager in
+  [`.github/renovate.json5`](./.github/renovate.json5), which matches the
+  `# renovate:` annotation above the default. [`jev-check/run.sh`](./jev-check/run.sh)
+  pulls the image once, then runs one `docker run` per input file (input on
+  stdin, result on stdout, no bind mounts). jev exit status `0` and `1` (some
+  proposition needs review) both print a complete JSON result and both write
+  `X.json`; any other status writes `X.error`. The container runs as the
+  invoking user's own uid:gid, so output files come out owned by the runner
+  user rather than root. The `openrouter-api-key` input is passed into the
+  container by name only (`-e OPENROUTER_API_KEY`, no `=value`), never as a
+  command-line value visible to `docker inspect` or a process listing on the
+  runner host.
 - **`ghcr-tidy`** — GHCR retention, driven by a `.ghcr-tidy.yaml` config
   manifest (closed schema: an unknown key is a hard error, because in a
   deletion tool a silently ignored config key produces a green run that did
@@ -150,7 +155,7 @@ attempted, budget partially spent) is worse than none.
 .github/workflows/   this repo's CI, plus the reusable workflows it publishes
 ghcr-tidy/           action (bundled): action.yml, src/, dist/
 verify-image/        action (plain bash, no bundle): action.yml, run.sh
-jev-check/           action (plain bash, no bundle): action.yml, run.sh, entrypoint.sh
+jev-check/           action (plain bash, no bundle): action.yml, run.sh
 registry/            shared: registry API client
 ```
 
