@@ -33,8 +33,8 @@ inputs:
     required: true
   openrouter-api-key:
     description: >-
-      OpenRouter API key for the jev CLI; pass
-      `${{ secrets.OPENROUTER_API_KEY }}`. Passed into the container by
+      OpenRouter API key for the jev CLI; pass the caller's
+      OPENROUTER_API_KEY secret. Passed into the container by
       name only, never as a command-line value, so it never appears in
       `docker inspect` or a process listing on the runner host.
     required: true

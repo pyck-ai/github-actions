@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["ghcr-tidy/src/**/*.test.ts", "registry/**/*.test.ts"],
+    include: ["ghcr-tidy/src/**/*.test.ts", "registry/**/*.test.ts", "tests/**/*.test.ts"],
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],

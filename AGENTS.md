@@ -26,6 +26,10 @@ actions `verify-image`, `ghcr-tidy`, and `jev-check`. See
 - A reusable workflow can never hold a permission its caller did not
   grant. When changing a shared workflow's `permissions:`, check every
   caller too.
+- Never write `${{ ... }}` in an action.yml outside `runs:`, not even in a
+  description. GitHub evaluates it while loading the action, where
+  `secrets` does not exist, so every caller fails at "Set up job".
+  actionlint misses it; `tests/action-metadata.test.ts` catches it.
 - On a `schedule` trigger the `inputs` context is EMPTY. Dispatch defaults
   do not apply there; branch on `github.event_name == 'schedule'` instead
   of relying on `inputs.x || default`.
