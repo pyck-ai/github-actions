@@ -46,4 +46,5 @@ actions `verify-image`, `ghcr-tidy`, and `jev-check`. See
   annotation and the `default:` line shape intact, and keep `"custom.regex"`
   in this repo's own `enabledManagers` (not mergeable from presets, silently
   inert if missing). jev exit `1` (needs review) is a valid result, not a
-  failure.
+  failure. The `command` input (`check` default, or `ask`) picks the jev tool;
+  `run.sh` rejects any other value with exit 2 before pulling or writing.

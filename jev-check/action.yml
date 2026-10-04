@@ -1,6 +1,7 @@
 name: jev-check
 description: >-
-  Runs TypeSafe's jev CLI (`jev check`) over a batch of prepared inputs, from
+  Runs TypeSafe's jev CLI (`jev check` or `jev ask`, see the `command`
+  input) over a batch of prepared inputs, from
   a prebuilt org image, with only an OpenRouter key (no GitHub credentials,
   no assumption about what produced the inputs or what reads the outputs).
   Given a directory of one JSON input per file, it writes each input's result
@@ -17,20 +18,29 @@ description: >-
 inputs:
   input-dir:
     description: >-
-      Directory of `*.json` files, each a complete `jev check -j` input
-      object: `{"context": string, "propositions": [string, ...]}`. Each file
-      is fed to jev on stdin; an empty directory (or one with no `*.json`
-      files) is not an error, since there is simply nothing to check.
+      Directory of `*.json` files, each a complete `jev -j` input object for
+      the chosen `command`: `{"context": string, "propositions": [string,
+      ...]}` for `check`, `{"state": ..., "questions": {...}}` for `ask`.
+      Each file is fed to jev on stdin; an empty directory (or one with no
+      `*.json` files) is not an error, since there is simply nothing to run.
     required: true
   output-dir:
     description: >-
       Directory to write results to; created if missing. For each input
       `X.json`, writes `X.json` (jev's `-o json` stdout) on success, or
       `X.error` (jev's stderr plus its exit code) on failure, and continues
-      with the next file either way. Exit status 0 (all propositions pass) and
-      1 (some proposition needs review) are both successes, because both
+      with the next file either way. Exit status 0 (success) and 1 (`check`
+      only: some proposition needs review) are both successes, because both
       print a complete JSON result; any other status is a failure.
     required: true
+  command:
+    description: >-
+      Which jev tool runs on each input file: `check` (default; each file is
+      a `jev check -j` object `{context, propositions}`) or `ask` (each file
+      is a `jev ask -j` object `{state, questions}`). Any other value fails
+      the step before anything is pulled or written.
+    required: false
+    default: check
   openrouter-api-key:
     description: >-
       OpenRouter API key for the jev CLI; pass the caller's
@@ -57,11 +67,12 @@ runs:
     # quoting. Routing it through `env:` has GitHub Actions write it into
     # the environment safely; the run.sh variables below are normal bash
     # variable expansions, immune to whatever the value contains.
-    - name: Run jev check over input-dir
+    - name: Run jev over input-dir
       shell: bash
       env:
         INPUT_DIR: ${{ inputs.input-dir }}
         OUTPUT_DIR: ${{ inputs.output-dir }}
         OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
         IMAGE: ${{ inputs.image }}
-      run: '"$GITHUB_ACTION_PATH/run.sh" "$INPUT_DIR" "$OUTPUT_DIR" "$OPENROUTER_API_KEY" "$IMAGE"'
+        COMMAND: ${{ inputs.command }}
+      run: '"$GITHUB_ACTION_PATH/run.sh" "$INPUT_DIR" "$OUTPUT_DIR" "$OPENROUTER_API_KEY" "$IMAGE" "$COMMAND"'

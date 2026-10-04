@@ -4,11 +4,12 @@
 # outside of Actions (see this repo's README, "jev-check" under Tools,
 # for the invocation contract).
 #
-# Usage: run.sh <input-dir> <output-dir> <openrouter-api-key> <image>
+# Usage: run.sh <input-dir> <output-dir> <openrouter-api-key> <image> [command]
 #
 #   input-dir            directory of *.json files, each a complete
-#                         `jev check -j` input object:
-#                         {"context": string, "propositions": [string, ...]}
+#                         `jev <command> -j` input object: for `check`,
+#                         {"context": string, "propositions": [string, ...]};
+#                         for `ask`, {"state": ..., "questions": {...}}
 #   output-dir            directory to write results to; created if missing
 #   openrouter-api-key    OpenRouter key for the jev CLI. Exported as
 #                         OPENROUTER_API_KEY and passed into the container
@@ -21,6 +22,9 @@
 #                         and only default lives in action.yml (the `image`
 #                         input), where Renovate keeps its digest current,
 #                         so there is deliberately no second copy here.
+#   command               jev tool to run on each file: `check` or `ask`.
+#                         Optional, default `check`; anything else exits 2
+#                         before the image is pulled or any output written.
 #
 # Design: jev runs from a prebuilt image (ghcr.io/pyck-ai/jev-cli), a
 # static, shell-less, single-binary image whose ENTRYPOINT is jev itself. It
@@ -43,10 +47,11 @@
 # arbitrary numeric uid with no matching /etc/passwd entry required (jev
 # exits 3 on every run without one).
 #
-# Exit status of `jev check` (jev-cli internal/tools/check/cli.go, main.go):
-#   0  every proposition passed
-#   1  at least one proposition needs review: STILL A VALID RESULT, jev
-#      prints the complete JSON on stdout before exiting
+# Exit status of `jev check` and `jev ask` (jev-cli internal/tools/check/cli.go,
+# main.go; `ask` uses 0 and 3 the same way):
+#   0  success (`check`: every proposition passed)
+#   1  `check` only: at least one proposition needs review: STILL A VALID
+#      RESULT, jev prints the complete JSON on stdout before exiting
 #   3  hard error (missing key, bad input, network, ...): no usable result
 # Statuses 0 and 1 are therefore both successes here (X.json is written);
 # anything else is a failure (X.error is written). Treating 1 as a failure
@@ -61,6 +66,12 @@ input_dir="${1:?input-dir required}"
 output_dir="${2:?output-dir required}"
 openrouter_key="${3:?OpenRouter API key required}"
 image="${4:?image required}"
+command="${5:-check}"
+
+if [ "$command" != "check" ] && [ "$command" != "ask" ]; then
+  echo "::error::command must be 'check' or 'ask', got '$command'" >&2
+  exit 2
+fi
 
 export OPENROUTER_API_KEY="$openrouter_key"
 
@@ -117,7 +128,7 @@ for f in "${input_files[@]}"; do
   docker run --rm -i \
     --user "$(id -u):$(id -g)" \
     -e OPENROUTER_API_KEY \
-    "$image" check -j - -o json <"$f" >"$tmp_out" 2>"$tmp_err" || rc=$?
+    "$image" "$command" -j - -o json <"$f" >"$tmp_out" 2>"$tmp_err" || rc=$?
 
   # 0 and 1 both carry a complete JSON result (see the header comment).
   if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then

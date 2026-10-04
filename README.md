@@ -54,6 +54,9 @@ attempted, budget partially spent) is worse than none.
   success or `X.error` (jev's stderr plus its exit code) on failure,
   continuing past a failure so one run reports every broken input rather
   than one failure per rerun, and failing the step if any input failed.
+  The optional `command` input (`check`, the default, or `ask`) selects
+  `jev check -j` or `jev ask -j` (`{"state": ..., "questions": {...}}`) for
+  every file; any other value exits 2 before anything is pulled or written.
   An empty (or all-non-`.json`) `input-dir` is logged and not a failure.
   Deliberately generic and GitHub-credential-free: this is the batch
   primitive a caller assembles a workflow around, e.g. pyck-ai/pyck-review's
