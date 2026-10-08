@@ -2,10 +2,9 @@ name: tidy-repo
 
 # Reusable housekeeping workflow: delete old workflow runs, close stale
 # issues/PRs, and delete stale branches. Callers own the trigger (schedule /
-# workflow_dispatch) — see the "Triggers stay in the caller" rule in this
-# repo's README; a shared workflow must not own the cron because the cron
-# offset encodes a real dependency on when the calling repo's own upstream
-# publishes.
+# workflow_dispatch); a shared workflow must not own the cron because the
+# cron offset encodes a real dependency on when the calling repo's own
+# upstream publishes.
 #
 # Jobs are chained via `needs:` (not parallel) deliberately, to avoid hitting
 # GitHub API rate limits — preserve that ordering if this workflow changes.
@@ -73,7 +72,7 @@ on:
 # Concurrency belongs to the caller. What this workflow DOES require of it:
 # never cancel a maintenance run in progress, because a half-finished
 # cleanup is worse than none. Callers should therefore set
-# `cancel-in-progress: false` on whatever group they declare. See README.
+# `cancel-in-progress: false` on whatever group they declare.
 jobs:
   # Delete workflow runs older than workflows-retain-days, keeping at least 1
   # per workflow.

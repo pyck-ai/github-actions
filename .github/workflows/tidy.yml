@@ -17,11 +17,11 @@ on:
     - cron: "17 5 * * *"
   workflow_dispatch:
 
-# Required by tidy-repo.yml's own contract (see its header comment and this
-# repo's README): the callee deliberately declares no concurrency block of
-# its own, because inside a called workflow `github.workflow` resolves to
-# the CALLER's name — a duplicate block would compute the same group and
-# GitHub would kill the run with zero jobs. `cancel-in-progress: false`
+# Required by tidy-repo.yml's own contract (see its header comment): the
+# callee deliberately declares no concurrency block of its own, because
+# inside a called workflow `github.workflow` resolves to the CALLER's name
+# — a duplicate block would compute the same group and GitHub would kill
+# the run with zero jobs. `cancel-in-progress: false`
 # because a half-finished cleanup is worse than none.
 concurrency:
   group: ${{ github.workflow }}

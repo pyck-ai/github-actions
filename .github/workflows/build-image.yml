@@ -9,6 +9,9 @@ name: build-image
 # add a mode/input that allows tagging before every leg's verify step
 # completes.
 #
+# Consumers pin this workflow by commit SHA:
+# pyck-ai/github-actions/.github/workflows/build-image.yml@<sha>
+#
 # Triggers stay in the caller (schedule / workflow_dispatch / pull_request) —
 # a shared workflow must not own the cron, since the offset encodes a real
 # dependency on when an upstream image publishes.
@@ -92,7 +95,7 @@ on:
 # fatal, and every caller that sensibly declares its own would hit it.
 #
 # Concurrency therefore belongs to the caller, which also lets each repo
-# choose its own cancel-in-progress semantics. See README.
+# choose its own cancel-in-progress semantics.
 jobs:
   # Read the target list from the bake file (unless overridden) so a new
   # variant is picked up by the build matrix without touching CI.

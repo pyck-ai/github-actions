@@ -27,18 +27,9 @@ copy and silently never reached the others.
 | Batch jev check          | `pyck-ai/github-actions/jev-check@<sha>`                         |
 | Agent docs check         | `pyck-ai/github-actions/agent-docs-check@<sha>`                  |
 
-Pin by commit SHA. `build-image.yml` builds by digest, verifies the pushed
-digest, and only then applies tags — a failed verification means no tag ever
-moves.
-
-**The caller owns `concurrency:`.** Neither reusable workflow declares one, and
-neither should: inside a called workflow `github.workflow` resolves to the
-_calling_ workflow's name, so a block in both files computes the same group and
-GitHub kills the run outright — "a deadlock was detected for concurrency group
-... between a top level workflow and ...", zero jobs, nothing built. Declare it
-in your own workflow instead. `tidy-repo.yml` and `tidy-ghcr.yml` additionally
-want `cancel-in-progress: false`, because a half-finished cleanup (deletions
-attempted, budget partially spent) is worse than none.
+Pin by commit SHA. `build-image.yml` builds by digest, verifies, and only then
+tags (see its header comment). The caller owns `concurrency:` for the reusable
+workflows (see the header comments of `build-image.yml` and `tidy-repo.yml`).
 
 ## Tools
 
