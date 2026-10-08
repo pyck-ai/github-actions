@@ -1,84 +1,80 @@
-# @pyck-ai/github-actions
+# github-actions
 
 <!-- toc
 ## Contents
 
-- [What you can consume](#what-you-can-consume)
-- [Tools](#tools)
-- [Layout](#layout)
-- [Development](#development)
-- [Publishing](#publishing)
+- [What is github-actions?](#what-is-github-actions)
+- [Getting started](#getting-started)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [Status](#status)
+- [License](#license)
+- [Security](#security)
 -->
 
-Shared CI tooling for the pyck-ai org: reusable workflows, actions, and
-the CLIs behind them. Replaces ~1850 lines of bash that had been copy-pasted
-across `baseimages`, `github-runner` and `flutter-rfw`, where fixes reached one
-copy and silently never reached the others.
+Shared CI workflows and actions for the pyck-ai repositories.
 
-## What you can consume
+## What is github-actions?
 
-|                          | Reference                                                        |
-| ------------------------ | ---------------------------------------------------------------- |
-| Container build pipeline | `pyck-ai/github-actions/.github/workflows/build-image.yml@<sha>` |
-| Repo housekeeping        | `pyck-ai/github-actions/.github/workflows/tidy-repo.yml@<sha>`   |
-| Image verification       | `pyck-ai/github-actions/verify-image@<sha>`                      |
-| GHCR retention           | `pyck-ai/github-actions/.github/workflows/tidy-ghcr.yml@<sha>`   |
-| GHCR retention CLI step  | `pyck-ai/github-actions/ghcr-tidy@<sha>`                         |
-| Batch jev check          | `pyck-ai/github-actions/jev-check@<sha>`                         |
-| Agent docs check         | `pyck-ai/github-actions/agent-docs-check@<sha>`                  |
+Every pyck-ai repository that builds images, tidies its GitHub history or cleans up GHCR needs the same pipeline steps. Kept in one place, a fix reaches every repository by bumping one pinned reference instead of by editing copies.
 
-Pin by commit SHA. `build-image.yml` builds by digest, verifies, and only then
-tags (see its header comment). The caller owns `concurrency:` for the reusable
-workflows (see the header comments of `build-image.yml` and `tidy-repo.yml`).
+Consumers call the reusable workflows and actions by commit SHA. The workflows are YAML; `ghcr-tidy` is a bundled TypeScript action, and the other actions are plain bash or JavaScript.
 
-## Tools
+Out of the box, github-actions includes:
 
-- **`verify-image`**: see [`verify-image/README.md`](./verify-image/README.md).
-- **`jev-check`**: see [`jev-check/README.md`](./jev-check/README.md).
-- **`ghcr-tidy`**: see [`ghcr-tidy/README.md`](./ghcr-tidy/README.md).
-- **`agent-docs-check`**: see [`agent-docs-check/README.md`](./agent-docs-check/README.md).
-- **`ghcr-audit`** — registry integrity checks. Not yet implemented.
+- **`build-image.yml`**: builds a container image by digest, verifies the pushed digest, and only then applies tags. See [its header comment](./.github/workflows/build-image.yml).
+- **`tidy-repo.yml`**: deletes old workflow runs, closes stale issues and PRs, and deletes stale branches. See [its header comment](./.github/workflows/tidy-repo.yml).
+- **`tidy-ghcr.yml`**: runs GHCR retention through the `ghcr-tidy` action. See [its header comment](./.github/workflows/tidy-ghcr.yml).
+- **`verify-image`**: runs each pushed image's own `verify.sh` inside that image. See [verify-image/README.md](./verify-image/README.md).
+- **`ghcr-tidy`**: plans and applies GHCR retention from a `.ghcr-tidy.yaml` manifest. See [ghcr-tidy/README.md](./ghcr-tidy/README.md).
+- **`jev-check`**: runs the jev CLI once per input file and writes one result per file. See [jev-check/README.md](./jev-check/README.md).
+- **`agent-docs-check`**: keeps agent-facing docs inside their budgets. See [agent-docs-check/README.md](./agent-docs-check/README.md).
 
-## Layout
+## Getting started
 
-```
-.github/workflows/   this repo's CI, plus the reusable workflows it publishes
-ghcr-tidy/           action (bundled): action.yml, src/, dist/
-verify-image/        action (plain bash, no bundle): action.yml, run.sh
-jev-check/           action (plain bash, no bundle): action.yml, run.sh
-agent-docs-check/    action (plain JavaScript, no bundle): action.yml, check.mjs
-registry/            shared: registry API client
+Consume a workflow or action by pinning a commit SHA:
+
+```yaml
+jobs:
+  build:
+    uses: pyck-ai/github-actions/.github/workflows/build-image.yml@<sha> # v0.1.0
+  # or, as a step: uses: pyck-ai/github-actions/verify-image@<sha>
 ```
 
-GitHub requires reusable workflows to sit directly in `.github/workflows/` and
-does not support subdirectories there, so this repo's own CI and the workflows
-it ships to consumers share one flat directory.
+The caller owns `concurrency:`: the reusable workflows declare none (see the header comment of [build-image.yml](./.github/workflows/build-image.yml) for why).
 
-Each published action is a self-contained top-level directory (`$/ghcr-tidy`,
-`$/verify-image`), discoverable at the repo root instead of nested under
-`.github/actions/`. `registry/` is shared code with exactly one consumer today
-(`ghcr-tidy`) — it was `src/core/registry/` before this layout existed to hold
-more than one action's worth of TypeScript; it stayed a separate top-level
-directory anyway, for when a second TypeScript action needs it.
-
-## Development
+Work on this repository:
 
 ```sh
-npm install && npm test
-npm run bundle   # ncc -> ghcr-tidy/dist/ (committed)
+npm ci             # install dependencies
+npm test           # run the test suite
+npm run lint       # eslint
+npm run bundle     # rebuild ghcr-tidy/dist/ (committed) after changing ghcr-tidy/src/
 ```
 
-**After changing anything under `ghcr-tidy/src/` or `registry/`, run `npm run bundle` and commit the
-result.** The bundle is what SHA-pinned consumers actually execute, so CI
-rebuilds it from a clean checkout and fails if it differs from what is
-committed — a stale bundle means a pinned consumer runs different code from the
-source it appears to match. Dependencies are managed by Renovate
-(`.github/renovate.json5`), which rebuilds the bundle automatically via
-`.github/renovate-post-upgrade.sh` after each npm update.
+Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json); CI runs 24) and npm. Run `npm run` for every other script. For the inputs and behaviour of one action, see the README in its directory: [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md).
 
-## Publishing
+## Documentation
 
-GitHub Packages (`npm.pkg.github.com`). Note that GitHub's npm registry requires
-authentication even for public packages, so local `npx` use needs a classic PAT
-with `read:packages` in `~/.npmrc`. CI is unaffected: consumers execute the
-committed bundle rather than installing from the registry.
+- [build-image.yml](./.github/workflows/build-image.yml), [tidy-repo.yml](./.github/workflows/tidy-repo.yml), [tidy-ghcr.yml](./.github/workflows/tidy-ghcr.yml): header comments own the contract of each reusable workflow.
+- [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md): inputs, behaviour and design of each action.
+- [ghcr-tidy/src/cli.ts](./ghcr-tidy/src/cli.ts): `ghcr-tidy` flags and exit codes.
+- [ci.yml](./.github/workflows/ci.yml): the checks every change must pass, including the committed-bundle check.
+- [renovate.json5](./.github/renovate.json5): how dependency and image digests are kept current.
+
+## Contributing
+
+- [CONTRIBUTING.md](https://github.com/pyck-ai/.github/blob/main/.github/CONTRIBUTING.md): start here (the organization default).
+- [AGENTS.md](./AGENTS.md): read this first if you are an AI coding agent.
+
+## Status
+
+Version 0.1.0, pre-1.0: pin by SHA, not by branch. The repository is not published to npm.
+
+## License
+
+[Functional Source License 1.1, ALv2 Future License](./LICENSE) (FSL-1.1-ALv2).
+
+## Security
+
+See the [organization security policy](https://github.com/pyck-ai/.github/blob/main/.github/SECURITY.md) for how to report a vulnerability.
