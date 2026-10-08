@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runner logic behind the verify-image composite action. Kept as a standalone
 # script (rather than inline in action.yml) so it is testable directly,
-# outside of Actions — see this repo's README ("verify-image" under Tools)
-# for the invocation contract.
+# outside of Actions (see README.md in this directory for the invocation
+# contract).
 #
 # Usage: run.sh <targets> <contexts-json> <digests-file> [buildargs-file]
 #
