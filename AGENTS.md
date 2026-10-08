@@ -1,50 +1,17 @@
-# Agent Instructions
+# github-actions
 
-This repo publishes shared CI tooling for the pyck-ai org: the reusable
-workflows `build-image.yml`, `tidy-repo.yml`, `tidy-ghcr.yml`, and the
-actions `verify-image`, `ghcr-tidy`, `jev-check`, and `agent-docs-check`. See
-[README.md](README.md) for what each one does and how a consumer pins it.
+Org-wide rules: `~/.pyck/guidelines/AGENTS.md`. They apply here; this file adds only local facts. If that path is missing, ask the user to install pyck-ai/guidelines (clone it and run its `setup.sh`); never fetch the rules from the web.
 
-## Commands
+## Before you change
 
-- `npm test` — vitest, run before every commit.
-- `npm run lint` — eslint.
-- `npm run build` — `tsc -p tsconfig.json`.
-- `npm run bundle` — rebuilds `ghcr-tidy/dist/` from `ghcr-tidy/src/`.
-- `npm run format:check` — prettier check (`npm run format` to fix).
+- An action's inputs or behaviour: read its own `README.md` and `action.yml` first.
+- A reusable workflow: read its header comment in `.github/workflows/` first.
+- A shared workflow's `permissions:`: check every caller. A reusable workflow cannot hold a permission its caller did not grant.
 
-## Traps that have each cost a commit here
+## Gotchas
 
-- Run prettier and `format:check` before committing, **including on
-  workflow YAML**. Prettier normalises comment indentation to the
-  surrounding mapping level; a trailing comment split across lines at the
-  wrong depth fails `--check`.
-- Rebuild the bundle (`npm run bundle`) whenever `ghcr-tidy/src/` changes.
-  CI's `ci.yml` hard-fails on a stale or unlisted `dist/`.
-- `actionlint` (v1.7.12) falsely flags `$/` as a malformed ref. That one
-  finding is a known false positive; dismiss it, don't work around it.
-- A reusable workflow can never hold a permission its caller did not
-  grant. When changing a shared workflow's `permissions:`, check every
-  caller too.
-- Never write `${{ ... }}` in an action.yml outside `runs:`, not even in a
-  description. GitHub evaluates it while loading the action, where
-  `secrets` does not exist, so every caller fails at "Set up job".
-  actionlint misses it; `tests/action-metadata.test.ts` catches it.
-- On a `schedule` trigger the `inputs` context is EMPTY. Dispatch defaults
-  do not apply there; branch on `github.event_name == 'schedule'` instead
-  of relying on `inputs.x || default`.
-- A dependency bump makes `ghcr-tidy/dist/` stale, because ncc inlines the
-  runtime deps into the bundle. Renovate rebuilds it via
-  `.github/renovate-post-upgrade.sh`, wired up in `.github/renovate.json5`. If
-  you bump a dependency by hand, run `npm run bundle` and commit the result, or
-  `ci.yml`'s `build` job will fail.
-- `jev-check` runs jev from the digest-pinned `ghcr.io/pyck-ai/jev-cli` image
-  (the `image` input, default defined only in `jev-check/action.yml`; no Go
-  toolchain, no `go install`). Renovate keeps that digest current via the
-  custom regex manager in `.github/renovate.json5`, which matches the
-  `# renovate:` annotation on the line directly above the default: keep that
-  annotation and the `default:` line shape intact, and keep `"custom.regex"`
-  in this repo's own `enabledManagers` (not mergeable from presets, silently
-  inert if missing). jev exit `1` (needs review) is a valid result, not a
-  failure. The `command` input (`check` default, or `ask`) picks the jev tool;
-  `run.sh` rejects any other value with exit 2 before pulling or writing.
+- Prettier also formats workflow YAML and moves trailing comments to the surrounding indentation: run `npm run format:check` on YAML too.
+- `ghcr-tidy/dist/` goes stale on any change to `ghcr-tidy/src/` or on a dependency bump (ncc inlines the dependencies): run `npm run bundle` and commit `dist/`. Renovate does this through `.github/renovate-post-upgrade.sh`; `ci.yml` fails on a stale bundle.
+- actionlint 1.7.12 flags `$/` as a malformed action ref. That is a known false positive: dismiss it.
+- On a `schedule` trigger the `inputs` context is empty and dispatch defaults do not apply: branch on `github.event_name` (see the `tidy-ghcr.yml` header).
+- Keep the `# renovate:` annotation directly above the `jev-check` image default in `jev-check/action.yml`, and `"custom.regex"` in this repo's own `enabledManagers` in `.github/renovate.json5` (presets cannot supply it). Without either, the image digest silently stops updating.
