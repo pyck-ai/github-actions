@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# Two tasks only: `ci` is exactly what the CI workflow runs, `generate`
+# rebuilds what the repository commits as generated output. Run `npm ci`
+# first on a clean checkout.
+tasks:
+  generate:
+    desc: Rebuild the committed ghcr-tidy/dist bundle
+    cmds:
+      - npm run bundle
+
+  ci:
+    desc: Run every check CI runs, including the committed-bundle check
+    cmds:
+      - npm run lint
+      - npm run format:check
+      # tsc -p tsconfig.json: type-checks the sources (and emits to the ignored lib/).
+      - npm run build
+      - npm test
+      - task: generate
+      # The bundled-action distribution model commits the ncc output under
+      # dist/ so consumers can reference this repo's actions by SHA with no
+      # registry fetch. A dist/ that drifts from its source makes a pinned
+      # consumer run stale code with no error anywhere, so the check rebuilds
+      # the bundle and fails on any difference, tracked or untracked.
+      #
+      # A configured path that no longer exists is a hard failure: `git diff
+      # --exit-code` and `git status --porcelain` both succeed vacuously
+      # against a missing path, so without the directory test the check would
+      # go blind exactly when a bundled action's dist/ is deleted.
+      - silent: true
+        cmd: |
+          known_dists="ghcr-tidy/dist"
+          for dist in $known_dists; do
+            if [ ! -d "$dist" ]; then
+              echo "$dist/ does not exist: update this check, it no longer matches the repo's bundled actions" >&2
+              exit 1
+            fi
+            if ! git diff --exit-code -- "$dist/"; then
+              echo "$dist/ is stale: run \"task generate\" and commit the result" >&2
+              exit 1
+            fi
+            if [ -n "$(git status --porcelain -- "$dist/")" ]; then
+              echo "$dist/ has untracked output: run \"task generate\" and commit the result" >&2
+              exit 1
+            fi
+          done
+          # The opposite drift: a dist/ this check does not know about yet
+          # (for example a new bundled action) must not slip past unseen.
+          for found in */dist; do
+            [ -d "$found" ] || continue
+            case " $known_dists " in
+              *" $found "*) ;;
+              *)
+                echo "$found/ exists but is not checked by this task: add it to known_dists" >&2
+                exit 1
+                ;;
+            esac
+          done

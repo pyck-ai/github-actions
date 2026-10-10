@@ -82,8 +82,8 @@
     },
     {
       // THE load-bearing rule for this repo. ghcr-tidy/dist/ is a committed ncc bundle
-      // with the runtime dependencies inlined into it, and ci.yml's `build` job reruns
-      // `npm run bundle` and fails on any diff, tracked or untracked. So an @octokit/*
+      // with the runtime dependencies inlined into it, and `task ci` (run by ci.yml) rebuilds
+      // it and fails on any diff, tracked or untracked. So an @octokit/*
       // or yaml bump that lands without rebuilding the bundle fails its OWN pull
       // request, every single time.
       //

@@ -83,9 +83,9 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Same drift check as ci.yml (see the comment there): a release must
-      # never publish or bundle-reference a dist/ that doesn't match the
-      # tagged source. A configured path that no longer exists is a hard
+      # Same drift check as `task ci` in Taskfile.yml (see the comment there):
+      # a release must never publish or bundle-reference a dist/ that doesn't
+      # match the tagged source. A configured path that no longer exists is a hard
       # failure here, not a silent pass: `git diff --exit-code` and
       # `git status --porcelain` both succeed vacuously against a missing
       # path, which is exactly how this check went blind when verify-image

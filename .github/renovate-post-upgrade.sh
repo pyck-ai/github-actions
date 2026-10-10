@@ -11,8 +11,8 @@
 #
 # Why it exists: ghcr-tidy/dist/ is a COMMITTED ncc bundle with the runtime
 # dependencies inlined into it (see the README's bundled-action distribution
-# model). ci.yml's `build` job reruns `npm run bundle` and fails on any diff,
-# tracked or untracked. So a bump to @octokit/* or yaml that lands without a
+# model). `task ci` (run by ci.yml) rebuilds it and fails on any diff, tracked or
+# untracked. So a bump to @octokit/* or yaml that lands without a
 # rebuilt bundle fails its own pull request. This puts the bump and its bundle
 # in the same commit.
 #
