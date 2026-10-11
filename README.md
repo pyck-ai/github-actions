@@ -57,6 +57,7 @@ Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json);
 
 - [build-image.yml](./.github/workflows/build-image.yml), [tidy-repo.yml](./.github/workflows/tidy-repo.yml), [tidy-ghcr.yml](./.github/workflows/tidy-ghcr.yml): header comments own the contract of each reusable workflow.
 - [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md): inputs, behaviour and design of each action.
+- [registry](./registry/README.md): the shared TypeScript registry core that `ghcr-tidy` bundles.
 - [ghcr-tidy/src/cli.ts](./ghcr-tidy/src/cli.ts): `ghcr-tidy` flags and exit codes.
 - [Taskfile.yml](./Taskfile.yml): the checks every change must pass (`task ci`, which [ci.yml](./.github/workflows/ci.yml) runs), including the committed-bundle check.
 - [renovate.json5](./.github/renovate.json5): how dependency and image digests are kept current.
