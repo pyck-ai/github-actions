@@ -11,7 +11,7 @@ export interface LiveRoot {
  * Uniform, semver-aware retention: keep the newest `keepMajors` majors of
  * every kind (`tag-kind.ts`'s `(prefix, suffix)` grouping); within each
  * kept major, the newest `keepMinors` minors; within each kept minor, the
- * newest `keepPatches` patches. Applied identically to every package —
+ * newest `keepPatches` patches. Applied identically to every package;
  * there is no per-package override anywhere in this policy.
  *
  * This is the WHOLE age-independent half of retention. Age lives entirely
@@ -20,7 +20,7 @@ export interface LiveRoot {
  * `keepDays` is never deleted" an independent guarantee rather than
  * something this policy has to also express. Unversioned tags (`latest`,
  * `alpine`, `debian-trixie`, every `buildcache` tag) need no field here
- * at all — they are always-retained singleton kinds by construction (see
+ * at all; they are always-retained singleton kinds by construction (see
  * `tag-kind.ts`'s module doc).
  */
 export interface RetentionPolicy {
@@ -44,7 +44,7 @@ function topN<T>(items: readonly T[], n: number, versionOf: (item: T) => readonl
 
 /**
  * `RETAINED(tags)`: which of `tags` the resolved policy decided to keep,
- * per this module's doc. Pure and package-scoped — `tags` must be every
+ * per this module's doc. Pure and package-scoped; `tags` must be every
  * tag of ONE package (kinds are grouped within this call only, never
  * merged across packages).
  *
@@ -53,7 +53,7 @@ function topN<T>(items: readonly T[], n: number, versionOf: (item: T) => readonl
  * VERSION that occurs anywhere in a kind, not over the tags that happen
  * to exist at each level. `majorSet` below is built from EVERY versioned
  * entry regardless of level, so a kind whose only member is
- * `alpine-3.23` (minor level, major `3` with no `alpine-3` tag anywhere —
+ * `alpine-3.23` (minor level, major `3` with no `alpine-3` tag anywhere;
  * `golang`'s real shape) still produces a major candidate `3`. The same
  * reasoning applies one level down: a kind's minor candidates are drawn
  * from every entry at level 2 OR 3 (`|v| >= 2`), so a patch tag whose
@@ -63,11 +63,11 @@ function topN<T>(items: readonly T[], n: number, versionOf: (item: T) => readonl
  * A patch tag's own window (`keptPatches`) is built ONLY from
  * three-component versions. This is what stops a minor alias like
  * `1.26` from ever competing against a patch tag like `1.26.5` for a
- * place in the patch window — the separation is structural (different
+ * place in the patch window; the separation is structural (different
  * source sets), not a guard that could be forgotten.
  *
  * The nesting is a fixed three levels (major/minor/patch), matching the
- * tag generator's fixed three-component version grammar — written as
+ * tag generator's fixed three-component version grammar; written as
  * such rather than as an open-ended loop, since a loop would imply a
  * fourth level is meaningful, which `tag-kind.ts`'s parse rule already
  * forbids (more than 3 components is unversioned).
@@ -82,7 +82,7 @@ export function computeRetainedTags(
   for (const t of tags) {
     const parsed: ParsedTag = parseTag(t);
     if (parsed.kind === "unversioned") {
-      // Always-retained singleton kind — see this module's and
+      // Always-retained singleton kind; see this module's and
       // `tag-kind.ts`'s doc for why no allow-list is needed here.
       retained.add(t);
       continue;
@@ -146,7 +146,7 @@ export function computeRetainedTags(
 /**
  * The floor set for `verify.ts`'s `ExpiryProducer`: the single newest
  * literal tag of every kind, computed directly from the version lattice
- * rather than from {@link computeRetainedTags}'s policy-windowed result —
+ * rather than from {@link computeRetainedTags}'s policy-windowed result;
  * an independent safety net so that a misconfigured policy (e.g.
  * `keepMajors: 0`) cannot, by itself, cause the currently-newest build of
  * a kind to be reported as intended expiry. `verify.ts`'s
@@ -184,7 +184,7 @@ export function computeFloorTags(tags: readonly Tag[]): ReadonlySet<Tag> {
 }
 
 /**
- * `KEEP_ROOTS = { r in LIVE_ROOTS : exists t in r.tags . RETAINED(t) }` —
+ * `KEEP_ROOTS = { r in LIVE_ROOTS : exists t in r.tags . RETAINED(t) }`;
  * a single existential over {@link computeRetainedTags}'s result,
  * replacing the old multi-clause `computeKeepRoots` (protected-tag
  * pattern, newest-`keepLast`, root-level `keepDays`) entirely. The cross-
@@ -192,7 +192,7 @@ export function computeFloorTags(tags: readonly Tag[]): ReadonlySet<Tag> {
  * afterwards: a retained tag protects its digest's entire manifest
  * closure via `plan.ts`'s reachability walk seeded from this set, so
  * filtering `DELETE` after the fact would keep an index's tag while
- * still deleting the platform manifests it points at — the exact
+ * still deleting the platform manifests it points at; the exact
  * broken-root corruption `deleteBrokenRoots` exists to remediate.
  *
  * Purely additive, like the clauses it replaces: no rule anywhere in
@@ -200,11 +200,11 @@ export function computeFloorTags(tags: readonly Tag[]): ReadonlySet<Tag> {
  * Deletion happens only by absence, in `plan.ts`'s
  * `ALL \ (REACHABLE union INFLIGHT)` subtraction.
  *
- * Age plays NO part here — see {@link RetentionPolicy}'s doc for where
+ * Age plays NO part here; see {@link RetentionPolicy}'s doc for where
  * it lives instead (`plan.ts`'s `PlanPolicy.keepDays`, applied uniformly
  * to every version). A tagged root can therefore be deleted purely for
  * falling outside its kind's kept window, once old enough: this is a
- * deliberate capability, not a regression of the old root protection —
+ * deliberate capability, not a regression of the old root protection;
  * it is what makes it possible to ever retire a frozen series at all.
  */
 export function computeKeepRoots(

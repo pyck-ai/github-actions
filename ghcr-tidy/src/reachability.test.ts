@@ -8,7 +8,7 @@ import type { RegistryReader } from "./ports.js";
 
 const path = registryPathFor("pyck-ai", packageName("golang"));
 
-/** Wraps a {@link RegistryReader} so resolving `ref` waits `delayFor.get(ref) ?? 0` ms before delegating — lets a test invert real-time completion order relative to discovery/root order. */
+/** Wraps a {@link RegistryReader} so resolving `ref` waits `delayFor.get(ref) ?? 0` ms before delegating; lets a test invert real-time completion order relative to discovery/root order. */
 function delayed(inner: RegistryReader, delayFor: ReadonlyMap<string, number>): RegistryReader {
   return {
     listTags: (p) => inner.listTags(p),
@@ -117,8 +117,8 @@ describe("computeReachability", () => {
     // Regression test for computeReachability's root-level parallelism
     // (previously a sequential `for (const root of keepRoots)` loop, now
     // every root's BFS starts together via `Promise.all`). Three
-    // DISTINCT root digests — one of them ("r3") shares a descendant with
-    // "r1" — with real-time completion order deliberately reversed
+    // DISTINCT root digests; one of them ("r3") shares a descendant with
+    // "r1", with real-time completion order deliberately reversed
     // relative to `keepRoots`' own order: "r3" resolves fastest, "r1"
     // slowest. A naive implementation depending on completion order
     // (rather than root order) for its shared-state bookkeeping would

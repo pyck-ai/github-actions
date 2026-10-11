@@ -38,7 +38,7 @@ export interface ManifestChild {
  * Whether a child is GHCR's buildx provenance/attestation manifest rather
  * than a platform image. Verified against the live registry (2026-09):
  * these are ordinary index children carrying
- * `annotations["vnd.docker.reference.type"] === "attestation-manifest"` —
+ * `annotations["vnd.docker.reference.type"] === "attestation-manifest"`;
  * NOT something returned by the `/v2/<img>/referrers/<digest>` endpoint,
  * which returns 0 results for these. Do not build referrers-API logic to
  * find them; they are already covered by index-children traversal.
@@ -67,7 +67,7 @@ export interface ParsedManifest {
 
 /**
  * Parses a manifest response body into its media type and (for an index)
- * its direct children. Pure, no I/O — this is the media-type dispatch and
+ * its direct children. Pure, no I/O; this is the media-type dispatch and
  * child-extraction logic, kept separate from the network call so it can be
  * unit tested against fixture bodies without mocking `fetch`.
  *
@@ -119,8 +119,8 @@ export type ResolveManifestOptions = RequestWithRetryOptions;
  *
  * The observed HTTP status is always recorded on the result (via `httpStatus`
  * on every branch except `network-error`), so callers can distinguish a 404
- * (genuinely dead child — safe to treat as unreachable) from a 429/5xx that
- * survived retries (transient — must NOT be treated as dead; the bash
+ * (genuinely dead child; safe to treat as unreachable) from a 429/5xx that
+ * survived retries (transient; must NOT be treated as dead; the bash
  * predecessor that dropped this distinction could not explain why a
  * descendant failed to resolve).
  */

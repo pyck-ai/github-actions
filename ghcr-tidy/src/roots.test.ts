@@ -76,8 +76,8 @@ describe("buildLiveRoots", () => {
 
   it("fails closed (never throws) when listTags itself rejects", async () => {
     // Regression test for the production incident: a `RegistryReader`
-    // whose `listTags` throws/rejects (real adapters do this — see
-    // `adapters.ts`'s doc — most commonly because the underlying HTTP
+    // whose `listTags` throws/rejects (real adapters do this; see
+    // `adapters.ts`'s doc; most commonly because the underlying HTTP
     // call genuinely could not be made) must not let that exception
     // propagate out of `buildLiveRoots` and abort the whole run; it must
     // fail this ONE package closed, exactly like a tag that fails to
@@ -98,7 +98,7 @@ describe("buildLiveRoots", () => {
 
   it("determinism: reports the FIRST failing tag in list order, regardless of which resolves first", async () => {
     // Tags are resolved concurrently (`Promise.all`); this proves the
-    // reported failure does not depend on completion order — "b" is made
+    // reported failure does not depend on completion order; "b" is made
     // to resolve (and fail) before "a" does, but "a" (earlier in the tag
     // list) must still be the one reported.
     const order: Tag[] = [tag("a"), tag("b")];
@@ -106,7 +106,7 @@ describe("buildLiveRoots", () => {
       listTags: () => Promise.resolve(order),
       resolve: (_path, ref) => {
         if (ref === "b") {
-          // Resolves immediately — finishes before "a" below.
+          // Resolves immediately; finishes before "a" below.
           return Promise.resolve({ status: "not-found", httpStatus: 404 });
         }
         // "a" resolves after a macrotask, so "b" settles first if

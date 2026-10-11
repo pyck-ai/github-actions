@@ -60,7 +60,7 @@ const anyPolicy: ResolvedPolicy = {
 /**
  * A minimal `PackagesClient` for tests in this file whose producer does
  * not itself read `createdAtOf` (the fake, hand-written producers below
- * only ever inspect `tags`) — `verification.expiry.packages` and `.now`
+ * only ever inspect `tags`); `verification.expiry.packages` and `.now`
  * are still REQUIRED fields (see `apply.ts`'s `VerificationOptions.
  * expiry` doc), so every test wiring one must supply both regardless of
  * whether its own producer happens to use the age data.
@@ -71,7 +71,7 @@ const emptyPackagesClient: PackagesClient = {
 
 const FIXED_NOW = (): Date => new Date("2026-09-11T00:00:00.000Z");
 
-/** Wraps a real `RegistryReader` so its `listTags` throws exactly once, then behaves normally — simulating an operational pre-snapshot failure without touching `FakeGhcr` itself. */
+/** Wraps a real `RegistryReader` so its `listTags` throws exactly once, then behaves normally; simulating an operational pre-snapshot failure without touching `FakeGhcr` itself. */
 function registryThatFailsListTagsOnce(inner: RegistryReader): RegistryReader {
   let failed = false;
   return {
@@ -86,7 +86,7 @@ function registryThatFailsListTagsOnce(inner: RegistryReader): RegistryReader {
   };
 }
 
-/** Wraps a real `RegistryReader` so its SECOND `listTags` call throws, then behaves normally — simulating an operational POST-snapshot failure (the pre-snapshot succeeds, the post-snapshot does not) without touching `FakeGhcr` itself. This is the shape of the real incident: 24 minutes of successful deletions, then the post-apply read itself failed. */
+/** Wraps a real `RegistryReader` so its SECOND `listTags` call throws, then behaves normally; simulating an operational POST-snapshot failure (the pre-snapshot succeeds, the post-snapshot does not) without touching `FakeGhcr` itself. This is the shape of the real incident: 24 minutes of successful deletions, then the post-apply read itself failed. */
 function registryThatFailsSecondListTags(inner: RegistryReader): RegistryReader {
   let calls = 0;
   return {
@@ -101,7 +101,7 @@ function registryThatFailsSecondListTags(inner: RegistryReader): RegistryReader 
   };
 }
 
-describe("applyPlan — post-apply verification: clean apply", () => {
+describe("applyPlan, post-apply verification: clean apply", () => {
   it("pre and post snapshots match, no regression, the run completes normally", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     // A live, untouched tag alongside garbage being deleted.
@@ -134,7 +134,7 @@ describe("applyPlan — post-apply verification: clean apply", () => {
   });
 });
 
-describe("applyPlan — post-apply verification: regression by disappearance", () => {
+describe("applyPlan, post-apply verification: regression by disappearance", () => {
   it("aborts with exit 4 when a live tag's digest 404s after this package's deletions; later packages are never processed", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
@@ -176,7 +176,7 @@ describe("applyPlan — post-apply verification: regression by disappearance", (
   });
 });
 
-describe("applyPlan — post-apply verification: republished tag (a concurrent publish, not a regression)", () => {
+describe("applyPlan, post-apply verification: republished tag (a concurrent publish, not a regression)", () => {
   it("does NOT abort, does NOT trip the breaker, and completes normally when a tag resolves cleanly before and after but to a different digest", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
@@ -189,7 +189,7 @@ describe("applyPlan — post-apply verification: republished tag (a concurrent p
     });
     fake.setManifest(digest("sha256:garbage"), {});
     // Someone else's CI republishes the tag mid-run, unrelated to this
-    // run's own (correct) deletion of unrelated garbage — this run
+    // run's own (correct) deletion of unrelated garbage; this run
     // cannot have caused this: deleting a manifest can only make a tag
     // fail to resolve, never repoint it.
     fake.setDeleteSideEffect(1, () => fake.setTag(tag("latest"), digest("sha256:other")));
@@ -241,7 +241,7 @@ describe("applyPlan — post-apply verification: republished tag (a concurrent p
     });
     fake.setManifest(digest("sha256:garbage"), {});
     // A concurrent publish repoints the tag to a NEW index whose own
-    // child is broken — the digest changed AND the closure is broken.
+    // child is broken; the digest changed AND the closure is broken.
     // Closure breakage must still win: this is real, confirmed damage
     // regardless of why the digest also differs.
     fake.setDeleteSideEffect(1, () => fake.setTag(tag("latest"), digest("sha256:new-index")));
@@ -271,7 +271,7 @@ describe("applyPlan — post-apply verification: republished tag (a concurrent p
   });
 });
 
-describe("applyPlan — post-apply verification: regression by closure", () => {
+describe("applyPlan, post-apply verification: regression by closure", () => {
   it("detects an unchanged tag/digest whose child manifest now 404s", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     fake
@@ -318,7 +318,7 @@ describe("applyPlan — post-apply verification: regression by closure", () => {
   });
 });
 
-describe("applyPlan — post-apply verification: pre-existing damage", () => {
+describe("applyPlan, post-apply verification: pre-existing damage", () => {
   it("reports a tag broken in both pre and post as pre-existing, not a regression, and the run completes", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     // Already-hollow before this run starts; nothing in the plan touches it.
@@ -345,12 +345,12 @@ describe("applyPlan — post-apply verification: pre-existing damage", () => {
 
     expect(deletedVersionIds).toEqual([1]);
     expect(result.abortedFor).toBeUndefined();
-    expect(incidents).toEqual([]); // no regression recorded — pre-existing damage is not sunk
+    expect(incidents).toEqual([]); // no regression recorded; pre-existing damage is not sunk
     expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_OK);
   });
 });
 
-describe("applyPlan — post-apply verification: pre-snapshot failure", () => {
+describe("applyPlan, post-apply verification: pre-snapshot failure", () => {
   it("treats every broken post tag as a regression under the strict posture, even though the break might have predated this run", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
@@ -383,10 +383,10 @@ describe("applyPlan — post-apply verification: pre-snapshot failure", () => {
   });
 });
 
-describe("applyPlan — post-apply verification: post-snapshot failure (the false-positive regression this fixes)", () => {
-  it("does NOT trip the breaker when the post-snapshot read itself fails, even though every pre-apply tag was healthy — it aborts as verification-unavailable instead", async () => {
+describe("applyPlan, post-apply verification: post-snapshot failure (the false-positive regression this fixes)", () => {
+  it("does NOT trip the breaker when the post-snapshot read itself fails, even though every pre-apply tag was healthy: it aborts as verification-unavailable instead", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
-    // Nothing here is actually broken — this run's deletions are clean.
+    // Nothing here is actually broken; this run's deletions are clean.
     fake
       .setTag(tag("latest"), digest("sha256:live"))
       .setManifest(digest("sha256:live"), {})
@@ -409,7 +409,7 @@ describe("applyPlan — post-apply verification: post-snapshot failure (the fals
     const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
     const result = await applyPlan(plan, mutator, { budget: 100, verification });
 
-    // The deletion itself succeeded — this is purely a post-apply read failure.
+    // The deletion itself succeeded; this is purely a post-apply read failure.
     expect(deletedVersionIds).toEqual([1]);
     // The breaker must NEVER be told about this: nothing is confirmed broken.
     expect(incidents).toEqual([]);
@@ -420,14 +420,14 @@ describe("applyPlan — post-apply verification: post-snapshot failure (the fals
     };
     expect(unavailable.packageName).toBe(pkgA);
     expect(unavailable.tags.map((t) => t.tag)).toContain(tag("latest"));
-    // Still a hard failure, not a silent pass — an operator must not be
+    // Still a hard failure, not a silent pass; an operator must not be
     // told the run was clean when nothing was actually confirmed.
     expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
   });
 
   it("still reports a CONFIRMED pre-existing break as pre-existing even when the post-snapshot as a whole fails elsewhere in this package's tag set", async () => {
     // A tag that already 404s pre-apply, read successfully in a
-    // pre-snapshot that itself does NOT fail — only the post-snapshot
+    // pre-snapshot that itself does NOT fail, only the post-snapshot
     // fails wholesale, so every tag (including this pre-existing one)
     // ends up "unknown" post-apply, not silently reclassified as newly
     // regressed or newly pre-existing.
@@ -459,7 +459,7 @@ describe("applyPlan — post-apply verification: post-snapshot failure (the fals
   });
 });
 
-describe("applyPlan — post-apply verification: both snapshots fail operationally", () => {
+describe("applyPlan, post-apply verification: both snapshots fail operationally", () => {
   it("aborts as verification-unavailable with no tag data at all, rather than silently reporting a clean run", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
@@ -499,7 +499,7 @@ describe("applyPlan — post-apply verification: both snapshots fail operational
   });
 });
 
-describe("applyPlan — post-apply verification: incident survives a broken sink (the breaker outage this fixes)", () => {
+describe("applyPlan, post-apply verification: incident survives a broken sink (the breaker outage this fixes)", () => {
   it("calls onIncident BEFORE sink.record, and still returns a normal abort result (with the run summary intact) when sink.record throws", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
@@ -529,7 +529,7 @@ describe("applyPlan — post-apply verification: incident survives a broken sink
     };
 
     const plan = planWithPackages([{ packageName: pkgA, groups: [group(1, [1])] }]);
-    // Must not throw — a thrown sink error used to propagate all the way
+    // Must not throw; a thrown sink error used to propagate all the way
     // out of applyPlan, killing the run before the CLI could print its
     // summary line at all.
     const result = await applyPlan(plan, mutator, { budget: 100, verification });
@@ -542,13 +542,13 @@ describe("applyPlan — post-apply verification: incident survives a broken sink
       tags: [expect.objectContaining({ tag: tag("latest") }) as unknown],
       sinkError: "simulated 404: breaker token cannot write issues",
     });
-    // The run summary is still fully computable from `result` — nothing
+    // The run summary is still fully computable from `result`; nothing
     // about the sink failure erased `attempted`/`remainingBudget`.
     expect(result.attempted).toBe(1);
     expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
   });
 
-  it("onIncident is called even when the confirmed regression's sink succeeds (breaker healthy) — sinkError is absent", async () => {
+  it("onIncident is called even when the confirmed regression's sink succeeds (breaker healthy): sinkError is absent", async () => {
     const fake = withHealthyCanary(new FakeGhcr());
     fake.setTag(tag("latest"), digest("sha256:live")).setManifest(digest("sha256:live"), {});
     fake.addVersion({
@@ -581,10 +581,10 @@ describe("applyPlan — post-apply verification: incident survives a broken sink
   });
 });
 
-describe("applyPlan — post-apply verification: pre-flight canary", () => {
+describe("applyPlan, post-apply verification: pre-flight canary", () => {
   it("aborts before any deletion is attempted when the canary itself fails to resolve", async () => {
     const fake = new FakeGhcr();
-    // No canary tag/manifest set up at all — canary resolution 404s.
+    // No canary tag/manifest set up at all; canary resolution 404s.
     fake.setManifest(digest("sha256:garbage"), {});
     fake.addVersion({
       id: 1,
@@ -1050,7 +1050,7 @@ describe("applyPlan: expiry seam, budget suppression is per package (issue #27, 
 
     // A hand-written producer, not the real one: this test's own concern
     // is the PER-PACKAGE suppression wiring in `applyPlan`, not window
-    // arithmetic — "stale-a"/"stale-b" never actually disappear, so
+    // arithmetic; "stale-a"/"stale-b" never actually disappear, so
     // without suppression both would land in `notExpiredTags` for BOTH
     // packages (`FakeGhcr.listTags` is not path-scoped, same caveat as
     // the tests above).
@@ -1077,7 +1077,7 @@ describe("applyPlan: expiry seam, budget suppression is per package (issue #27, 
     };
 
     // pkgA's group (1 member) fits budget 1 in full; pkgB's group (2
-    // members) then has zero budget left and is skipped in full —
+    // members) then has zero budget left and is skipped in full;
     // `applyGroup`'s group-granular rule (`apply.ts:294`), never a
     // partial spend.
     const plan = planWithPackages([
@@ -1104,16 +1104,16 @@ describe("applyPlan: expiry seam, budget suppression is per package (issue #27, 
 });
 
 describe("applyPlan: expiry seam, the real producer's anti-no-op property (issue #27, TEST 6)", () => {
-  it("a tag alone on an old digest, outside its window, that still resolves post-apply IS notExpired and names that exact tag — a constant-empty OR constant-non-empty producer both fail this", async () => {
+  it("a tag alone on an old digest, outside its window, that still resolves post-apply IS notExpired and names that exact tag: a constant-empty OR constant-non-empty producer both fail this", async () => {
     const OLD = new Date("2020-01-01T00:00:00Z");
     const YOUNG = new Date("2026-09-05T00:00:00.000Z"); // 6 days before "now" below, inside keepDays
     const fake = withHealthyCanary(new FakeGhcr());
     fake
-      // Control: retained (unversioned), still resolves — must NEVER
+      // Control: retained (unversioned), still resolves; must NEVER
       // appear in `notExpiredTags`. A constant-non-empty producer would
       // wrongly mark this as expiry too, and since it also stays
-      // healthy, it would wrongly appear here alongside the real target
-      // — defeating an exact-match assertion.
+      // healthy, it would wrongly appear here alongside the real target,
+      // defeating an exact-match assertion.
       .setTag(tag("latest"), digest("sha256:live"))
       .setManifest(digest("sha256:live"), {})
       // A NEWER sibling of the same kind, on a YOUNG digest: this is
@@ -1138,7 +1138,7 @@ describe("applyPlan: expiry seam, the real producer's anti-no-op property (issue
       createdAt: new Date(),
       reportedTags: [],
     });
-    // The independent age read `policyDrivenExpiryProducer` consumes —
+    // The independent age read `policyDrivenExpiryProducer` consumes;
     // via the SAME `fake.packagesClient()` real implementation, not a
     // hand-rolled stand-in.
     fake.addVersion({ id: 99, digest: digest("sha256:target"), createdAt: OLD, reportedTags: [] });
@@ -1150,7 +1150,7 @@ describe("applyPlan: expiry seam, the real producer's anti-no-op property (issue
     });
 
     // `keepPatches: 0` makes ANY patch-level tag fall outside its window
-    // unconditionally, regardless of competing siblings — isolating this
+    // unconditionally, regardless of competing siblings; isolating this
     // test from the unrelated question of exactly which N wins a window.
     const targetPolicy: ResolvedPolicy = {
       keepMajors: 1,

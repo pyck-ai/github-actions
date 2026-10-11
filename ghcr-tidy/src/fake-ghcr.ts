@@ -21,9 +21,9 @@ export interface FakeManifestNode {
  * matching the two real, genuinely different data sources ghcr-tidy reads
  * from:
  *
- * - `registry`: the `/v2/` tag list and manifest graph — ground truth.
+ * - `registry`: the `/v2/` tag list and manifest graph; ground truth.
  * - `packagesApi`: the Packages API's version listing (id/createdAt/tags)
- *   — a secondary index that can and does go stale.
+ *   (a secondary index that can and does go stale).
  *
  * Divergence between the two is the central fact of this domain (see the
  * `roots.ts` module doc for the flutter-rfw incident), so this fake is
@@ -92,7 +92,7 @@ export class FakeGhcr {
     };
   }
 
-  /** Fault to inject the NEXT time `deleteVersion` is called for a given version id — see {@link mutator}. */
+  /** Fault to inject the NEXT time `deleteVersion` is called for a given version id; see {@link mutator}. */
   readonly deleteFaults = new Map<number, FakeDeleteFault>();
 
   setDeleteFault(versionId: number, fault: FakeDeleteFault): this {
@@ -102,7 +102,7 @@ export class FakeGhcr {
 
   /**
    * A callback run the moment `deleteVersion(versionId)` SUCCEEDS
-   * (`"deleted"`, not `"already-gone"` or a fault) — the mechanism for
+   * (`"deleted"`, not `"already-gone"` or a fault); the mechanism for
    * post-apply-verification tests to mutate `registryTags`/`manifests`
    * (e.g. `notFound`/`transient` a digest, or repoint a tag) so that
    * mutation lands exactly between `applyPlan`'s pre- and post-apply
@@ -122,7 +122,7 @@ export class FakeGhcr {
    * A mutating view of this fake world, matching real GHCR delete
    * semantics closely enough to exercise `apply.ts`'s group-execution
    * algorithm: deleting an id already deleted returns `"already-gone"`
-   * (mirroring a real 404 on a second delete — this is what makes
+   * (mirroring a real 404 on a second delete; this is what makes
    * applying the same plan twice idempotent), and `setDeleteFault` lets a
    * test make a specific digest fail with a specific outcome ONCE
    * (`"not-found"` -> already-gone, `"last-version-conflict"` -> the

@@ -14,7 +14,7 @@
  * gets deleted) without being tripped by routine steady-state churn.
  *
  * This module knows nothing about where the baseline comes from (a
- * journal, a metrics store, a flat file committed alongside the plan —
+ * journal, a metrics store, a flat file committed alongside the plan;
  * not this module's problem) or about GHCR, `Plan`, or any I/O. The
  * caller supplies the trailing baseline and the planned count; this
  * module only decides and explains why.
@@ -24,7 +24,7 @@ export interface VolumeAlarmOptions {
   /**
    * A trailing baseline deletion count supplied by the caller (e.g. an
    * average or a recent-run count read from history external to this
-   * module). `undefined` means "no history available" — see
+   * module). `undefined` means "no history available"; see
    * {@link checkVolumeAlarm}'s doc for how that case is handled.
    */
   readonly baseline?: number;
@@ -58,7 +58,7 @@ export interface VolumeAlarmDecision {
  * baseline, not a marginal one. There is no measured production
  * distribution to fit this to yet (unlike the reference tool's
  * documented 80-90% steady state, which this module deliberately does
- * NOT try to replicate — see the module doc); 3x is a starting point to
+ * NOT try to replicate; see the module doc); 3x is a starting point to
  * be tightened once real run history exists.
  */
 export const DEFAULT_VOLUME_ALARM_MULTIPLE = 3;
@@ -67,12 +67,12 @@ export const DEFAULT_VOLUME_ALARM_MULTIPLE = 3;
  * Decides whether a plan deleting `plannedCount` versions should be
  * allowed to proceed.
  *
- * When `options.baseline` is `undefined` (no trailing history supplied —
+ * When `options.baseline` is `undefined` (no trailing history supplied;
  * e.g. the very first run, or a caller that hasn't wired history yet),
  * the decision is a DELIBERATE, DOCUMENTED `allowed: true`: refusing
  * every baseline-less run would make the alarm block indefinitely until
  * something seeds a baseline, which is worse than the risk it's meant to
- * catch. This is a deliberate choice, not an oversight — a caller that
+ * catch. This is a deliberate choice, not an oversight; a caller that
  * wants a stricter posture for the no-history case must decide that
  * explicitly, e.g. by treating a missing baseline as `0` itself before
  * calling this function.
@@ -89,7 +89,7 @@ export function checkVolumeAlarm(
       plannedCount,
       multiple,
       reason:
-        "no trailing baseline supplied — proceeding without a volume check " +
+        "no trailing baseline supplied; proceeding without a volume check " +
         "(deliberate default; see checkVolumeAlarm's doc)",
     };
   }

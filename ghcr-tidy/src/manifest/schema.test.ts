@@ -21,7 +21,7 @@ function base(overrides: Partial<Record<string, unknown>> = {}): unknown {
   };
 }
 
-describe("validateManifest — acceptance", () => {
+describe("validateManifest: acceptance", () => {
   it("accepts a minimal manifest", () => {
     const m = validateManifest(base());
     expect(m.owner).toBe("pyck-ai");
@@ -80,7 +80,7 @@ describe("validateManifest — acceptance", () => {
   });
 });
 
-describe("validateManifest — canary rejections", () => {
+describe("validateManifest: canary rejections", () => {
   it("rejects an unknown field under canary", () => {
     expect(() => validateManifest(base({ canary: { package: "x", tag: "y", bogus: 1 } }))).toThrow(
       /unknown field "bogus"/,
@@ -118,7 +118,7 @@ describe("validateManifest — canary rejections", () => {
   });
 });
 
-describe("validateManifest — retention rejections", () => {
+describe("validateManifest: retention rejections", () => {
   it("rejects an unknown field under retention", () => {
     expect(() => validateManifest(base({ retention: { bogus: 1 } }))).toThrow(
       /unknown field "bogus"/,
@@ -147,7 +147,7 @@ describe("validateManifest — retention rejections", () => {
   });
 });
 
-describe("validateManifest — rejections", () => {
+describe("validateManifest: rejections", () => {
   it("rejects an unknown top-level field", () => {
     expect(() => validateManifest(base({ extra: true }))).toThrow(ManifestError);
     expect(() => validateManifest(base({ extra: true }))).toThrow(/unknown field "extra"/);
@@ -275,13 +275,13 @@ describe("resolvePolicy", () => {
     });
   });
 
-  it("is identical for every package — there is no per-package resolution any more", () => {
+  it("is identical for every package: there is no per-package resolution any more", () => {
     const m: Manifest = {
       ...manifest,
       packages: [{ match: packageName("a") }, { match: packageName("b") }],
       retention: { keepMajors: 2 },
     };
-    // `resolvePolicy` takes only the manifest — the same call answers
+    // `resolvePolicy` takes only the manifest; the same call answers
     // for every package, unlike the old per-entry override chain.
     expect(resolvePolicy(m)).toEqual(resolvePolicy(m));
   });

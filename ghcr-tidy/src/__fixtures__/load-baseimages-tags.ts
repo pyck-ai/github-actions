@@ -7,7 +7,7 @@ import { tag, type Tag } from "../domain.js";
  * Loads the real 362-tag corpus (`baseimages-tags.tsv`, `package<TAB>tag`,
  * one line per registry tag observed across all 11 live `baseimages`
  * packages) used to drive the property tests in `tag-kind.test.ts` and
- * `retain.test.ts` — see issue #23: this is the ground truth the parse
+ * `retain.test.ts`; see issue #23: this is the ground truth the parse
  * rule and the windowing algorithm are verified against, not a
  * hand-picked sample.
  */

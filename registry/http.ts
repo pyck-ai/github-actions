@@ -2,7 +2,7 @@ import { shouldRetryStatus } from "./status.js";
 
 /**
  * The outcome of an HTTP attempt: either a response was received (any
- * status — the caller decides what to do with it via {@link classifyStatus})
+ * status; the caller decides what to do with it via {@link classifyStatus})
  * or the request failed below the HTTP layer (DNS, TLS, timeout, ...).
  */
 export type HttpOutcome =

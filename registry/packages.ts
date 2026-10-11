@@ -6,7 +6,7 @@ import type { PackageName } from "./package-name.js";
 
 /**
  * The Octokit class this module is built for: core + pagination + retry +
- * throttling. This is a primary reason TypeScript replaces the bash here —
+ * throttling. This is a primary reason TypeScript replaces the bash here;
  * the bash hand-rolled `Link` header pagination and shipped a raw
  * `curl -X DELETE` with NO backoff, so a single 429 counted as a permanent
  * failure AND consumed a deletion budget slot. Octokit's throttling plugin
@@ -67,7 +67,7 @@ export function toPackageVersion(raw: RawPackageVersion): PackageVersion {
   };
 }
 
-/** The subset of Octokit this module depends on for listing — narrowed so it can be faked in tests. */
+/** The subset of Octokit this module depends on for listing; narrowed so it can be faked in tests. */
 export interface Paginatable {
   paginate<T = unknown>(route: string, params?: Record<string, unknown>): Promise<T[]>;
 }
@@ -77,7 +77,7 @@ export interface Paginatable {
  * Octokit's `paginate` plugin.
  *
  * CAUTION: the GitHub Packages API is a secondary index that goes stale. Do
- * not treat the result of this call as authoritative for read-after-write —
+ * not treat the result of this call as authoritative for read-after-write;
  * e.g. immediately after deleting versions, a subsequent list may still
  * briefly show them, or a subsequent list of a freshly-pushed package may
  * not yet show a new version.
@@ -94,7 +94,7 @@ export async function listPackageVersions(
   return raws.map(toPackageVersion);
 }
 
-/** The subset of Octokit this module depends on for deleting — narrowed so it can be faked in tests. */
+/** The subset of Octokit this module depends on for deleting; narrowed so it can be faked in tests. */
 export interface Requestable {
   request(route: string, params?: Record<string, unknown>): Promise<{ status: number }>;
 }
@@ -131,7 +131,7 @@ function classifyDeleteVersionStatus(status: number): DeletePackageVersionResult
  * Deletes a single package version.
  *
  * KNOWN GITHUB BEHAVIOUR (observed 2026-09-10 against pyck-ai/baseimages;
- * NOT documented by GitHub — their docs list only 204/401/403/404 for this
+ * NOT documented by GitHub; their docs list only 204/401/403/404 for this
  * endpoint and actually claim the opposite): deleting the LAST remaining
  * version of a package via this endpoint returns HTTP 400. Deleting the
  * package itself (see {@link deletePackage}) succeeds with 204 even while
@@ -139,7 +139,7 @@ function classifyDeleteVersionStatus(status: number): DeletePackageVersionResult
  *
  * Consequently this function surfaces a 400 as `"last-version-conflict"`
  * instead of throwing a generic error. Callers must NOT retry the version
- * delete in a loop expecting it to eventually succeed — that loop never
+ * delete in a loop expecting it to eventually succeed, that loop never
  * terminates. Decide the whole package should go and call
  * {@link deletePackage} once instead.
  */

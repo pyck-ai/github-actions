@@ -10,28 +10,28 @@ export interface DeletionGroup {
 
 /**
  * Best-effort BFS over `deleteSet`-only nodes rooted at `root`, computing
- * `root`'s FULL transitive closure within `deleteSet` — as if `root` were
+ * `root`'s FULL transitive closure within `deleteSet`; as if `root` were
  * the only candidate, with no cross-candidate ownership to respect. Used
  * as {@link buildDeletionGroups}'s phase 1 (see that function's doc): the
  * closure computed here is candidate-LOCAL (only `localVisited`, scoped
  * to this one call, guards against re-visiting a node reachable two ways
- * within `root`'s own subtree — e.g. a diamond), so it can safely run
- * CONCURRENTLY with every other candidate's closure. Ownership — which
+ * within `root`'s own subtree; e.g. a diamond), so it can safely run
+ * CONCURRENTLY with every other candidate's closure. Ownership, which
  * candidate actually gets to keep a digest reachable from more than
- * one — is resolved afterward, deterministically, by
+ * one; is resolved afterward, deterministically, by
  * {@link buildDeletionGroups} itself; this function neither knows nor
  * cares about it.
  *
  * Each BFS level's children are resolved CONCURRENTLY (`Promise.all`),
  * matching `reachability.ts`'s own per-level fan-out; like that function,
- * this imposes no concurrency limit of its own — real HTTP concurrency is
+ * this imposes no concurrency limit of its own; real HTTP concurrency is
  * bounded entirely by the shared `RegistryReader` (`limiter.ts`, `cli.ts`'s
  * `--jobs`), and a digest reachable from more than one candidate is only
  * ever fetched once regardless (`resolve-cache.ts`, shared across the
  * whole run).
  *
  * This walk is REPORTING/GROUPING ONLY and never influences `DELETE`
- * itself (`DELETE` is pure set arithmetic — see `plan.ts`). Consequently a
+ * itself (`DELETE` is pure set arithmetic; see `plan.ts`). Consequently a
  * failed or 404 resolution here must NOT fail the plan closed: a deleted
  * root's child that itself 404s is exactly the "stale Packages API entry"
  * case the design accepts into `DELETE` without ceremony. Resolution here
@@ -39,9 +39,9 @@ export interface DeletionGroup {
  * digest is still in the group as a childless leaf (or, if unresolved
  * itself with no known parent, as its own singleton group root). A
  * genuinely UNEXPECTED failure (a bug, not a modeled 404/transient
- * response) still propagates as a rejected promise out of this function —
+ * response) still propagates as a rejected promise out of this function;
  * it is never silently swallowed into a truncated-but-plausible-looking
- * member list — which fails the whole package closed at the `planPackage`
+ * member list, which fails the whole package closed at the `planPackage`
  * level (`cli.ts`'s per-package isolation keeps that from touching any
  * OTHER package's plan).
  */
@@ -101,8 +101,8 @@ async function computeCandidateClosure(
  *    transitive closure within `deleteSet` is computed independently and
  *    at the same time ({@link computeCandidateClosure}, fired via
  *    `Promise.all`). This replaced a `for` loop that walked one
- *    candidate's whole subtree to completion — resolving one digest at a
- *    time — before starting the next: with hundreds of candidates (every
+ *    candidate's whole subtree to completion; resolving one digest at a
+ *    time; before starting the next: with hundreds of candidates (every
  *    deleted image is its own candidate), that left almost all of
  *    `--jobs`' concurrency budget idle for the same reason
  *    `reachability.ts`'s old per-root loop did. Real HTTP concurrency is
@@ -114,21 +114,21 @@ async function computeCandidateClosure(
  *    exactly as before) and each one's precomputed closure is filtered
  *    against a single shared `visited` set, claiming whichever digests
  *    are not already owned by an earlier candidate. A digest reachable
- *    from more than one candidate's closure — the ownership race phase 1
- *    deliberately ignores — is always won by whichever candidate comes
+ *    from more than one candidate's closure; the ownership race phase 1
+ *    deliberately ignores; is always won by whichever candidate comes
  *    FIRST in this fixed order, exactly matching what the original
  *    sequential-BFS algorithm did (the first candidate to reach a shared
  *    digest always fully expanded into its descendants before any later
  *    candidate got a chance to). Because this phase does no I/O and never
  *    awaits, it can never race: the outcome depends only on candidate
  *    order, never on which candidate's network calls happened to resolve
- *    first — so the emitted groups (root, member order, and ownership of
+ *    first, so the emitted groups (root, member order, and ownership of
  *    every shared digest) are byte-for-byte deterministic regardless of
  *    concurrency.
  *
  * Within a kept group, member order matches `computeCandidateClosure`'s
  * own BFS order (parents before children) with any digest claimed by an
- * earlier candidate filtered out — filtering out entries never reorders
+ * earlier candidate filtered out; filtering out entries never reorders
  * the survivors, so parents still precede their children.
  */
 export async function buildDeletionGroups(
@@ -180,7 +180,7 @@ export async function buildDeletionGroups(
 /**
  * Static integrity assertion: no digest in `DELETE` may still be
  * referenced as a child of a digest in `reachable` (a "surviving parent").
- * `edges` here should be the reachability walk's own edge map — every
+ * `edges` here should be the reachability walk's own edge map; every
  * digest it contains as a key was successfully resolved, so its recorded
  * children are exactly what the registry itself reports.
  *

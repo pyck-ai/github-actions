@@ -43,19 +43,19 @@ export type ListRegistryTagsOptions = RequestWithRetryOptions;
  * has more tags than fit on one page.
  *
  * MUST paginate: `baseimages/python` was observed returning exactly 100 tags
- * at `?n=100` — i.e. truncated — so a single-page read computes ROOTS from a
+ * at `?n=100`, i.e. truncated, so a single-page read computes ROOTS from a
  * partial view of the registry and silently under-protects (or, worse,
  * under-deletes-then-corrects-later) whatever tags fall past the first page.
  *
  * GHCR's `Link` header is ORIGIN-RELATIVE (verified live 2026-09-11 against
  * `ghcr.io/v2/pyck-ai/baseimages/agent/tags/list`:
  * `link: </v2/pyck-ai/baseimages/agent/tags/list?last=...&n=...>; rel="next"`
- * — no scheme or host), per the OCI distribution spec's own pagination
+ * no scheme or host), per the OCI distribution spec's own pagination
  * example. `parseNextLink` returns that raw value verbatim, so it MUST be
  * resolved against the previous request's URL before being fetched:
  * passing a bare path straight to `fetch` throws (`TypeError: Failed to
  * parse URL`), which `requestWithRetry` catches and reports as
- * `"network-error"` on every retry — indistinguishable from a real network
+ * `"network-error"` on every retry; indistinguishable from a real network
  * failure, but 100% reproducible for any package with more than one page
  * of tags (i.e. the moment pagination is actually exercised) and NOT
  * something retrying helps with. This was the exact cause of
@@ -64,7 +64,7 @@ export type ListRegistryTagsOptions = RequestWithRetryOptions;
  *
  * Classifies the observed status the same way {@link resolveManifest} does,
  * so a caller building ghcr-tidy's LIVE_ROOTS can distinguish a genuine
- * 404 (package has no tags endpoint — unusual, but not the same as "zero
+ * 404 (package has no tags endpoint; unusual, but not the same as "zero
  * tags") from a transient failure that must not be treated as "no tags".
  */
 export async function listRegistryTags(

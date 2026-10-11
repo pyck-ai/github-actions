@@ -12,10 +12,10 @@ declare const APPLY: unique symbol;
 
 /**
  * Proof that `plan` was durably written to disk, read back, and
- * re-validated — see {@link grantApply}, the only function that can
+ * re-validated; see {@link grantApply}, the only function that can
  * produce one. There is no runtime value keyed by `APPLY`; this is a
  * pure type-level brand, so an `ApplyCapability` can never be forged by
- * an object literal (`{}` is not assignable to it — see
+ * an object literal (`{}` is not assignable to it; see
  * `mutator.typecheck.ts`) and can only ever have come from a successful
  * `grantApply` call.
  */
@@ -55,17 +55,17 @@ function sha256Hex(content: string): string {
  * Grants an {@link ApplyCapability} for `plan`, but ONLY after:
  *
  * 1. Serialising it deterministically ({@link serializePlan}).
- * 2. Writing it atomically — a temp file in the SAME directory as
+ * 2. Writing it atomically; a temp file in the SAME directory as
  *    `filePath`, then a rename, so `filePath` never briefly shows a
  *    partial write.
  * 3. Reading `filePath` back from disk (not reusing the in-memory
- *    `serialized` string — the read must exercise the real file).
+ *    `serialized` string; the read must exercise the real file).
  * 4. Verifying a SHA-256 hash of the reread bytes matches the bytes just
  *    serialised.
  * 5. Re-parsing the reread bytes against {@link parsePlan}'s closed
  *    schema and confirming the result matches `plan` exactly.
  *
- * Any failure at any step throws and no capability is returned — there
+ * Any failure at any step throws and no capability is returned; there
  * is no other constructor for one, and {@link applyMutator} in
  * `mutator.ts` requires one, so "delete without a durable, re-readable
  * plan" is a type error, not a code-review item.
@@ -98,7 +98,7 @@ export async function grantApply(
   const actualHash = sha256Hex(reread);
   if (actualHash !== expectedHash) {
     throw new Error(
-      `plan round trip failed: content hash of ${filePath} after write (${actualHash}) does not match the hash of what was serialised (${expectedHash}) — refusing to grant apply`,
+      `plan round trip failed: content hash of ${filePath} after write (${actualHash}) does not match the hash of what was serialised (${expectedHash}); refusing to grant apply`,
     );
   }
 
@@ -107,19 +107,19 @@ export async function grantApply(
     rawJson = JSON.parse(reread);
   } catch (error) {
     throw new Error(
-      `plan round trip failed: ${filePath} is not valid JSON after being written (${error instanceof Error ? error.message : String(error)}) — refusing to grant apply`,
+      `plan round trip failed: ${filePath} is not valid JSON after being written (${error instanceof Error ? error.message : String(error)}); refusing to grant apply`,
       { cause: error },
     );
   }
 
   // Compare via serializePlan's canonical key order, not raw
-  // JSON.stringify — a value's own key insertion order is not guaranteed
+  // JSON.stringify; a value's own key insertion order is not guaranteed
   // to match parsePlan's, and this check must not produce a false
   // mismatch on two structurally-identical plans.
   const reparsed = parsePlan(rawJson);
   if (serializePlan(reparsed) !== serializePlan(plan)) {
     throw new Error(
-      `plan round trip failed: the plan re-read from ${filePath} does not match the plan that was granted — refusing to grant apply`,
+      `plan round trip failed: the plan re-read from ${filePath} does not match the plan that was granted; refusing to grant apply`,
     );
   }
 

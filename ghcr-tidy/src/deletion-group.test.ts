@@ -8,7 +8,7 @@ import type { RegistryReader } from "./ports.js";
 
 const path = registryPathFor("pyck-ai", packageName("golang"));
 
-/** Wraps a {@link RegistryReader} so resolving `ref` waits `delayFor.get(ref) ?? 0` ms before delegating — lets a test invert real-time completion order relative to candidate/discovery order. */
+/** Wraps a {@link RegistryReader} so resolving `ref` waits `delayFor.get(ref) ?? 0` ms before delegating; lets a test invert real-time completion order relative to candidate/discovery order. */
 function delayed(inner: RegistryReader, delayFor: ReadonlyMap<string, number>): RegistryReader {
   return {
     listTags: (p) => inner.listTags(p),
@@ -61,7 +61,7 @@ describe("buildDeletionGroups", () => {
   });
 
   it("excludes a child still reachable via another (kept) root from every group", async () => {
-    // A survives (kept), B is deleted. C is shared — since it's reachable
+    // A survives (kept), B is deleted. C is shared; since it's reachable
     // via A, it was never in deleteSet at all, so B's group must not claim it.
     const deleteSet = new Set([digest("sha256:b")]);
     const rootChildren = new Map([
@@ -130,7 +130,7 @@ describe("buildDeletionGroups", () => {
     // has a further descendant E. Both r1 and r2 are live-root candidates
     // (sorted "sha256:r1" before "sha256:r2"), so the ORIGINAL sequential
     // algorithm would fully expand r1 into D and E first, leaving r2 with
-    // nothing but itself — this pins that exact ownership + order.
+    // nothing but itself; this pins that exact ownership + order.
     const build = (): FakeGhcr => {
       const fake = new FakeGhcr();
       fake

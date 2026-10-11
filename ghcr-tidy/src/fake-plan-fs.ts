@@ -3,7 +3,7 @@ import type { PlanFileSystem } from "./apply-capability.js";
 export interface FakePlanFileSystemOptions {
   /**
    * If set, `writeFile` writes THIS content to the in-memory store
-   * instead of what was actually passed in — simulating a truncated or
+   * instead of what was actually passed in; simulating a truncated or
    * otherwise corrupted write (the `jq --argjson` zero-byte-file failure
    * mode `grantApply`'s round trip exists to catch). `undefined` means
    * "write faithfully" (the default, real-world-mirroring behaviour).
@@ -53,7 +53,7 @@ export class FakePlanFileSystem implements PlanFileSystem {
     return Promise.resolve(content);
   }
 
-  /** Directly seeds a file's content as if it were already on disk, bypassing `writeFile`/`rename` — for tests of pre-existing truncated/corrupt files. */
+  /** Directly seeds a file's content as if it were already on disk, bypassing `writeFile`/`rename`, for tests of pre-existing truncated/corrupt files. */
   seed(filePath: string, content: string): void {
     this.files.set(filePath, content);
   }

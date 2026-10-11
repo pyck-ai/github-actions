@@ -40,7 +40,7 @@ function withHealthyCanary(fake: FakeGhcr): FakeGhcr {
   return fake.setTag(canaryTag, digest("sha256:canary")).setManifest(digest("sha256:canary"), {});
 }
 
-describe("applyPlan — circuit breaker: already tripped", () => {
+describe("applyPlan, circuit breaker: already tripped", () => {
   it("refuses to attempt any mutation and names the issue in the abort reason", async () => {
     const state = { issueNumber: 7, issueUrl: "https://github.com/pyck-ai/x/issues/7" };
     const { breaker } = memoryBreaker(state);
@@ -56,7 +56,7 @@ describe("applyPlan — circuit breaker: already tripped", () => {
     expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
   });
 
-  it("also refuses when verification is configured — the breaker check happens first", async () => {
+  it("also refuses when verification is configured: the breaker check happens first", async () => {
     const state = { issueNumber: 7, issueUrl: "https://github.com/pyck-ai/x/issues/7" };
     const { breaker } = memoryBreaker(state);
     const fake = withHealthyCanary(new FakeGhcr());
@@ -75,7 +75,7 @@ describe("applyPlan — circuit breaker: already tripped", () => {
   });
 });
 
-describe("applyPlan — circuit breaker: a regression trips it via the RegressionSink seam", () => {
+describe("applyPlan, circuit breaker: a regression trips it via the RegressionSink seam", () => {
   it("trip is called once with the regression incident, and a second run against the same breaker refuses to mutate", async () => {
     const { breaker, trips } = memoryBreaker();
     const sink = breakerRegressionSink(breaker);
@@ -116,7 +116,7 @@ describe("applyPlan — circuit breaker: a regression trips it via the Regressio
   });
 });
 
-describe("applyPlan — volume alarm", () => {
+describe("applyPlan: volume alarm", () => {
   it("refuses to apply, attempting nothing, when planned deletions exceed the multiple of the baseline", async () => {
     const fake = new FakeGhcr();
     const { mutator, attemptedVersionIds } = fake.mutator();

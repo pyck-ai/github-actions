@@ -9,7 +9,7 @@ import {
 import type { ApplyCapability } from "./apply-capability.js";
 
 export type VersionId = number;
-/** Reused verbatim from `registry/packages.ts` — see that module's doc for the undocumented 400-on-last-version behaviour this type encodes. Never reclassified here. */
+/** Reused verbatim from `registry/packages.ts`; see that module's doc for the undocumented 400-on-last-version behaviour this type encodes. Never reclassified here. */
 export type DeleteVersionResult = DeletePackageVersionResult;
 export type { DeletePackageResult };
 
@@ -37,12 +37,12 @@ export interface RecordedCall {
 
 export interface DryRunMutator {
   readonly mutator: Mutator;
-  /** Every call made, in call order. Live reference — grows as `mutator`'s methods are invoked. */
+  /** Every call made, in call order. Live reference; grows as `mutator`'s methods are invoked. */
   readonly calls: readonly RecordedCall[];
 }
 
 /**
- * A `Mutator` that HOLDS NO CLIENT — there is nothing inside it capable
+ * A `Mutator` that HOLDS NO CLIENT; there is nothing inside it capable
  * of making an HTTP request, so it cannot reach the network even by
  * accident or by a future refactor that forgets to check a flag. It
  * records every call it would have made and always reports the
@@ -68,7 +68,7 @@ export function dryRunMutator(): DryRunMutator {
 /**
  * The real, network-backed `Mutator`, wrapping `registry/packages.ts`.
  * REQUIRES an {@link ApplyCapability} as a constructor parameter, and
- * there is no other constructor for a network-backed `Mutator` — so
+ * there is no other constructor for a network-backed `Mutator`, so
  * "delete without a durable, re-readable plan" (see `grantApply`'s doc)
  * is a type error, not a code-review item. See
  * `mutator.typecheck.ts` for the compile-time assertion that this

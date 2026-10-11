@@ -36,7 +36,7 @@ describe("formatIncidentReport", () => {
         - latest
             failed check:    tag gone (no longer resolves)
             digest before:   sha256:live
-            digest after:    (none — tag no longer resolves)
+            digest after:    (none; tag no longer resolves)
 
       Deletions this run made in this package before the regression was detected:
         - digest sha256:garbage (version id 1)
@@ -44,12 +44,12 @@ describe("formatIncidentReport", () => {
       Journal file for this run: /tmp/ghcr-tidy-2026-09-11.ndjson
 
       GHCR HAS NO UNDELETE. Whatever this run deleted in this package cannot be
-      restored by GitHub — the only remediation is to rebuild and republish the
+      restored by GitHub; the only remediation is to rebuild and republish the
       affected tag(s) above from source.
 
       To clear this breaker: first understand the cause (read the journal above
       and confirm what actually broke and why), THEN close this issue. Closing
-      the issue is the only way to clear the breaker — there is no automatic
+      the issue is the only way to clear the breaker; there is no automatic
       reset and no override flag. ghcr-tidy will refuse to delete anything in
       any package, in any future run, for as long as this issue stays open."
     `);
@@ -77,7 +77,7 @@ describe("formatIncidentReport", () => {
     expect(body).toContain("digest before:   sha256:live");
     expect(body).toContain("digest after:    sha256:other");
     expect(body).toContain(
-      "(none — the regression was detected before this package deleted anything)",
+      "(none; the regression was detected before this package deleted anything)",
     );
     expect(body).toContain("Journal file for this run: not recorded");
   });
@@ -130,7 +130,7 @@ describe("formatIncidentReport", () => {
     expect(body).toContain("truncated");
     expect(body).toMatch(/more tags? omitted/);
     expect(body).toMatch(/more deletions? omitted/);
-    // The most actionable content — the first tags — must still be present.
+    // The most actionable content, the first tags, must still be present.
     expect(body).toContain("tag-0");
     // Essential remediation/closing instructions must never be cut off.
     expect(body).toContain("GHCR HAS NO UNDELETE");

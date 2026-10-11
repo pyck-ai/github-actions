@@ -21,7 +21,7 @@ const defaultPolicy: PlanPolicy = {
 /**
  * A retention policy that keeps NOTHING versioned (top-0 majors at every
  * kind), used throughout this file for fixtures whose intent is "this
- * tag is not otherwise protected" — an unversioned tag (e.g. `latest`)
+ * tag is not otherwise protected"; an unversioned tag (e.g. `latest`)
  * is retained unconditionally regardless of these numbers (see
  * `tag-kind.ts`'s module doc), so it never needs a pattern to protect it
  * any more.
@@ -74,7 +74,7 @@ describe("planPackage", () => {
 
     const result = await planPackage(options(fake));
 
-    // Everything is kept/reachable, so there is nothing to delete — see
+    // Everything is kept/reachable, so there is nothing to delete; see
     // `reachability.test.ts` for direct coverage of the 5-node BFS itself.
     expect(result).toEqual({ status: "nothing-to-do" });
   });
@@ -129,7 +129,7 @@ describe("planPackage", () => {
       .setManifest(digest("sha256:b"), { children: [{ digest: "sha256:c" }] })
       .setManifest(digest("sha256:c"), {})
       .setTag(tag("latest"), digest("sha256:a"))
-      // Versioned, excluded by `noRetention` — see the "aged-out root" test above.
+      // Versioned, excluded by `noRetention`; see the "aged-out root" test above.
       .setTag(tag("1.0"), digest("sha256:b"))
       .addVersion(version(1, "sha256:a", RECENT, ["latest"]))
       .addVersion(version(2, "sha256:b", OLD, ["1.0"]))
@@ -149,7 +149,7 @@ describe("planPackage", () => {
     expect(result.groups.some((g) => g.members.includes(digest("sha256:c")))).toBe(false);
   });
 
-  it("REGRESSION: stale-empty Packages tags while a registry tag points at the version — KEPT", async () => {
+  it("REGRESSION: stale-empty Packages tags while a registry tag points at the version: KEPT", async () => {
     // The Packages API's tags array claims this version is untagged, but
     // the registry's own tag list resolves `latest` to it. Rooting on the
     // registry (never the Packages API) must keep it. This test FAILS
@@ -357,7 +357,7 @@ describe("planPackage", () => {
       .addVersion(version(3, "sha256:bad-b", OLD));
 
     // "bad-b" (discovered second) resolves before "bad-a" (discovered
-    // first) — the report must still name "bad-a", proving the BFS
+    // first); the report must still name "bad-a", proving the BFS
     // frontier's failure selection is order-based, not race-based.
     const inner = fake.registryReader();
     const registry: RegistryReader = {

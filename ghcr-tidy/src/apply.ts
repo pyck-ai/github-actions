@@ -33,12 +33,12 @@ import {
 /**
  * Wires post-apply verification (`verify.ts`) into `applyPlan`. Entirely
  * OPTIONAL: omitting it reproduces the pre-verification behaviour exactly
- * (nothing snapshots the registry, nothing can abort for a regression) —
+ * (nothing snapshots the registry, nothing can abort for a regression);
  * every existing caller and test that does not pass it is unaffected.
  * When present, `applyPlan` runs the pre-flight canary once before the
  * very first deletion, and snapshots + verifies each package
  * immediately after that package's own deletions, aborting the whole run
- * before the next package is touched — see this module's `applyPlan` doc.
+ * before the next package is touched; see this module's `applyPlan` doc.
  */
 export interface VerificationOptions {
   readonly registry: RegistryReader;
@@ -48,11 +48,11 @@ export interface VerificationOptions {
   /**
    * Called synchronously the moment a regression is confirmed, BEFORE
    * `sink.record` is invoked and regardless of whether that call
-   * later succeeds — so the incident survives even if the sink itself
+   * later succeeds, so the incident survives even if the sink itself
    * (e.g. `breaker.ts`'s `githubIssueBreaker`, which makes network
    * calls) is unreachable. This is what makes an outage of the breaker's
    * OWN plumbing (wrong token, GitHub down, etc.) fail loud without
-   * erasing the evidence for the regression that triggered it — see the
+   * erasing the evidence for the regression that triggered it; see the
    * incident that motivated this: a breaker whose issue-creation call
    * threw left no record at all of what it was trying to report, only a
    * bare "Not Found". Optional and side-effect-free from `applyPlan`'s
@@ -66,7 +66,7 @@ export interface VerificationOptions {
    * test, which reproduces pre-seam behaviour exactly: every disappeared
    * tag is unconditionally a regression, same as before this field
    * existed. When supplied, `producer` is invoked once per package with
-   * THAT package's `ExpiryProducerInput` — see `verify.ts`'s doc on that
+   * THAT package's `ExpiryProducerInput`; see `verify.ts`'s doc on that
    * type for exactly what it carries and why `packages` (an INDEPENDENT
    * Packages API read, never the planner's own `versionsByDigest`) and
    * `now` are both required here rather than left to the producer to
@@ -83,18 +83,18 @@ export interface VerificationOptions {
     readonly policyFor: (packageName: PackageName) => ResolvedPolicy;
     /**
      * The Packages API client `policyDrivenExpiryProducer` reads
-     * `createdAt` from, called fresh per package at verification time —
+     * `createdAt` from, called fresh per package at verification time;
      * see `verify.ts`'s `ExpiryProducerInput.createdAtOf` doc for why
      * this must be an independent read rather than the planner's
      * `versionsByDigest` map. `PackagesClient` itself is never cached
-     * anywhere in this codebase (unlike `RegistryReader`, which is —
+     * anywhere in this codebase (unlike `RegistryReader`, which is;
      * see `resolve-cache.ts`), so passing the SAME client already used
      * for planning is safe: this call is a genuine fresh HTTP round
      * trip either way, not a cache replay.
      */
     readonly packages: PackagesClient;
     /**
-     * Injectable time source for the expiry producer's age gate — NEVER
+     * Injectable time source for the expiry producer's age gate; NEVER
      * `Date.now()` inside `applyPlan` or the producer itself, so a run's
      * classification stays reproducible under test. Called once per
      * package, immediately before that package's `ExpiryProducerInput`
@@ -107,7 +107,7 @@ export interface VerificationOptions {
 export interface ApplyOptions {
   /**
    * Maximum number of version-delete calls this run may ATTEMPT
-   * (success or failure both count — see `buildGroupOutcome`'s doc).
+   * (success or failure both count; see `buildGroupOutcome`'s doc).
    * Checked GROUP-granularly: a group is never started unless the full
    * remaining budget can cover every one of its members, so a run can
    * never stop between a root and its own children for lack of budget.
@@ -117,7 +117,7 @@ export interface ApplyOptions {
   readonly verification?: VerificationOptions;
   /**
    * The circuit breaker (`breaker.ts`). Checked BEFORE any mutation and
-   * before the pre-flight canary — a tripped breaker refuses to perform
+   * before the pre-flight canary; a tripped breaker refuses to perform
    * ANY mutation, unconditionally, regardless of `verification` being
    * set. Omitting this reproduces pre-breaker behaviour exactly (nothing
    * can ever refuse to run for this reason), same as `verification`
@@ -127,7 +127,7 @@ export interface ApplyOptions {
   /**
    * The volume alarm (`volume-alarm.ts`). Checked once, after the
    * breaker and before the canary, against the plan's total planned
-   * deletion count — see {@link plannedDeletionCount}. Omitting this
+   * deletion count; see {@link plannedDeletionCount}. Omitting this
    * disables the check entirely, same as omitting `options.baseline`
    * within it.
    */
@@ -154,7 +154,7 @@ export interface GroupApplyResult {
    * `"completed"`: every member was attempted and none failed (a
    * `"deleted"`/`"already-gone"` result on every member).
    * `"abandoned"`: some member failed and the rest of the group (in
-   * parents-first order) was never attempted — see this module's doc for
+   * parents-first order) was never attempted; see this module's doc for
    * why this is the safe outcome, not a bug.
    * `"skipped-budget"`: the group was never started at all because the
    * remaining budget could not cover it in full.
@@ -169,7 +169,7 @@ export interface PackageApplyResult {
   /**
    * Tags `compareSnapshots` found `republished` for this package (see
    * that field's doc on `verify.ts`): resolved cleanly before AND after
-   * this run's deletions, just pointing at a different digest — a
+   * this run's deletions, just pointing at a different digest; a
    * concurrent publish racing this run, not damage it caused. Always
    * empty when `verification` was not supplied. Deliberately reported
    * here rather than only logged: it is genuine, useful context ("the
@@ -197,7 +197,7 @@ export interface PackageApplyResult {
    * aborts the run, see `verify.ts`'s `CompareSnapshotsResult.notExpired`
    * doc for why this is not evidence of damage. Always empty when
    * `verification.expiry` was not supplied, AND whenever
-   * {@link notExpiredSuppressedReason} is set (see that field's doc) —
+   * {@link notExpiredSuppressedReason} is set (see that field's doc);
    * never both populated at once.
    */
   readonly notExpiredTags: readonly RegressedTag[];
@@ -205,7 +205,7 @@ export interface PackageApplyResult {
    * Set, WITH a stated reason, instead of populating
    * {@link notExpiredTags} when at least one of this package's OWN
    * groups was `"skipped-budget"` (a crisp, group-granular, per-package
-   * fact — see `applyGroup`'s doc). A budget-truncated package's
+   * fact; see `applyGroup`'s doc). A budget-truncated package's
    * remaining "should be gone" candidates are known-deferred work, not a
    * divergence between the planner and the verifier, so reporting them
    * as `notExpired` would be exactly the false positive issue #27 fixed
@@ -216,7 +216,7 @@ export interface PackageApplyResult {
    * Deliberately NOT the same as leaving `notExpiredTags` empty with
    * this field undefined: that combination means "verified clean,
    * nothing to report"; this field being SET means "cannot report for
-   * this package this cycle" — an operator must be able to tell those
+   * this package this cycle"; an operator must be able to tell those
    * two apart, never told "clean" when the check was actually withheld.
    * Checked PER PACKAGE, never as a run-global gate on remaining budget,
    * so a package processed before the budget was exhausted still gets
@@ -228,24 +228,24 @@ export interface PackageApplyResult {
 /**
  * Why `applyPlan` stopped before processing the entire plan.
  * `"breaker-tripped"` and `"volume-alarm"` mean nothing was attempted at
- * all — checked before anything else, including the canary.
+ * all; checked before anything else, including the canary.
  * `"canary-failed"` (when verification is enabled) also means nothing
- * was deleted at all — it carries the canary's own path/tag and a
+ * was deleted at all; it carries the canary's own path/tag and a
  * {@link CanaryFailureReason} explaining WHY the canary failed, rather
  * than only that it did. `"regression"` means every package up to and
  * including `packageName` was fully processed (its deletions already
  * happened) and `packageName`'s own deletions are exactly
- * `regression.tags[*]`'s `precedingDeletions` — every package AFTER it
+ * `regression.tags[*]`'s `precedingDeletions`; every package AFTER it
  * in plan order was never touched. `regression.sinkError`, when present,
- * means `verification.sink.record` (the breaker) itself threw — e.g. the
+ * means `verification.sink.record` (the breaker) itself threw; e.g. the
  * incident that motivated this field: the breaker's own issue-creation
  * call 404'd on a mis-scoped token. The regression is real and confirmed
  * either way; `sinkError` only reports that the breaker could not be
  * notified of it, never that the regression itself is in doubt.
- * `"verification-unavailable"` means nothing here was CONFIRMED broken —
+ * `"verification-unavailable"` means nothing here was CONFIRMED broken;
  * `tags` is `unverified` from `compareSnapshots` (or empty, when BOTH the
  * pre- and post-snapshot failed operationally and there is no per-tag
- * data at all) — but verification could not vouch for this package
+ * data at all), but verification could not vouch for this package
  * either, so the run stops without tripping the breaker.
  * `"expiry-producer-invalid"` means `verification.expiry`'s producer
  * violated one of `verify.ts`'s `resolveExpirySet` obligations for this
@@ -283,7 +283,7 @@ export type ApplyAbortReason =
       readonly tags: readonly Tag[];
     };
 
-/** Total number of individual version deletions this plan would attempt across every package and group, budget permitting — what the volume alarm (`volume-alarm.ts`) compares against its baseline. */
+/** Total number of individual version deletions this plan would attempt across every package and group, budget permitting; what the volume alarm (`volume-alarm.ts`) compares against its baseline. */
 export function plannedDeletionCount(plan: Plan): number {
   return plan.packages.reduce(
     (sum, p) => sum + p.groups.reduce((s, g) => s + g.members.length, 0),
@@ -296,7 +296,7 @@ export interface ApplyResult {
   /** Total delete-version calls actually made across every package/group, regardless of outcome. */
   readonly attempted: number;
   readonly remainingBudget: number;
-  /** Set only when verification aborted the run early — see {@link ApplyAbortReason}. */
+  /** Set only when verification aborted the run early; see {@link ApplyAbortReason}. */
   readonly abortedFor?: ApplyAbortReason;
 }
 
@@ -314,18 +314,18 @@ function isSuccess(
  * This is the structural fix for the defect that hollowed out
  * `flutter-rfw`: the hardened bash ordered tagged roots before their
  * (not directly tag-referenced) children but, on a failed ROOT delete,
- * merely logged and continued straight on to that root's children anyway
- * — leaving a tag resolving to an index whose children were all gone. Here, any
+ * merely logged and continued straight on to that root's children anyway,
+ * leaving a tag resolving to an index whose children were all gone. Here, any
  * non-success on ANY member (root or descendant) immediately abandons
  * every member after it in the group's parents-first order; those
  * members are recorded `"not-attempted"` and no further calls are made
  * for this group. An abandoned group therefore leaves behind, at worst,
- * unreferenced garbage below whatever was deleted before the failure —
+ * unreferenced garbage below whatever was deleted before the failure;
  * never a live tag whose children were deleted out from under it, since
  * the root is always `members[0]` and is always attempted first.
  *
  * `"already-gone"` (a 404) is treated exactly like success: the digest is
- * already absent, which is the desired end state, not a failure — this
+ * already absent, which is the desired end state, not a failure; this
  * is also what makes applying the same plan twice idempotent.
  */
 async function applyGroup(
@@ -377,7 +377,7 @@ async function applyGroup(
         // "last-version-conflict": a 400, GHCR's undocumented refusal to
         // delete a package's last remaining version via this endpoint
         // (see registry/packages.ts). Surfaced as-is, never retried
-        // in a loop (that loop would never terminate) — just abandons
+        // in a loop (that loop would never terminate), just abandons
         // the rest of this group like any other non-success.
         members.push({
           digest: member.digest,
@@ -401,7 +401,7 @@ async function applyGroup(
   };
 }
 
-/** Every member across `groups` that was actually deleted (success, including a 404-as-already-gone) — what {@link RegressionIncident.precedingDeletions} reports for a package. */
+/** Every member across `groups` that was actually deleted (success, including a 404-as-already-gone); what {@link RegressionIncident.precedingDeletions} reports for a package. */
 function deletedMembers(groups: readonly GroupApplyResult[]): PersistedGroupMember[] {
   const out: PersistedGroupMember[] = [];
   for (const g of groups) {
@@ -428,14 +428,14 @@ async function trySnapshot(
 
 /**
  * Applies `plan` group by group, package by package, in the plan's own
- * order. Enforces {@link assertGroupsAreWellFormed} BEFORE any mutation —
+ * order. Enforces {@link assertGroupsAreWellFormed} BEFORE any mutation;
  * throws (never mutates anything) on a structurally malformed plan, e.g.
  * one hand-edited after `grantApply` validated it.
  *
  * Budget accounting is GROUP-granular (see `ApplyOptions.budget`'s doc):
  * checked before a group starts, decremented by the number of members
  * actually ATTEMPTED once it finishes (which can be less than the
- * group's full size if it was abandoned partway through — the unspent
+ * group's full size if it was abandoned partway through; the unspent
  * remainder is available to later groups).
  *
  * When `options.verification` is set: the pre-flight canary is resolved
@@ -443,7 +443,7 @@ async function trySnapshot(
  * aborts before touching anything. Each package is then snapshotted from
  * the registry's own tag list immediately BEFORE its deletions begin and
  * again immediately AFTER they finish (interleaved, never batched to the
- * end of the run — see this module's and `verify.ts`'s docs for why: a
+ * end of the run; see this module's and `verify.ts`'s docs for why: a
  * regression from an early package must not be masked by continuing to
  * apply a plan whose underlying model has just been shown to be wrong).
  * A regression aborts the WHOLE run before the next package is started;
@@ -530,7 +530,7 @@ export async function applyPlan(
     if (verification?.expiry) {
       const policy = verification.expiry.policyFor(pkgPlan.packageName);
       const tags = preSnapshot ? [...preSnapshot.keys()] : [];
-      // `digestOf` needs no new I/O — it is the SAME pre-apply
+      // `digestOf` needs no new I/O; it is the SAME pre-apply
       // `preSnapshot` already read above, just narrowed to the tags
       // that actually resolved. `createdAtOf` is the one genuinely new,
       // INDEPENDENT read: see `verify.ts`'s `ExpiryProducerInput.
@@ -599,7 +599,7 @@ export async function applyPlan(
     let abortReason: ApplyAbortReason | undefined;
 
     // A crisp, PER-PACKAGE, group-granular fact (see `applyGroup`'s
-    // `"skipped-budget"` doc) — never a run-global gate on remaining
+    // `"skipped-budget"` doc); never a run-global gate on remaining
     // budget, so a package processed before the budget ran out still
     // gets its real `notExpiredTags` below, even if a LATER package in
     // this same run gets suppressed instead.
@@ -613,7 +613,7 @@ export async function applyPlan(
       // regression, but it also cannot be silently waved through. Unlike
       // the pre-fix behaviour, `post.failed` is now THREADED into
       // `compareSnapshots` as `postSnapshotFailed` rather than silently
-      // discarded — passing only `post.snapshot` (empty on failure) let
+      // discarded; passing only `post.snapshot` (empty on failure) let
       // the ordinary "absent from post means confirmed not-found" rule
       // fire for every tag the pre-snapshot had ever seen healthy, which
       // is exactly what turned one failed `listTags` call into a mass
@@ -623,7 +623,7 @@ export async function applyPlan(
       if (preSnapshotFailed && post.failed) {
         // Neither snapshot could be taken at all: there is no per-tag
         // data in either direction for this package, so there is
-        // nothing for `compareSnapshots` to compare — bypass it rather
+        // nothing for `compareSnapshots` to compare; bypass it rather
         // than let it silently report zero findings. This is NOT
         // evidence of a regression (nothing here is confirmed broken),
         // but the run must still stop and this must still be surfaced
@@ -689,7 +689,7 @@ export async function applyPlan(
 
     if (regressionToRecord) {
       // Recorded locally BEFORE the sink (which may make network calls,
-      // e.g. `breaker.ts`'s `githubIssueBreaker`) is even attempted —
+      // e.g. `breaker.ts`'s `githubIssueBreaker`) is even attempted;
       // see `VerificationOptions.onIncident`'s doc: this is what makes
       // the incident survive a breaker outage.
       verification?.onIncident?.(regressionToRecord);
@@ -699,7 +699,7 @@ export async function applyPlan(
       } catch (error) {
         // The regression is real and confirmed either way; a failure
         // notifying the breaker about it must not swallow the run's own
-        // summary (see this module's doc on the incident this fixes) —
+        // summary (see this module's doc on the incident this fixes);
         // reported alongside the abort reason instead of propagating and
         // killing the whole process before the caller can print
         // anything.
@@ -726,7 +726,7 @@ export async function applyPlan(
   return { packages, attempted: totalAttempted, remainingBudget };
 }
 
-/** Total number of groups across every package in the plan — used by {@link classifyApplyExit} to distinguish "nothing to do" from "something was supposed to happen and didn't". */
+/** Total number of groups across every package in the plan; used by {@link classifyApplyExit} to distinguish "nothing to do" from "something was supposed to happen and didn't". */
 export function totalGroupCount(plan: Plan): number {
   return plan.packages.reduce((sum, p) => sum + p.groups.length, 0);
 }
@@ -741,7 +741,7 @@ export const EXIT_APPLY_SAFETY = 4;
  *
  * The zero-mutation guard: if the plan contained at least one group but
  * NOTHING was attempted (e.g. the whole budget was `0`, or every group
- * was skipped for budget reasons), that is a FAILURE — a
+ * was skipped for budget reasons), that is a FAILURE; a
  * non-empty plan silently doing nothing is exactly the kind of runner
  * malfunction `4` exists to flag loudly rather than let masquerade as
  * `0 = ok`. Distinguished from a normal `1 = mutation failure` (some
@@ -753,7 +753,7 @@ export const EXIT_APPLY_SAFETY = 4;
  * ALSO `4`, checked first: a regression can leave `result.attempted > 0`
  * (the aborting package's own deletions already happened), which would
  * otherwise fall through to the `1`/`0` logic below and understate what
- * went wrong — verification catching a wrong model is exactly the same
+ * went wrong; verification catching a wrong model is exactly the same
  * severity as the zero-mutation guard below it, not merely "some deletes
  * failed".
  */

@@ -1,7 +1,7 @@
 /**
  * Classification of an observed HTTP status, used throughout the registry
  * core so callers can distinguish a genuinely dead resource (404) from a
- * transient failure (429/5xx) that just needs a retry — rather than
+ * transient failure (429/5xx) that just needs a retry, rather than
  * treating every non-200 the same way, which is what let the bash
  * predecessor silently misclassify rate limits as "dead" in places.
  */

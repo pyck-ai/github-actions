@@ -10,7 +10,7 @@ import {
   type ManifestChild,
 } from "./manifest.js";
 
-describe("parseManifestBody — media-type dispatch", () => {
+describe("parseManifestBody: media-type dispatch", () => {
   it("extracts children from an OCI index", () => {
     const body = JSON.stringify({
       mediaType: OCI_INDEX,
@@ -117,7 +117,7 @@ describe("parseManifestBody — media-type dispatch", () => {
   });
 });
 
-describe("resolveManifest — status classification", () => {
+describe("resolveManifest: status classification", () => {
   function fakeResponse(status: number, body = "", headers: Record<string, string> = {}): Response {
     return new Response(body, { status, headers });
   }

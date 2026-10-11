@@ -11,12 +11,12 @@ import type { Tag } from "./domain.js";
  * `suffix` everything after it, `version` is the token split on `.` into
  * integers, and `level` is its component count (1 major, 2 minor, 3
  * patch). A version with more than 3 components is treated as
- * unversioned rather than truncated — truncating would invent a level the
+ * unversioned rather than truncated; truncating would invent a level the
  * tag generator never emitted.
  *
  * **Last, not first-match or greedy.** `alpine-3-claude-2.1.227` contains
  * two numeric runs. A first-match parser would extract `3`, yielding
- * prefix `alpine-` and suffix `-claude-2.1.227` — nonsense. Taking the
+ * prefix `alpine-` and suffix `-claude-2.1.227`; nonsense. Taking the
  * LAST qualifying run yields prefix `alpine-3-claude-` and version
  * `2.1.227`, which is what the tag generator actually emitted. This is
  * the most likely place an implementation goes quietly wrong, hence the
@@ -25,7 +25,7 @@ import type { Tag } from "./domain.js";
  *
  * **This is a standalone lexical convention verified empirically against
  * the corpus. It is NOT a derived inverse of `vtags`** (the tag-expression
- * helper that generates most of these tags) — two counterexamples prove
+ * helper that generates most of these tags); two counterexamples prove
  * this, and both matter because framing the parser as an inverse would
  * invite someone to "fix" it by reading `docker-bake.hcl` instead of the
  * registry's own tag list:
@@ -33,12 +33,12 @@ import type { Tag } from "./domain.js";
  * - `golang`'s `alpine-3.23` comes from a hand-written literal at
  *   `baseimages/docker-bake.hcl:190`
  *   (`"${REGISTRY}/golang:alpine-${ALPINE_VERSION}"`), not from a `vtags`
- *   call — which is why `base` has both `alpine-3` and `alpine-3.23`
+ *   call, which is why `base` has both `alpine-3` and `alpine-3.23`
  *   while `golang` has only the latter.
  * - All 29 `buildcache` tags come from `cache-to` registry refs, not from
  *   any tag expression at all.
  *
- * `kind := (package, prefix, suffix)` — see {@link kindKeyOf}. An
+ * `kind := (package, prefix, suffix)`; see {@link kindKeyOf}. An
  * unversioned tag is its own singleton kind, keyed by its literal string;
  * "keeping the newest N of a kind with exactly one member" degenerates
  * to "always retained", which is why unversioned tags need no separate
@@ -49,7 +49,7 @@ import type { Tag } from "./domain.js";
  * only build whenever they drift out of lockstep (the corpus already has
  * `python`'s `3.13-debian` with no `3.13-alpine`), which is the
  * destructive direction. Separate kinds merely pin one extra digest in
- * that case — the failure mode this tool should prefer when it must pick
+ * that case; the failure mode this tool should prefer when it must pick
  * one.
  */
 export type TagLevel = 1 | 2 | 3;
@@ -64,7 +64,7 @@ export interface VersionedTag {
 
 export interface UnversionedTag {
   readonly kind: "unversioned";
-  /** The tag's own literal string — an unversioned tag is a singleton kind keyed by this value. */
+  /** The tag's own literal string; an unversioned tag is a singleton kind keyed by this value. */
   readonly literal: string;
 }
 
@@ -81,7 +81,7 @@ const NUMERIC_RUN_RE = /\d+(?:\.\d+)*/g;
 
 /**
  * Parses one tag per this module's rule. Never throws: every input string
- * is either {@link VersionedTag} or {@link UnversionedTag} — see AC 1
+ * is either {@link VersionedTag} or {@link UnversionedTag}; see AC 1
  * (every one of the 362 corpus tags decomposes without error).
  */
 export function parseTag(raw: Tag): ParsedTag {
@@ -124,7 +124,7 @@ export function parseTag(raw: Tag): ParsedTag {
  * The grouping key for {@link ParsedTag}s that share a kind: same
  * `(prefix, suffix)` for a versioned tag, or the tag's own literal string
  * for an unversioned one (always a singleton). Package-scoping is the
- * caller's responsibility — this module operates on one package's tag
+ * caller's responsibility; this module operates on one package's tag
  * list at a time (see `retain.ts`'s `computeRetainedTags`), so no package
  * name needs to be folded into the key here.
  */
@@ -136,7 +136,7 @@ export function kindKeyOf(parsed: ParsedTag): string {
 
 /**
  * Ascending numeric comparison of two version tuples, padding the
- * shorter with trailing zeros — `[3]` compares equal to `[3, 0, 0]`. Used
+ * shorter with trailing zeros; `[3]` compares equal to `[3, 0, 0]`. Used
  * to rank candidates within a level's window and to find a kind's newest
  * member across levels (see `retain.ts`'s `computeFloorTags`).
  */

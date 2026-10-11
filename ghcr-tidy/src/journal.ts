@@ -35,7 +35,7 @@ export type JournalEntry = JournalIntentEntry | JournalOutcomeEntry;
  * BEFORE the mutating call, one `"outcome"` line AFTER it. A log line
  * written only after success cannot distinguish "never attempted" from
  * "attempted and the process was killed mid-call"; writing intent first
- * can — a killed run leaves the journal ending on an unanswered intent
+ * can; a killed run leaves the journal ending on an unanswered intent
  * line, an unambiguous forensic record, alongside a durable plan file
  * that says what SHOULD have happened next.
  */
@@ -50,7 +50,7 @@ export interface Clock {
 
 const systemClock: Clock = { now: () => new Date() };
 
-/** The real `Journal`: appends one NDJSON line per call to `path`. Never truncates or rewrites — appending only, so a partially-written run's history is never lost by a later run. */
+/** The real `Journal`: appends one NDJSON line per call to `path`. Never truncates or rewrites; appending only, so a partially-written run's history is never lost by a later run. */
 export function ndjsonJournal(path: string, clock: Clock = systemClock): Journal {
   async function append(entry: JournalEntry): Promise<void> {
     await appendFile(path, `${JSON.stringify(entry)}\n`, "utf8");

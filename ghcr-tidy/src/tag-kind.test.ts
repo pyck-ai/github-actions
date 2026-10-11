@@ -11,7 +11,7 @@ function unversioned(literal: string): ParsedTag {
   return { kind: "unversioned", literal };
 }
 
-describe("parseTag — the last-delimited VERSION_TOKEN rule", () => {
+describe("parseTag: the last-delimited VERSION_TOKEN rule", () => {
   it("a bare major-level tag has no prefix/suffix", () => {
     expect(parseTag(tag("1"))).toEqual(versioned("", "", [1]));
   });
@@ -26,7 +26,7 @@ describe("parseTag — the last-delimited VERSION_TOKEN rule", () => {
     );
   });
 
-  it("REAL CORPUS HARD CASE: two numeric runs — the LAST one wins, not the first", () => {
+  it("REAL CORPUS HARD CASE: two numeric runs: the LAST one wins, not the first", () => {
     // A first-match/greedy parser would extract "3", yielding the
     // nonsense prefix "alpine-" and suffix "-claude-2.1.227". The last
     // qualifying run is "2.1.227", giving prefix "alpine-3-claude-".
@@ -36,7 +36,7 @@ describe("parseTag — the last-delimited VERSION_TOKEN rule", () => {
   });
 
   it("a digit run not bounded by start/end/'-' on both sides never qualifies as a VERSION_TOKEN", () => {
-    // "1" here is bounded by 'v' on the left, not '-' or start — no
+    // "1" here is bounded by 'v' on the left, not '-' or start; no
     // qualifying token anywhere in the string, so the whole tag is
     // unversioned rather than misparsed.
     expect(parseTag(tag("v1-old"))).toEqual(unversioned("v1-old"));
@@ -53,7 +53,7 @@ describe("parseTag — the last-delimited VERSION_TOKEN rule", () => {
     expect(parseTag(tag("build-1.2.3.4-x"))).toEqual(unversioned("build-1.2.3.4-x"));
   });
 
-  it("HARD CASE: base's alpine vs alpine-3.23 are different kinds — the collision dissolves", () => {
+  it("HARD CASE: base's alpine vs alpine-3.23 are different kinds: the collision dissolves", () => {
     const alpine = parseTag(tag("alpine"));
     const alpine323 = parseTag(tag("alpine-3.23"));
     expect(alpine).toEqual(unversioned("alpine"));
@@ -63,7 +63,7 @@ describe("parseTag — the last-delimited VERSION_TOKEN rule", () => {
     expect(kindKeyOf(alpine)).not.toBe(kindKeyOf(alpine323));
   });
 
-  it("HARD CASE: suffix variants are separate kinds — alpine and debian never share a lattice", () => {
+  it("HARD CASE: suffix variants are separate kinds: alpine and debian never share a lattice", () => {
     const alpineVariant = parseTag(tag("claude-2.1.227-alpine"));
     const debianVariant = parseTag(tag("claude-2.1.227-debian"));
     expect(kindKeyOf(alpineVariant)).not.toBe(kindKeyOf(debianVariant));
@@ -93,7 +93,7 @@ describe("compareVersionsAscending", () => {
   });
 });
 
-describe("AC 1 — the real corpus: all 362 tags decompose without error", () => {
+describe("AC 1, the real corpus: all 362 tags decompose without error", () => {
   const byPackage = loadBaseimagesTags();
 
   it("every tag in every package parses to versioned or unversioned, never throws", () => {

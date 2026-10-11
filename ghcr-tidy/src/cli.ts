@@ -42,7 +42,7 @@ import { policyDrivenExpiryProducer, type CanaryFailureReason } from "./verify.j
 import type { PackagesClient, RegistryReader } from "./ports.js";
 
 /**
- * `ghcr-tidy` — the CLI entrypoint wiring the pure planning core
+ * `ghcr-tidy`; the CLI entrypoint wiring the pure planning core
  * (`plan.ts`), the apply path (`apply-capability.ts`, `apply.ts`,
  * `mutator.ts`), and safety machinery (`breaker.ts`, `volume-alarm.ts`,
  * `verify.ts`) into three subcommands driven by one config manifest,
@@ -55,25 +55,25 @@ import type { PackagesClient, RegistryReader } from "./ports.js";
  *
  * A single, TOTAL mapping, reused unchanged by every subcommand:
  *
- * - `0` — ok. Nothing wrong; for `apply`, every attempted deletion
+ * - `0`; ok. Nothing wrong; for `apply`, every attempted deletion
  *   succeeded (or there was nothing to do).
- * - `1` — FINDINGS: `plan` skipped at least one package fail-closed
+ * - `1`; FINDINGS: `plan` skipped at least one package fail-closed
  *   (`SkippedPlan`), or `apply` had at least one abandoned deletion group
- *   (the registry itself rejected part of a delete — see
+ *   (the registry itself rejected part of a delete; see
  *   `apply.ts`'s `EXIT_APPLY_MUTATION_FAILURE`). The run itself worked;
  *   something it found or did was not clean.
- * - `2` — CONFIG: an invalid manifest, a CLI usage error, `--package`
+ * - `2`; CONFIG: an invalid manifest, a CLI usage error, `--package`
  *   matching no configured package, or a required credential/flag missing
  *   (no `GITHUB_TOKEN`, `apply` requested with no `--apply` flag, no
  *   breaker configured for `apply`, no canary configured for an `apply`
  *   that has work to do).
- * - `3` — INFRASTRUCTURE: an unexpected error escaped the planning core
+ * - `3`; INFRASTRUCTURE: an unexpected error escaped the planning core
  *   or the apply path (a network failure, an auth failure, anything not
  *   already classified as a finding or a safety trip).
- * - `4` — SAFETY: the breaker was already tripped, the volume alarm
+ * - `4`; SAFETY: the breaker was already tripped, the volume alarm
  *   refused the plan, the pre-flight canary failed, post-apply
  *   verification found a regression, or `apply.ts`'s own plan-integrity
- *   assertion threw — see `apply.ts`'s `EXIT_APPLY_SAFETY` for the
+ *   assertion threw; see `apply.ts`'s `EXIT_APPLY_SAFETY` for the
  *   zero-mutation guard this also covers.
  */
 
@@ -92,7 +92,7 @@ const DEFAULT_MANIFEST_PATH = ".ghcr-tidy.yaml";
  * via the same-sized limiter wrapped around the registry reader in
  * {@link buildRegistryAdapters}, how many per-tag/per-BFS-node requests
  * the planning core (`roots.ts`, `reachability.ts`) may have in flight at
- * once — across every package, not per package, so this stays the actual
+ * once; across every package, not per package, so this stays the actual
  * ceiling on concurrent requests hitting `ghcr.io` regardless of how many
  * packages or BFS levels are logically "active" at once.
  *
@@ -111,7 +111,7 @@ function errorMessage(error: unknown): string {
 
 type Subcommand = "validate" | "plan" | "apply";
 
-/** A CLI usage problem (bad flag, missing value, unrecognised subcommand) — always a CONFIG error. */
+/** A CLI usage problem (bad flag, missing value, unrecognised subcommand); always a CONFIG error. */
 class UsageError extends Error {
   constructor(message: string) {
     super(message);
@@ -138,7 +138,7 @@ interface ParsedArgs {
    * (see `runApplyCommand`), then to `GITHUB_TOKEN` itself for setups
    * where one token legitimately carries both scopes. See
    * `breaker.ts`'s `githubIssueBreaker` doc for why this must not simply
-   * reuse a `delete:packages`-scoped PAT — that combination is exactly
+   * reuse a `delete:packages`-scoped PAT, that combination is exactly
    * what produced a 404 on a real apply run.
    */
   breakerToken?: string;
@@ -149,8 +149,8 @@ interface ParsedArgs {
    * `plan.ts`'s `computeReachabilityToleratingBrokenRoots`) instead of
    * failing that package closed, and lets the proven-broken root itself
    * fall into the ordinary DELETE set. This flag ALONE never deletes
-   * anything — `plan` never deletes, and `apply` still separately
-   * requires `--apply` (see `runApplyCommand`'s check above) — two
+   * anything; `plan` never deletes, and `apply` still separately
+   * requires `--apply` (see `runApplyCommand`'s check above); two
    * independent gestures are required for an actual deletion, exactly as
    * for `--apply` itself.
    */
@@ -161,7 +161,7 @@ interface ParsedArgs {
  * Parses argv (without `node`/script path). The first token is a
  * subcommand (`validate`/`plan`/`apply`) ONLY if it exactly matches one of
  * those three names; otherwise the whole of argv is treated as `plan`'s
- * flags — `plan` is the default subcommand since it is the read-only,
+ * flags; `plan` is the default subcommand since it is the read-only,
  * safe-to-run-with-no-ceremony operation.
  */
 export function parseArgv(argv: readonly string[]): { subcommand: Subcommand; args: ParsedArgs } {
@@ -292,7 +292,7 @@ function selectPackages(
 
 /**
  * Runs `worker` over `items` with at most `limit` concurrently in flight,
- * writing each result to its original index — a small bounded pool. Not a
+ * writing each result to its original index; a small bounded pool. Not a
  * plain `Promise.all`: that would fire every item at once with no cap on
  * concurrent registry requests.
  */
@@ -329,7 +329,7 @@ interface PackagePlanOutcome {
   readonly result: PackagePlanResult;
 }
 
-/** Injectable production dependencies for `plan`/`apply` — real network access by default, faked entirely in tests. */
+/** Injectable production dependencies for `plan`/`apply`; real network access by default, faked entirely in tests. */
 export interface CliDeps {
   registry?: RegistryReader;
   packages?: PackagesClient;
@@ -338,7 +338,7 @@ export interface CliDeps {
   clock?: Clock;
   planFs?: PlanFileSystem;
   journal?: Journal;
-  /** Per-package progress line sink for `runPlanning` — see that function's doc. Defaults to `process.stderr.write`; tests inject a collector instead of asserting against real stderr. */
+  /** Per-package progress line sink for `runPlanning`; see that function's doc. Defaults to `process.stderr.write`; tests inject a collector instead of asserting against real stderr. */
   progress?: (line: string) => void;
 }
 
@@ -348,7 +348,7 @@ function requireToken(env: NodeJS.ProcessEnv): string {
   const token = env.GITHUB_TOKEN;
   if (!token) {
     throw new UsageError(
-      "GITHUB_TOKEN is not set — required to read the GHCR registry and Packages API " +
+      "GITHUB_TOKEN is not set; required to read the GHCR registry and Packages API " +
         "(and, for `apply`, to delete versions and manage the breaker issue)",
     );
   }
@@ -364,14 +364,14 @@ function requireToken(env: NodeJS.ProcessEnv): string {
  * The raw registry reader is wrapped in exactly two decorators, in this
  * order:
  *
- * 1. {@link createCachingRegistryReader} (outermost — checked first): a
+ * 1. {@link createCachingRegistryReader} (outermost; checked first): a
  *    digest already resolved anywhere in this run, for this package, is
  *    served from memory with no HTTP call and no limiter slot consumed.
  * 2. {@link createLimiter}, sized {@link DEFAULT_JOBS}/`--jobs`: every
  *    cache MISS queues behind this ONE shared gate, so the planning
  *    core's newly-concurrent per-tag and per-BFS-node fan-out
- *    (`roots.ts`, `reachability.ts`) — now fired freely with no limit of
- *    its own — still hits `ghcr.io` with no more than `jobs` requests in
+ *    (`roots.ts`, `reachability.ts`); now fired freely with no limit of
+ *    its own; still hits `ghcr.io` with no more than `jobs` requests in
  *    flight at any moment, for the whole run, not per package.
  *
  * This is the ONLY place either decorator is applied: `planPackage` and
@@ -392,7 +392,7 @@ function requireToken(env: NodeJS.ProcessEnv): string {
  * it gets the rate-limited reader with no cache in front of it.
  *
  * `canaryPackage`, when given, is registered in the same `pathFor` token
- * map as every selected package — the apply canary is a property of the
+ * map as every selected package; the apply canary is a property of the
  * WHOLE RUN, not of whichever packages `--package` happened to select,
  * so it must resolve a bearer token regardless of scoping. Without this,
  * `--package <x>` where the canary lives in some other package leaves
@@ -407,8 +407,8 @@ function requireToken(env: NodeJS.ProcessEnv): string {
  * Builds the `RegistryPath -> PackageName` map {@link buildRegistryAdapters}
  * uses to resolve a GHCR bearer token per package. Extracted as its own
  * pure, exported function (no network, no token exchange) specifically so
- * the `--package`-scoping defect this fixes — the canary's package
- * silently absent from the map whenever `--package` excludes it — is
+ * the `--package`-scoping defect this fixes; the canary's package
+ * silently absent from the map whenever `--package` excludes it; is
  * unit-testable without touching the registry at all: the bug and its fix
  * are both fully expressed in which keys end up in this map, before any
  * HTTP request is ever made.
@@ -463,18 +463,18 @@ export function decorateRegistry(
 }
 
 /**
- * Which token `githubIssueBreaker` should authenticate with — deliberately
+ * Which token `githubIssueBreaker` should authenticate with; deliberately
  * SEPARATE from the registry/Packages-API token, which for `apply` is
  * typically a `delete:packages`-scoped PAT with no issues access (see
  * `breaker.ts`'s `githubIssueBreaker` doc for what happens when the two
  * are conflated: a bare 404 with no indication the token was the
  * problem). Precedence, highest first: `--breaker-token`, then
- * `GHCR_TIDY_BREAKER_TOKEN`, then `fallback` (the registry token itself)
- * — the last resort exists only for setups where one token legitimately
+ * `GHCR_TIDY_BREAKER_TOKEN`, then `fallback` (the registry token itself).
+ * The last resort exists only for setups where one token legitimately
  * carries both scopes (e.g. local/dry-run use with a broadly-scoped PAT).
  * Pure and side-effect-free specifically so this precedence is
  * unit-testable without constructing an Octokit client or making any
- * network call — mirroring {@link buildPackageTokenMap}'s reason for
+ * network call; mirroring {@link buildPackageTokenMap}'s reason for
  * being its own function.
  */
 export function resolveBreakerToken(
@@ -526,7 +526,7 @@ interface PlanRunResult {
   plan: Plan;
 }
 
-/** One line per {@link PackagePlanResult}, terse enough for {@link runPlanning}'s per-package progress lines — NOT the multi-line detail `formatPlanSummary` prints at the end of a run. */
+/** One line per {@link PackagePlanResult}, terse enough for {@link runPlanning}'s per-package progress lines, NOT the multi-line detail `formatPlanSummary` prints at the end of a run. */
 function progressOutcomeSummary(result: PackagePlanResult): string {
   switch (result.status) {
     case "nothing-to-do":
@@ -549,13 +549,13 @@ function progressOutcomeSummary(result: PackagePlanResult): string {
  * Concurrency bounded by `--jobs` (default {@link DEFAULT_JOBS}).
  *
  * Emits one terse progress line via `progress` when each package STARTS
- * and another when it FINISHES (with its result and elapsed time) — a
+ * and another when it FINISHES (with its result and elapsed time); a
  * multi-package run against a real registry is dominated by HTTP round
  * trips per package and can legitimately take minutes; with no output at
  * all in between, that is indistinguishable from a hang. `progress`
  * defaults to `process.stderr.write` (not stdout: stdout is reserved for
  * `formatPlanSummary`'s final report and, when `--out` is not used, is
- * the only machine-parseable-adjacent output this CLI produces — progress
+ * the only machine-parseable-adjacent output this CLI produces; progress
  * lines must never get mixed into it) and is injectable purely so tests
  * do not have to assert against real stderr.
  */
@@ -631,7 +631,7 @@ function formatPlanSummary(outcomes: readonly PackagePlanOutcome[]): string {
       lines.push(`  ${entry.match}: nothing to do`);
     } else if (result.status === "skipped") {
       skipped += 1;
-      lines.push(`  ${entry.match}: SKIPPED (${result.reason}) — ${result.detail}`);
+      lines.push(`  ${entry.match}: SKIPPED (${result.reason}); ${result.detail}`);
     } else {
       totalDelete += result.deleteCount;
       totalGroups += result.groups.length;
@@ -640,7 +640,7 @@ function formatPlanSummary(outcomes: readonly PackagePlanOutcome[]): string {
           `(live roots ${String(result.liveRootsCount)}, kept ${String(result.keepRootsCount)}, ` +
           `reachable ${String(result.reachableCount)}, inflight ${String(result.inflightCount)})` +
           (result.brokenRootDigests.length > 0
-            ? ` — broken root(s) proven not-found: ${result.brokenRootDigests.join(", ")}`
+            ? `; broken root(s) proven not-found: ${result.brokenRootDigests.join(", ")}`
             : ""),
       );
     }
@@ -661,7 +661,7 @@ async function writePlanFile(plan: Plan, outPath: string, fs: PlanFileSystem): P
 async function runValidateCommand(args: ParsedArgs): Promise<number> {
   const manifest = await loadManifestFile(args.manifest);
   process.stdout.write(
-    `manifest OK — owner "${manifest.owner}", ${String(manifest.packages.length)} package(s) configured\n`,
+    `manifest OK; owner "${manifest.owner}", ${String(manifest.packages.length)} package(s) configured\n`,
   );
   return EXIT_OK;
 }
@@ -716,7 +716,7 @@ async function runPlanCommand(args: ParsedArgs, deps: CliDeps): Promise<number> 
   return hadSkip ? EXIT_FINDINGS : EXIT_OK;
 }
 
-/** Renders one {@link CanaryFailureReason} into an operator-facing phrase — see that type's doc for the three cases. */
+/** Renders one {@link CanaryFailureReason} into an operator-facing phrase; see that type's doc for the three cases. */
 function formatCanaryFailureReason(reason: CanaryFailureReason): string {
   switch (reason.kind) {
     case "resolve-failed":
@@ -728,16 +728,16 @@ function formatCanaryFailureReason(reason: CanaryFailureReason): string {
   }
 }
 
-/** Renders one {@link ApplyAbortReason} for the `ABORTED:` line — the `canary-failed` case additionally names the canary's own path/tag and the cause, since a bare "canary-failed" gave no way to diagnose the first real apply's spurious abort. The `regression` case additionally names a `sinkError` (the breaker itself failed to record the — still real, still confirmed — regression) rather than letting that failure erase the summary line entirely, as it did in the incident that motivated `sinkError`. */
+/** Renders one {@link ApplyAbortReason} for the `ABORTED:` line. The `canary-failed` case additionally names the canary's own path/tag and the cause, since a bare "canary-failed" gave no way to diagnose the first real apply's spurious abort. The `regression` case additionally names a `sinkError` (the breaker itself failed to record the still real, still confirmed regression) rather than letting that failure erase the summary line entirely, as it did in the incident that motivated `sinkError`. */
 function formatAbortReason(reason: ApplyAbortReason): string {
   if (reason.kind === "canary-failed") {
-    return `canary-failed (canary ${reason.path}:${reason.tag} — ${formatCanaryFailureReason(reason.reason)})`;
+    return `canary-failed (canary ${reason.path}:${reason.tag}; ${formatCanaryFailureReason(reason.reason)})`;
   }
   if (reason.kind === "regression" && reason.sinkError !== undefined) {
     return `regression (breaker also failed to record it: ${reason.sinkError})`;
   }
   if (reason.kind === "verification-unavailable") {
-    return `verification-unavailable (${String(reason.tags.length)} tag(s) could not be confirmed healthy or broken in package ${reason.packageName} — not treated as a regression, breaker not tripped)`;
+    return `verification-unavailable (${String(reason.tags.length)} tag(s) could not be confirmed healthy or broken in package ${reason.packageName}, not treated as a regression, breaker not tripped)`;
   }
   if (reason.kind === "expiry-producer-invalid") {
     return (
@@ -760,12 +760,12 @@ function summarizeApplyResult(plan: Plan, result: ApplyResult): string {
       ).length;
       const notAttempted = group.members.filter((m) => m.result === "not-attempted").length;
       lines.push(
-        `  ${pkg.packageName} group ${group.root}: ${group.status} — ${String(deleted)} deleted, ` +
+        `  ${pkg.packageName} group ${group.root}: ${group.status}; ${String(deleted)} deleted, ` +
           `${String(failed)} failed, ${String(notAttempted)} not attempted`,
       );
     }
     // Never a failure and never sunk to the breaker (see `verify.ts`'s
-    // `republished` doc) — reported here purely as context: the
+    // `republished` doc); reported here purely as context: the
     // registry changed under this run, which is normal in a repo whose
     // CI publishes continuously, not something an operator needs to act
     // on.
@@ -811,7 +811,7 @@ function summarizeApplyResult(plan: Plan, result: ApplyResult): string {
 async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number> {
   if (!args.apply) {
     throw new UsageError(
-      "`apply` requires the explicit --apply flag in addition to the subcommand — " +
+      "`apply` requires the explicit --apply flag in addition to the subcommand; " +
         "two independent gestures are required to delete anything",
     );
   }
@@ -820,7 +820,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
   }
   if (args.out === undefined) {
     throw new UsageError(
-      "`apply` requires --out <path> — the plan is written there and re-read before any deletion is granted (grantApply's round trip)",
+      "`apply` requires --out <path>; the plan is written there and re-read before any deletion is granted (grantApply's round trip)",
     );
   }
 
@@ -830,8 +830,8 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
   const clock = deps.clock ?? systemClock;
   const jobs = args.jobs ?? DEFAULT_JOBS;
 
-  // The canary's package, resolved here — BEFORE `--package` filtering
-  // is baked into the registry adapters below — because the canary is a
+  // The canary's package, resolved here; BEFORE `--package` filtering
+  // is baked into the registry adapters below, because the canary is a
   // property of the whole run, not of whichever packages `--package`
   // happened to select (see `buildRegistryAdapters`'s doc). A malformed
   // name is swallowed here on purpose: this is only a best-effort
@@ -850,7 +850,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
   }
 
   // A production Octokit client is needed for any of: the registry
-  // adapters, the mutator, or the breaker — built once, lazily, only if at
+  // adapters, the mutator, or the breaker; built once, lazily, only if at
   // least one of those was not already supplied by `deps` (tests supply
   // all of them and so never require a real token at all).
   const needsOctokit = !deps.registry || !deps.packages || !deps.mutator || !deps.breaker;
@@ -887,7 +887,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
     packagesClient = adapters.packages;
   }
 
-  // The breaker is mandatory, unconditionally — see this module's doc and
+  // The breaker is mandatory, unconditionally; see this module's doc and
   // apply.ts's doc on why "apply with no breaker" must not be reachable.
   let breaker: Breaker;
   if (deps.breaker) {
@@ -896,8 +896,8 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
     const repoSpec = args.breakerRepo ?? process.env.GITHUB_REPOSITORY;
     if (!repoSpec) {
       throw new UsageError(
-        "no breaker configured: pass --breaker-repo <owner>/<repo> or set GITHUB_REPOSITORY " +
-          "— apply refuses to run without a circuit breaker",
+        "no breaker configured: pass --breaker-repo <owner>/<repo> or set GITHUB_REPOSITORY; " +
+          "apply refuses to run without a circuit breaker",
       );
     }
     const [breakerOwner, breakerRepo] = repoSpec.split("/", 2);
@@ -941,14 +941,14 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
     // `--canary-package`/`--canary-tag` OVERRIDE `manifest.canary`,
     // field by field, when present; otherwise the manifest's value (if
     // any) is used. The manifest is the source that survives every
-    // trigger — see `manifest/schema.ts`'s `ManifestCanary` doc for why a
+    // trigger; see `manifest/schema.ts`'s `ManifestCanary` doc for why a
     // `schedule`-triggered run can never rely on a CLI-flag-only canary.
     // `canaryPackageRaw` was already resolved above (before the registry
     // adapters were built); only `canaryTagRaw` is new here.
     const canaryTagRaw: string | undefined = args.canaryTag ?? manifest.canary?.tag;
     if (!canaryPackageRaw || !canaryTagRaw) {
       throw new UsageError(
-        "this plan has deletions to attempt but no canary is configured — add `canary: " +
+        "this plan has deletions to attempt but no canary is configured; add `canary: " +
           "{ package, tag }` to the manifest, or pass --canary-package <name> --canary-tag " +
           "<tag> (a known-good tag resolved before any deletion). Verification is not " +
           "optional on the apply path.",
@@ -972,7 +972,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
     } catch (error) {
       throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
     }
-    // Retention is a single global policy (no per-package override — see
+    // Retention is a single global policy (no per-package override; see
     // `manifest/schema.ts`'s `ResolvedPolicy` doc), so it is resolved
     // ONCE here and reused for every package `resolveExpirySet` is
     // invoked for. `policyFor` keeps its per-package shape (matching
@@ -988,7 +988,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
         producer: policyDrivenExpiryProducer,
         policyFor: () => policy,
         // Deliberately `packagesClient`, not a fresh client: it is never
-        // cached (unlike `registry`/`verificationRegistry` — see
+        // cached (unlike `registry`/`verificationRegistry`; see
         // `verify.ts`'s `ExpiryProducerInput.createdAtOf` doc and
         // `buildRegistryAdapters`'s doc on why the registry side needs
         // two DISTINCT readers), so calling it again here is already a
@@ -997,7 +997,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
         now: () => clock.now(),
       },
       // Printed to stdout BEFORE `sink.record` (which calls the
-      // breaker, a network operation) is even attempted — so the
+      // breaker, a network operation) is even attempted, so the
       // incident survives a breaker outage instead of vanishing behind
       // a bare "Not Found" the way it did in the run that motivated
       // this (see `apply.ts`'s `VerificationOptions.onIncident` doc).
@@ -1029,7 +1029,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
     return EXIT_FINDINGS;
   }
   if (applyExit !== EXIT_APPLY_OK) {
-    // Unreachable given classifyApplyExit's three-value range — guards
+    // Unreachable given classifyApplyExit's three-value range; guards
     // against a silent exit-code drift if that range ever grows.
     throw new Error(`unexpected apply exit classification: ${String(applyExit)}`);
   }
@@ -1037,7 +1037,7 @@ async function runApplyCommand(args: ParsedArgs, deps: CliDeps): Promise<number>
   return hadPlanSkip ? EXIT_FINDINGS : EXIT_OK;
 }
 
-/** Runs the CLI end-to-end and returns the process exit code — never calls `process.exit` itself. */
+/** Runs the CLI end-to-end and returns the process exit code; never calls `process.exit` itself. */
 export async function runCommand(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
   let subcommand: Subcommand;
   let args: ParsedArgs;
@@ -1063,7 +1063,7 @@ export async function runCommand(argv: readonly string[], deps: CliDeps = {}): P
       return EXIT_CONFIG;
     }
     // A plan-integrity violation (assertGroupsAreWellFormed / assertNoSurvivingParent)
-    // is a thrown Error, not a return value — and is exactly a safety-severity
+    // is a thrown Error, not a return value, and is exactly a safety-severity
     // finding: the plan itself was shown to be structurally wrong.
     if (error instanceof Error && /plan integrity violation/.test(error.message)) {
       process.stderr.write(`${error.message}\n`);
@@ -1129,7 +1129,7 @@ export function resolveArgv(env: NodeJS.ProcessEnv, argv: readonly string[]): st
   }
   if (inputArgs.trim() === "") {
     throw new UsageError(
-      "the `args` input is empty — pass a subcommand and flags (e.g. `plan --manifest .ghcr-tidy.yaml`)",
+      "the `args` input is empty; pass a subcommand and flags (e.g. `plan --manifest .ghcr-tidy.yaml`)",
     );
   }
   return tokenizeArgs(inputArgs);

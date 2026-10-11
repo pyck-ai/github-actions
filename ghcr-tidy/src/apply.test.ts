@@ -32,7 +32,7 @@ function planWithGroups(groups: PersistedDeletionGroup[]): Plan {
   };
 }
 
-describe("applyPlan — mid-group parent failure (the flutter-rfw regression test)", () => {
+describe("applyPlan: mid-group parent failure (the flutter-rfw regression test)", () => {
   it("does NOT delete a root's children when the root's own delete fails, abandons the group, and still processes later groups", async () => {
     const fake = new FakeGhcr();
     fake.setDeleteFault(1, { kind: "error", status: 500 });
@@ -45,7 +45,7 @@ describe("applyPlan — mid-group parent failure (the flutter-rfw regression tes
 
     const result = await applyPlan(plan, mutator, { budget: 100 });
 
-    // Only the root of the failing group was attempted — its children never were.
+    // Only the root of the failing group was attempted; its children never were.
     expect(attemptedVersionIds).toEqual([1, 10, 11]);
     expect(deletedVersionIds).toEqual([10, 11]);
 
@@ -77,7 +77,7 @@ describe("applyPlan — mid-group parent failure (the flutter-rfw regression tes
   });
 });
 
-describe("applyPlan — root already gone", () => {
+describe("applyPlan: root already gone", () => {
   it("treats a 404 on the root as success and still deletes its children", async () => {
     const fake = new FakeGhcr();
     fake.setDeleteFault(1, { kind: "not-found" });
@@ -93,7 +93,7 @@ describe("applyPlan — root already gone", () => {
   });
 });
 
-describe("applyPlan — last version conflict", () => {
+describe("applyPlan: last version conflict", () => {
   it("surfaces a 400 as last-version-conflict, does not retry, and abandons the rest of the group", async () => {
     const fake = new FakeGhcr();
     fake.setDeleteFault(1, { kind: "last-version-conflict" });
@@ -102,7 +102,7 @@ describe("applyPlan — last version conflict", () => {
 
     const result = await applyPlan(plan, mutator, { budget: 100 });
 
-    expect(attemptedVersionIds).toEqual([1]); // called exactly once — no retry storm
+    expect(attemptedVersionIds).toEqual([1]); // called exactly once; no retry storm
     expect(result.packages[0]!.groups[0]).toMatchObject({
       status: "abandoned",
       members: [
@@ -113,7 +113,7 @@ describe("applyPlan — last version conflict", () => {
   });
 });
 
-describe("applyPlan — budget", () => {
+describe("applyPlan: budget", () => {
   it("does not start a group it cannot finish, and remaining budget accounts for it", async () => {
     const fake = new FakeGhcr();
     const plan = planWithGroups([group(1, [1, 2, 3]), group(10, [10])]);
@@ -133,7 +133,7 @@ describe("applyPlan — budget", () => {
   });
 });
 
-describe("applyPlan — idempotence", () => {
+describe("applyPlan: idempotence", () => {
   it("applying the same plan twice: the second run mutates nothing new and every member reports already-gone", async () => {
     const fake = new FakeGhcr();
     const plan = planWithGroups([group(1, [1, 2, 3])]);
@@ -159,7 +159,7 @@ describe("applyPlan — idempotence", () => {
   });
 });
 
-describe("applyPlan — dry run", () => {
+describe("applyPlan: dry run", () => {
   it("dryRunMutator records every intended call and performs none; matches exactly what apply would issue", async () => {
     const plan = planWithGroups([group(1, [1, 2, 3]), group(10, [10])]);
     const { mutator, calls } = dryRunMutator();
@@ -172,14 +172,14 @@ describe("applyPlan — dry run", () => {
       { kind: "deleteVersion", packageName: pkg, versionId: 3 },
       { kind: "deleteVersion", packageName: pkg, versionId: 10 },
     ]);
-    // A dry run against a plan with no faults completes every group —
+    // A dry run against a plan with no faults completes every group;
     // the intents recorded are exactly the version ids a real apply
     // journal would show intent/outcome pairs for, in the same order.
     expect(result.packages[0]!.groups.every((g) => g.status === "completed")).toBe(true);
   });
 });
 
-describe("applyPlan — journal", () => {
+describe("applyPlan: journal", () => {
   it("records intent before outcome for every attempted mutation, in order", async () => {
     const fake = new FakeGhcr();
     fake.setDeleteFault(2, { kind: "error", status: 500 });
@@ -199,20 +199,20 @@ describe("applyPlan — journal", () => {
   });
 });
 
-describe("classifyApplyExit — zero-mutation guard", () => {
+describe("classifyApplyExit: zero-mutation guard", () => {
   it("is a FAILURE (exit 4) when the plan has groups but zero mutations were attempted", async () => {
     const fake = new FakeGhcr();
     const plan = planWithGroups([group(1, [1, 2, 3])]);
     const { mutator } = fake.mutator();
 
-    // Budget 0 means every group is skipped for budget reasons — nothing attempted.
+    // Budget 0 means every group is skipped for budget reasons; nothing attempted.
     const result = await applyPlan(plan, mutator, { budget: 0 });
 
     expect(result.attempted).toBe(0);
     expect(classifyApplyExit(plan, result)).toBe(EXIT_APPLY_SAFETY);
   });
 
-  it("is OK (exit 0) for an empty plan with zero groups — that is a legitimate no-op, not a failure", async () => {
+  it("is OK (exit 0) for an empty plan with zero groups: that is a legitimate no-op, not a failure", async () => {
     const fake = new FakeGhcr();
     const plan = planWithGroups([]);
     const { mutator } = fake.mutator();
@@ -224,7 +224,7 @@ describe("classifyApplyExit — zero-mutation guard", () => {
   });
 });
 
-describe("applyPlan — plan integrity", () => {
+describe("applyPlan: plan integrity", () => {
   it("throws before any mutation when the plan is structurally malformed", async () => {
     const fake = new FakeGhcr();
     const { mutator, attemptedVersionIds } = fake.mutator();

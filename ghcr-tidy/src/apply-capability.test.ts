@@ -65,7 +65,7 @@ describe("grantApply", () => {
 
   it("a truncated/corrupt plan file already on disk at the target path does not block a fresh grantApply (grantApply always writes its own copy first)", async () => {
     // grantApply does not trust or reuse whatever is already sitting at
-    // `filePath` — it always serialises, writes, and rereads its OWN
+    // `filePath`; it always serialises, writes, and rereads its OWN
     // bytes. A stale/corrupt file at the target path before the call is
     // simply overwritten, never consulted.
     const fs = new FakePlanFileSystem();

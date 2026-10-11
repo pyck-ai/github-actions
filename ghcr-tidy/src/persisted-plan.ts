@@ -4,7 +4,7 @@ import type { DeletionGroup } from "./deletion-group.js";
 import type { PlannedPlan } from "./plan.js";
 
 /**
- * The apply path's durable, on-disk artifact — deliberately a NARROWER
+ * The apply path's durable, on-disk artifact; deliberately a NARROWER
  * shape than the planning core's `PackagePlanResult`: digest + numeric
  * Packages API version id only, nothing about *why* a digest was
  * selected (no reachability sets, no policy). This is what makes the
@@ -33,7 +33,7 @@ export interface PersistedPackagePlan {
 export interface Plan {
   readonly schemaVersion: typeof PLAN_SCHEMA_VERSION;
   readonly org: string;
-  /** ISO-8601 timestamp of when this plan was computed — purely informational, never re-derived. */
+  /** ISO-8601 timestamp of when this plan was computed; purely informational, never re-derived. */
   readonly generatedAt: string;
   readonly packages: readonly PersistedPackagePlan[];
 }
@@ -94,7 +94,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Rejects any field not in `allowed` — the "closed" half of "closed schema": an unrecognised field is as suspicious as a missing one. */
+/** Rejects any field not in `allowed`; the "closed" half of "closed schema": an unrecognised field is as suspicious as a missing one. */
 function assertNoExtraKeys(
   obj: Record<string, unknown>,
   allowed: readonly string[],
@@ -197,7 +197,7 @@ export function parsePlan(raw: unknown): Plan {
  * for a plan built in the same process, but the persisted `Plan` schema
  * intentionally does not carry the full `reachable`/`edges` data
  * `assertNoSurvivingParent` (`deletion-group.ts`) needs to re-verify the
- * stronger "no surviving KEPT parent" property — that property was
+ * stronger "no surviving KEPT parent" property, that property was
  * already checked once, in-process, before this plan was ever persisted
  * (see `plan.ts`'s call to `assertNoSurvivingParent`). This check is the
  * defense-in-depth re-verification available from the persisted shape

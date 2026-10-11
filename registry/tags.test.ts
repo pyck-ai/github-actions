@@ -55,7 +55,7 @@ describe("listRegistryTags", () => {
     // Regression test for the real bug: GHCR returns a path-only Link
     // header (`</v2/owner/pkg/tags/list?...>`, no scheme/host), verified
     // live against ghcr.io. Passing that straight to `fetch` throws, which
-    // `requestWithRetry` reports as `network-error` — this must not
+    // `requestWithRetry` reports as `network-error`; this must not
     // happen; the relative URL must be resolved against the page just
     // fetched before the next request is made.
     const fetchImpl = vi

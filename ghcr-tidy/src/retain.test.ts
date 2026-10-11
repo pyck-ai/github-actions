@@ -13,7 +13,7 @@ function root(d: string, tags: string[]): LiveRoot {
   return { digest: digest(d), tags: new Set(tags.map((t) => tag(t))) };
 }
 
-describe("computeRetainedTags — unversioned tags are always-retained singletons", () => {
+describe("computeRetainedTags: unversioned tags are always-retained singletons", () => {
   it("retains an unversioned tag unconditionally, even under a policy that keeps nothing versioned", () => {
     const retained = computeRetainedTags([tag("latest")], {
       keepMajors: 0,
@@ -34,10 +34,10 @@ describe("computeRetainedTags — unversioned tags are always-retained singleton
   });
 });
 
-describe("computeRetainedTags — the version lattice and its three fixed levels", () => {
+describe("computeRetainedTags: the version lattice and its three fixed levels", () => {
   const policy: RetentionPolicy = { keepMajors: 1, keepMinors: 1, keepPatches: 1 };
 
-  it("a patch tag requires its major AND minor to be kept — enclosing-level survival (AC 3)", () => {
+  it("a patch tag requires its major AND minor to be kept: enclosing-level survival (AC 3)", () => {
     const tags = [tag("1"), tag("1.0"), tag("1.0.0"), tag("2"), tag("2.0"), tag("2.0.0")];
     const retained = computeRetainedTags(tags, policy);
     // Only major 2 (the newest) survives at every level.
@@ -59,7 +59,7 @@ describe("computeRetainedTags — the version lattice and its three fixed levels
     expect(retained.has(tag("1.5"))).toBe(true);
   });
 
-  it("AC 4: a minor alias never competes against a patch tag for a place in the patch window — structurally separate candidate sets", () => {
+  it("AC 4: a minor alias never competes against a patch tag for a place in the patch window: structurally separate candidate sets", () => {
     // keepPatches: 1, but the corpus has one minor alias and two patch
     // tags. If the minor alias could occupy a patch-window slot, the
     // window would only fit ONE of the two real patches. It must not:
@@ -77,7 +77,7 @@ describe("computeRetainedTags — the version lattice and its three fixed levels
   });
 
   it("AC 5: a kind whose only member is minor-level, with no major-level tag, is retained correctly (golang's real shape)", () => {
-    // No "alpine-3" tag exists anywhere — only "alpine-3.23". The major
+    // No "alpine-3" tag exists anywhere, only "alpine-3.23". The major
     // candidate `3` must still be derived from this minor-level entry.
     const retained = computeRetainedTags([tag("alpine-3.23")], {
       keepMajors: 1,
@@ -87,7 +87,7 @@ describe("computeRetainedTags — the version lattice and its three fixed levels
     expect(retained.has(tag("alpine-3.23"))).toBe(true);
   });
 
-  it("HARD CASE: base's alpine vs alpine-3.23 are different kinds — the collision dissolves", () => {
+  it("HARD CASE: base's alpine vs alpine-3.23 are different kinds: the collision dissolves", () => {
     const retained = computeRetainedTags([tag("alpine"), tag("alpine-3.23")], {
       keepMajors: 0,
       keepMinors: 0,
@@ -99,7 +99,7 @@ describe("computeRetainedTags — the version lattice and its three fixed levels
     expect(retained.has(tag("alpine-3.23"))).toBe(false);
   });
 
-  it("HARD CASE: suffix variants are separate kinds — a missing -alpine build never expires the -debian one", () => {
+  it("HARD CASE: suffix variants are separate kinds: a missing -alpine build never expires the -debian one", () => {
     // python's real shape: 3.13-debian exists, 3.13-alpine does not.
     // Folding suffixes would make the (nonexistent) -alpine kind's
     // absence irrelevant to -debian's own window either way, but this
@@ -108,16 +108,16 @@ describe("computeRetainedTags — the version lattice and its three fixed levels
     // -debian build.
     const tags = [tag("3.13-debian"), tag("3.14-alpine"), tag("3.14-debian")];
     const retained = computeRetainedTags(tags, { keepMajors: 1, keepMinors: 1, keepPatches: 1 });
-    // "-debian" kind: majors {3} — both 3.13-debian and 3.14-debian are
+    // "-debian" kind: majors {3}; both 3.13-debian and 3.14-debian are
     // minor-level under major 3, so only the newest minor (3.14) survives.
     expect(retained.has(tag("3.14-debian"))).toBe(true);
     expect(retained.has(tag("3.13-debian"))).toBe(false);
-    // "-alpine" kind has exactly one member — trivially retained.
+    // "-alpine" kind has exactly one member; trivially retained.
     expect(retained.has(tag("3.14-alpine"))).toBe(true);
   });
 });
 
-describe("computeKeepRoots — a root is kept iff at least one of its tags is retained", () => {
+describe("computeKeepRoots: a root is kept iff at least one of its tags is retained", () => {
   it("keeps a root carrying an unversioned tag, regardless of policy", () => {
     const roots = [root("sha256:a", ["latest"])];
     const keep = computeKeepRoots(roots, { keepMajors: 0, keepMinors: 0, keepPatches: 0 });
@@ -137,16 +137,16 @@ describe("computeKeepRoots — a root is kept iff at least one of its tags is re
     expect(keep.has(digest("sha256:a"))).toBe(false);
   });
 
-  it("AC 6: a digest is excluded unless EVERY one of its tags is expired — no weighting, no threshold, no partial rule", () => {
+  it("AC 6: a digest is excluded unless EVERY one of its tags is expired: no weighting, no threshold, no partial rule", () => {
     // "sha256:a" carries both an expired versioned tag and a retained
-    // unversioned one — the existential means ANY retained tag suffices.
+    // unversioned one; the existential means ANY retained tag suffices.
     const roots = [root("sha256:a", ["9.9.9", "latest"])];
     const keep = computeKeepRoots(roots, { keepMajors: 0, keepMinors: 0, keepPatches: 0 });
     expect(keep.has(digest("sha256:a"))).toBe(true);
   });
 });
 
-describe("computeFloorTags — the newest literal tag of every kind, independent of policy", () => {
+describe("computeFloorTags: the newest literal tag of every kind, independent of policy", () => {
   it("an unversioned tag's floor is itself", () => {
     expect(computeFloorTags([tag("latest")])).toEqual(new Set([tag("latest")]));
   });
@@ -162,7 +162,7 @@ describe("computeFloorTags — the newest literal tag of every kind, independent
   });
 });
 
-describe("AC 8/9/10 — the real baseimages corpus, at the recommended 1/3/5/30 policy", () => {
+describe("AC 8/9/10: the real baseimages corpus, at the recommended 1/3/5/30 policy", () => {
   const byPackage = loadBaseimagesTags();
   const policy: RetentionPolicy = { keepMajors: 1, keepMinors: 3, keepPatches: 5 };
 
@@ -180,7 +180,7 @@ describe("AC 8/9/10 — the real baseimages corpus, at the recommended 1/3/5/30 
     expect(retained.size).toBe(72);
   });
 
-  it("AC 9: at keepMinors 2 or higher, golang's frozen 1.26 line (and its debian-trixie twin) is retained, not expired — the incident this ships to fix", () => {
+  it("AC 9: at keepMinors 2 or higher, golang's frozen 1.26 line (and its debian-trixie twin) is retained, not expired: the incident this ships to fix", () => {
     const golang = byPackage.get("golang") ?? [];
     for (const keepMinors of [2, 3]) {
       const retained = computeRetainedTags(golang, { keepMajors: 1, keepMinors, keepPatches: 5 });
@@ -189,7 +189,7 @@ describe("AC 8/9/10 — the real baseimages corpus, at the recommended 1/3/5/30 
       // "debian-trixie" is unversioned, so its "twin" is really every
       // "-debian"-suffixed golang tag, which follows the SAME windowing
       // as the bare and "-alpine" kinds since all three distros build
-      // from the same version set — see `tag-kind.ts`'s doc on the
+      // from the same version set; see `tag-kind.ts`'s doc on the
       // "accepted wart" that this kind separation produces.
       expect(retained.has(tag("1.26-debian"))).toBe(true);
       expect(retained.has(tag("1.26.5-debian"))).toBe(true);
@@ -198,14 +198,14 @@ describe("AC 8/9/10 — the real baseimages corpus, at the recommended 1/3/5/30 
     }
   });
 
-  it("AC 9: at keepMinors 1, the same golang 1.26 line falls outside the window (1.27 is newer) — proving N is the dial, not a constant", () => {
+  it("AC 9: at keepMinors 1, the same golang 1.26 line falls outside the window (1.27 is newer): proving N is the dial, not a constant", () => {
     const golang = byPackage.get("golang") ?? [];
     const retained = computeRetainedTags(golang, { keepMajors: 1, keepMinors: 1, keepPatches: 5 });
     expect(retained.has(tag("1.26"))).toBe(false);
     expect(retained.has(tag("1.26.5"))).toBe(false);
   });
 
-  it("AC 10 (algorithm half): buildcache needs no special case — its 29 unversioned tags are retained by the algorithm alone", () => {
+  it("AC 10 (algorithm half): buildcache needs no special case: its 29 unversioned tags are retained by the algorithm alone", () => {
     const buildcache = byPackage.get("buildcache") ?? [];
     expect(buildcache).toHaveLength(29);
     const retained = computeRetainedTags(buildcache, {

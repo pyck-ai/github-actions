@@ -21,7 +21,7 @@ describe("checkVolumeAlarm", () => {
     expect(decision.multiple).toBe(DEFAULT_VOLUME_ALARM_MULTIPLE);
   });
 
-  it("proceeds when no baseline is supplied — a deliberate, documented default, not an oversight", () => {
+  it("proceeds when no baseline is supplied: a deliberate, documented default, not an oversight", () => {
     const decision = checkVolumeAlarm(1_000_000, {});
     expect(decision.allowed).toBe(true);
     expect(decision.baseline).toBeUndefined();

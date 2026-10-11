@@ -9,13 +9,13 @@ import type { PackageVersionRecord, PackagesClient, RegistryReader } from "./por
  * The real {@link RegistryReader}: `/v2/` via the registry core
  * (`listRegistryTags`, `resolveManifest`). `resolveManifest`'s
  * `registryPath` parameter remains a bare `string` (see the module's own
- * report on why it was not tightened to {@link RegistryPath}) — a
+ * report on why it was not tightened to {@link RegistryPath}); a
  * `RegistryPath` is structurally a `string`, so it is passed straight
  * through with no cast needed.
  *
  * `listTags` throws on anything other than a clean `"success"` from
  * {@link listRegistryTags}, since {@link RegistryReader.listTags} has no
- * failure channel of its own — the ONLY caller, {@link buildLiveRoots},
+ * failure channel of its own; the ONLY caller, {@link buildLiveRoots},
  * resolves every tag immediately afterwards anyway, so a tag-listing
  * failure and a tag-resolution failure end up in the same fail-closed
  * path either way. This adapter is the one exception where "throw" is

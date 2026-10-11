@@ -49,7 +49,7 @@ describe("toPackageVersion", () => {
   });
 });
 
-describe("listPackageVersions — pagination assembly", () => {
+describe("listPackageVersions: pagination assembly", () => {
   it("requests the correct route and params, and maps every returned raw version", async () => {
     const raws: RawPackageVersion[] = [
       {

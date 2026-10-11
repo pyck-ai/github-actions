@@ -3,7 +3,7 @@ import type { PackageName } from "../../registry/package-name.js";
 /**
  * A content digest, e.g. `"sha256:deadbeef..."`. Branded separately from
  * {@link Tag} because the whole ghcr-tidy model is set arithmetic over
- * digests (`REACHABLE`, `INFLIGHT`, `DELETE`) — a tag string leaking into
+ * digests (`REACHABLE`, `INFLIGHT`, `DELETE`); a tag string leaking into
  * one of those sets is a silent wrong-answer bug that plain `string` typing
  * cannot catch.
  */
@@ -13,7 +13,7 @@ export type Digest = string & { readonly __brand: "Digest" };
  * Validates and brands a raw string as a {@link Digest}. Deliberately only
  * checks the `<algorithm>:<content>` shape (OCI's own digest grammar,
  * `algorithm ::= component ( '+' component )*`, `component` alphanumeric),
- * not that `<content>` is valid hex of the right length for `sha256` —
+ * not that `<content>` is valid hex of the right length for `sha256`;
  * fixtures across the test suite use short, readable placeholders like
  * `"sha256:child"`, and this constructor's job is to keep a `Tag` from
  * being used where a `Digest` is required, not to re-implement the OCI
@@ -41,7 +41,7 @@ export function tag(value: string): Tag {
  * The path segment GHCR's `/v2/` registry API expects, e.g.
  * `"pyck-ai/baseimages/golang"`. Branded SEPARATELY from
  * {@link PackageName} (`"baseimages/golang"`) because the two are
- * different strings for different APIs — the Packages API takes the bare
+ * different strings for different APIs; the Packages API takes the bare
  * package name, `/v2/` needs the owner prepended. Swapping them produces a
  * 404 from the registry, which under fail-closed semantics becomes a
  * silent green no-op: the package is skipped, nothing is deleted, and

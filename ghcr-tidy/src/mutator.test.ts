@@ -31,7 +31,7 @@ describe("dryRunMutator", () => {
   it("holds no client: its shape has nothing capable of reaching the network", () => {
     const { mutator } = dryRunMutator();
     // No constructor argument was ever supplied, so there is no client
-    // reference anywhere in this closure — this is a structural, not
+    // reference anywhere in this closure; this is a structural, not
     // just behavioural, guarantee. Asserting the object has no more
     // properties than its two methods is the closest runtime proxy for that.
     expect(Object.keys(mutator).sort()).toEqual(["deletePackage", "deleteVersion"]);

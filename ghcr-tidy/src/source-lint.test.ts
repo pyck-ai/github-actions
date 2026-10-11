@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 /**
  * "Untagged" must never appear as a deletion predicate anywhere in this
  * module: untagged-ness is never a deletion criterion, only
- * unreachability is (see `plan.ts`'s module doc — this is precisely the
+ * unreachability is (see `plan.ts`'s module doc; this is precisely the
  * bug that destroyed `flutter-rfw`). This test greps the module's own
  * non-test source for the word, so a future change that reintroduces an
  * "untagged" check fails loudly instead of silently regressing the

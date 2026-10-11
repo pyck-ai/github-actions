@@ -129,7 +129,7 @@ describe("toPersistedPackagePlan", () => {
     });
   });
 
-  it("throws if a group digest has no known version id (defensive — should be unreachable per plan.ts's construction)", () => {
+  it("throws if a group digest has no known version id (defensive: should be unreachable per plan.ts's construction)", () => {
     const planned: PlannedPlan = {
       status: "planned",
       total: 1,

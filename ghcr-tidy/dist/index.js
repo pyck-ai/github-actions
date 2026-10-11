@@ -10301,7 +10301,7 @@ const ATTESTATION_ANNOTATION_VALUE = "attestation-manifest";
  * Whether a child is GHCR's buildx provenance/attestation manifest rather
  * than a platform image. Verified against the live registry (2026-09):
  * these are ordinary index children carrying
- * `annotations["vnd.docker.reference.type"] === "attestation-manifest"` —
+ * `annotations["vnd.docker.reference.type"] === "attestation-manifest"`;
  * NOT something returned by the `/v2/<img>/referrers/<digest>` endpoint,
  * which returns 0 results for these. Do not build referrers-API logic to
  * find them; they are already covered by index-children traversal.
@@ -10311,7 +10311,7 @@ function isAttestationChild(child) {
 }
 /**
  * Parses a manifest response body into its media type and (for an index)
- * its direct children. Pure, no I/O — this is the media-type dispatch and
+ * its direct children. Pure, no I/O; this is the media-type dispatch and
  * child-extraction logic, kept separate from the network call so it can be
  * unit tested against fixture bodies without mocking `fetch`.
  *
@@ -10345,8 +10345,8 @@ function parseManifestBody(bodyText, headerMediaType) {
  *
  * The observed HTTP status is always recorded on the result (via `httpStatus`
  * on every branch except `network-error`), so callers can distinguish a 404
- * (genuinely dead child — safe to treat as unreachable) from a 429/5xx that
- * survived retries (transient — must NOT be treated as dead; the bash
+ * (genuinely dead child; safe to treat as unreachable) from a 429/5xx that
+ * survived retries (transient; must NOT be treated as dead; the bash
  * predecessor that dropped this distinction could not explain why a
  * descendant failed to resolve).
  */
@@ -13143,7 +13143,7 @@ throttling.triggersNotification = triggersNotification;
 
 /**
  * The Octokit class this module is built for: core + pagination + retry +
- * throttling. This is a primary reason TypeScript replaces the bash here —
+ * throttling. This is a primary reason TypeScript replaces the bash here;
  * the bash hand-rolled `Link` header pagination and shipped a raw
  * `curl -X DELETE` with NO backoff, so a single 429 counted as a permanent
  * failure AND consumed a deletion budget slot. Octokit's throttling plugin
@@ -13180,7 +13180,7 @@ function toPackageVersion(raw) {
  * Octokit's `paginate` plugin.
  *
  * CAUTION: the GitHub Packages API is a secondary index that goes stale. Do
- * not treat the result of this call as authoritative for read-after-write —
+ * not treat the result of this call as authoritative for read-after-write;
  * e.g. immediately after deleting versions, a subsequent list may still
  * briefly show them, or a subsequent list of a freshly-pushed package may
  * not yet show a new version.
@@ -13211,7 +13211,7 @@ function classifyDeleteVersionStatus(status) {
  * Deletes a single package version.
  *
  * KNOWN GITHUB BEHAVIOUR (observed 2026-09-10 against pyck-ai/baseimages;
- * NOT documented by GitHub — their docs list only 204/401/403/404 for this
+ * NOT documented by GitHub; their docs list only 204/401/403/404 for this
  * endpoint and actually claim the opposite): deleting the LAST remaining
  * version of a package via this endpoint returns HTTP 400. Deleting the
  * package itself (see {@link deletePackage}) succeeds with 204 even while
@@ -13219,7 +13219,7 @@ function classifyDeleteVersionStatus(status) {
  *
  * Consequently this function surfaces a 400 as `"last-version-conflict"`
  * instead of throwing a generic error. Callers must NOT retry the version
- * delete in a loop expecting it to eventually succeed — that loop never
+ * delete in a loop expecting it to eventually succeed, that loop never
  * terminates. Decide the whole package should go and call
  * {@link deletePackage} once instead.
  */
@@ -13316,19 +13316,19 @@ function parseNextLink(header) {
  * has more tags than fit on one page.
  *
  * MUST paginate: `baseimages/python` was observed returning exactly 100 tags
- * at `?n=100` — i.e. truncated — so a single-page read computes ROOTS from a
+ * at `?n=100`, i.e. truncated, so a single-page read computes ROOTS from a
  * partial view of the registry and silently under-protects (or, worse,
  * under-deletes-then-corrects-later) whatever tags fall past the first page.
  *
  * GHCR's `Link` header is ORIGIN-RELATIVE (verified live 2026-09-11 against
  * `ghcr.io/v2/pyck-ai/baseimages/agent/tags/list`:
  * `link: </v2/pyck-ai/baseimages/agent/tags/list?last=...&n=...>; rel="next"`
- * — no scheme or host), per the OCI distribution spec's own pagination
+ * no scheme or host), per the OCI distribution spec's own pagination
  * example. `parseNextLink` returns that raw value verbatim, so it MUST be
  * resolved against the previous request's URL before being fetched:
  * passing a bare path straight to `fetch` throws (`TypeError: Failed to
  * parse URL`), which `requestWithRetry` catches and reports as
- * `"network-error"` on every retry — indistinguishable from a real network
+ * `"network-error"` on every retry; indistinguishable from a real network
  * failure, but 100% reproducible for any package with more than one page
  * of tags (i.e. the moment pagination is actually exercised) and NOT
  * something retrying helps with. This was the exact cause of
@@ -13337,7 +13337,7 @@ function parseNextLink(header) {
  *
  * Classifies the observed status the same way {@link resolveManifest} does,
  * so a caller building ghcr-tidy's LIVE_ROOTS can distinguish a genuine
- * 404 (package has no tags endpoint — unusual, but not the same as "zero
+ * 404 (package has no tags endpoint; unusual, but not the same as "zero
  * tags") from a transient failure that must not be treated as "no tags".
  */
 async function listRegistryTags(registryPath, token, options = {}) {
@@ -13380,7 +13380,7 @@ async function listRegistryTags(registryPath, token, options = {}) {
  * Validates and brands a raw string as a {@link Digest}. Deliberately only
  * checks the `<algorithm>:<content>` shape (OCI's own digest grammar,
  * `algorithm ::= component ( '+' component )*`, `component` alphanumeric),
- * not that `<content>` is valid hex of the right length for `sha256` —
+ * not that `<content>` is valid hex of the right length for `sha256`;
  * fixtures across the test suite use short, readable placeholders like
  * `"sha256:child"`, and this constructor's job is to keep a `Tag` from
  * being used where a `Digest` is required, not to re-implement the OCI
@@ -13416,13 +13416,13 @@ function registryPathFor(owner, name) {
  * The real {@link RegistryReader}: `/v2/` via the registry core
  * (`listRegistryTags`, `resolveManifest`). `resolveManifest`'s
  * `registryPath` parameter remains a bare `string` (see the module's own
- * report on why it was not tightened to {@link RegistryPath}) — a
+ * report on why it was not tightened to {@link RegistryPath}); a
  * `RegistryPath` is structurally a `string`, so it is passed straight
  * through with no cast needed.
  *
  * `listTags` throws on anything other than a clean `"success"` from
  * {@link listRegistryTags}, since {@link RegistryReader.listTags} has no
- * failure channel of its own — the ONLY caller, {@link buildLiveRoots},
+ * failure channel of its own; the ONLY caller, {@link buildLiveRoots},
  * resolves every tag immediately afterwards anyway, so a tag-listing
  * failure and a tag-resolution failure end up in the same fail-closed
  * path either way. This adapter is the one exception where "throw" is
@@ -13466,21 +13466,21 @@ function createPackagesClient(octokit) {
  * A bounded concurrency gate: `limit(fn)` queues `fn` and runs it only
  * once fewer than `limit` calls are currently in flight through THIS
  * limiter. Unlike a fixed-size worker pool over a known array (see
- * `cli.ts`'s `runPool`), this has no notion of "items" — arbitrary,
+ * `cli.ts`'s `runPool`), this has no notion of "items"; arbitrary,
  * differently-shaped async work from anywhere can share one limiter.
  *
  * This is what actually bounds registry HTTP concurrency for ghcr-tidy
  * (see `cli.ts`'s `--jobs` wiring): the planning core (`roots.ts`,
  * `reachability.ts`) fires its independent per-tag/per-BFS-node requests
- * with `Promise.all` and no limit of its own — deliberately, so it stays
- * pure set-arithmetic-plus-I/O with no concurrency policy baked in — and
+ * with `Promise.all` and no limit of its own; deliberately, so it stays
+ * pure set-arithmetic-plus-I/O with no concurrency policy baked in, and
  * relies on the `RegistryReader` it was given already being wrapped by a
  * limiter sized to `--jobs`. One shared limiter, applied once at the
  * registry-adapter boundary, means concurrency stays additive (bounded by
  * `--jobs` HTTP requests in flight at any moment, across every package and
  * every BFS frontier at once) rather than multiplying together with
  * whatever other pool (e.g. the cross-package one) happens to also be
- * live — two independently-sized pools nested inside each other would
+ * live; two independently-sized pools nested inside each other would
  * bound total concurrency to their PRODUCT, not either one's own limit.
  */
 function createLimiter(limit) {
@@ -13521,7 +13521,7 @@ function createLimiter(limit) {
 ;// CONCATENATED MODULE: ./ghcr-tidy/src/resolve-cache.ts
 /**
  * Decorates a {@link RegistryReader} so that within one run, the same
- * `(path, ref)` pair is never sent to the underlying registry twice — and
+ * `(path, ref)` pair is never sent to the underlying registry twice, and
  * two callers racing on the SAME digest (e.g. two keep-roots whose BFS
  * frontiers both reach a shared platform manifest in the same tick, now
  * that `reachability.ts` resolves a frontier level concurrently) share one
@@ -13533,7 +13533,7 @@ function createLimiter(limit) {
  * never be skipped just because some other tag happens to already be
  * known to point at the same digest. What this DOES eliminate is the
  * common case this model produces constantly: the same DIGEST reached
- * from more than one place — a child shared by several roots (already
+ * from more than one place; a child shared by several roots (already
  * partly handled by `reachability.ts`'s own `reachable`/`rootChildren`
  * bookkeeping) or a manifest fetched once as a BFS child and later found
  * again as an unrelated live root.
@@ -13544,7 +13544,7 @@ function createLimiter(limit) {
  * digest resolved successfully under one package's path says nothing
  * about whether it exists under a different package's path.
  *
- * Does not cache `listTags` — the tag list is read exactly once per
+ * Does not cache `listTags`; the tag list is read exactly once per
  * package already (`roots.ts` is `buildLiveRoots`'s only caller besides
  * `verify.ts`'s snapshotting, and those are different logical reads at
  * different times), so there is nothing to de-duplicate there.
@@ -13570,7 +13570,7 @@ function createCachingRegistryReader(registry) {
 ;// CONCATENATED MODULE: ./ghcr-tidy/src/mutator.ts
 
 /**
- * A `Mutator` that HOLDS NO CLIENT — there is nothing inside it capable
+ * A `Mutator` that HOLDS NO CLIENT; there is nothing inside it capable
  * of making an HTTP request, so it cannot reach the network even by
  * accident or by a future refactor that forgets to check a flag. It
  * records every call it would have made and always reports the
@@ -13595,7 +13595,7 @@ function dryRunMutator() {
 /**
  * The real, network-backed `Mutator`, wrapping `registry/packages.ts`.
  * REQUIRES an {@link ApplyCapability} as a constructor parameter, and
- * there is no other constructor for a network-backed `Mutator` — so
+ * there is no other constructor for a network-backed `Mutator`, so
  * "delete without a durable, re-readable plan" (see `grantApply`'s doc)
  * is a type error, not a code-review item. See
  * `mutator.typecheck.ts` for the compile-time assertion that this
@@ -13617,7 +13617,7 @@ const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(im
 
 
 /**
- * The apply path's durable, on-disk artifact — deliberately a NARROWER
+ * The apply path's durable, on-disk artifact; deliberately a NARROWER
  * shape than the planning core's `PackagePlanResult`: digest + numeric
  * Packages API version id only, nothing about *why* a digest was
  * selected (no reachability sets, no policy). This is what makes the
@@ -13678,7 +13678,7 @@ function fail(where, message) {
 function persisted_plan_isPlainObject(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-/** Rejects any field not in `allowed` — the "closed" half of "closed schema": an unrecognised field is as suspicious as a missing one. */
+/** Rejects any field not in `allowed`; the "closed" half of "closed schema": an unrecognised field is as suspicious as a missing one. */
 function assertNoExtraKeys(obj, allowed, where) {
     const extra = Object.keys(obj).filter((k) => !allowed.includes(k));
     if (extra.length > 0) {
@@ -13780,7 +13780,7 @@ function parsePlan(raw) {
  * for a plan built in the same process, but the persisted `Plan` schema
  * intentionally does not carry the full `reachable`/`edges` data
  * `assertNoSurvivingParent` (`deletion-group.ts`) needs to re-verify the
- * stronger "no surviving KEPT parent" property — that property was
+ * stronger "no surviving KEPT parent" property, that property was
  * already checked once, in-process, before this plan was ever persisted
  * (see `plan.ts`'s call to `assertNoSurvivingParent`). This check is the
  * defense-in-depth re-verification available from the persisted shape
@@ -13828,17 +13828,17 @@ function sha256Hex(content) {
  * Grants an {@link ApplyCapability} for `plan`, but ONLY after:
  *
  * 1. Serialising it deterministically ({@link serializePlan}).
- * 2. Writing it atomically — a temp file in the SAME directory as
+ * 2. Writing it atomically; a temp file in the SAME directory as
  *    `filePath`, then a rename, so `filePath` never briefly shows a
  *    partial write.
  * 3. Reading `filePath` back from disk (not reusing the in-memory
- *    `serialized` string — the read must exercise the real file).
+ *    `serialized` string; the read must exercise the real file).
  * 4. Verifying a SHA-256 hash of the reread bytes matches the bytes just
  *    serialised.
  * 5. Re-parsing the reread bytes against {@link parsePlan}'s closed
  *    schema and confirming the result matches `plan` exactly.
  *
- * Any failure at any step throws and no capability is returned — there
+ * Any failure at any step throws and no capability is returned; there
  * is no other constructor for one, and {@link applyMutator} in
  * `mutator.ts` requires one, so "delete without a durable, re-readable
  * plan" is a type error, not a code-review item.
@@ -13861,22 +13861,22 @@ async function grantApply(plan, filePath, fs = nodePlanFileSystem()) {
     const reread = await fs.readFile(filePath);
     const actualHash = sha256Hex(reread);
     if (actualHash !== expectedHash) {
-        throw new Error(`plan round trip failed: content hash of ${filePath} after write (${actualHash}) does not match the hash of what was serialised (${expectedHash}) — refusing to grant apply`);
+        throw new Error(`plan round trip failed: content hash of ${filePath} after write (${actualHash}) does not match the hash of what was serialised (${expectedHash}); refusing to grant apply`);
     }
     let rawJson;
     try {
         rawJson = JSON.parse(reread);
     }
     catch (error) {
-        throw new Error(`plan round trip failed: ${filePath} is not valid JSON after being written (${error instanceof Error ? error.message : String(error)}) — refusing to grant apply`, { cause: error });
+        throw new Error(`plan round trip failed: ${filePath} is not valid JSON after being written (${error instanceof Error ? error.message : String(error)}); refusing to grant apply`, { cause: error });
     }
     // Compare via serializePlan's canonical key order, not raw
-    // JSON.stringify — a value's own key insertion order is not guaranteed
+    // JSON.stringify; a value's own key insertion order is not guaranteed
     // to match parsePlan's, and this check must not produce a false
     // mismatch on two structurally-identical plans.
     const reparsed = parsePlan(rawJson);
     if (serializePlan(reparsed) !== serializePlan(plan)) {
-        throw new Error(`plan round trip failed: the plan re-read from ${filePath} does not match the plan that was granted — refusing to grant apply`);
+        throw new Error(`plan round trip failed: the plan re-read from ${filePath} does not match the plan that was granted; refusing to grant apply`);
     }
     return {};
 }
@@ -13886,19 +13886,19 @@ async function grantApply(plan, filePath, fs = nodePlanFileSystem()) {
  * Renders a {@link RegressionIncident} into the plain-text body of the
  * breaker issue. Written for a human reading it cold, with no other
  * context, at 3am: what broke, what this run did just before it broke,
- * where to find more detail, and — because GHCR deletions are
- * irreversible — what to do about it. Pure and synchronous: no I/O, no
+ * where to find more detail, and, because GHCR deletions are
+ * irreversible; what to do about it. Pure and synchronous: no I/O, no
  * knowledge of GitHub, Octokit, or the breaker itself.
  */
 /**
- * GitHub's hard limit on an issue/comment body is 65536 characters —
+ * GitHub's hard limit on an issue/comment body is 65536 characters;
  * kept comfortably under it rather than exactly at it, since this is
  * plain text with no reason to court the edge. This is the fix for the
  * incident that made it necessary: a single concurrent-publish burst on
  * one package (~40 tags repointed by someone else's CI mid-run)
  * produced a body over 65536 characters, GitHub's `POST .../issues`
  * rejected it outright ("Validation Failed: body is too long"), and the
- * breaker — the safety mechanism for a REAL regression — could not file
+ * breaker, the safety mechanism for a REAL regression, could not file
  * its own incident at the exact moment it mattered most.
  */
 const MAX_INCIDENT_BODY_CHARS = 60_000;
@@ -13913,11 +13913,11 @@ function failedPredicatePart(t) {
     if (!t.closureResolves) {
         return "manifest closure broken (a child manifest this tag's index points at no longer resolves)";
     }
-    return "unknown (no predicate part reported as failed — this should not happen)";
+    return "unknown (no predicate part reported as failed; this should not happen)";
 }
 function formatTag(t) {
     const before = t.digestBefore ?? "(none recorded)";
-    const after = t.digestAfter ?? "(none — tag no longer resolves)";
+    const after = t.digestAfter ?? "(none; tag no longer resolves)";
     return [
         `  - ${t.tag}`,
         `      failed check:    ${failedPredicatePart(t)}`,
@@ -13928,14 +13928,14 @@ function formatTag(t) {
 function formatDeletion(m) {
     return `  - digest ${m.digest} (version id ${String(m.versionId)})`;
 }
-/** Renders every item in full — the untruncated path, byte-identical to this module's pre-truncation behaviour, used whenever the resulting body fits under {@link MAX_INCIDENT_BODY_CHARS} on the first attempt. */
+/** Renders every item in full; the untruncated path, byte-identical to this module's pre-truncation behaviour, used whenever the resulting body fits under {@link MAX_INCIDENT_BODY_CHARS} on the first attempt. */
 function renderFull(items, render, emptyText) {
     return items.length === 0 ? emptyText : items.map(render).join("\n");
 }
 /**
  * Renders as many `render(item)` lines from `items` as fit in `budget`
  * characters (each joined by `"\n"`), appending a plain, explicit
- * omission notice — never silent — when any had to be left out. Used for
+ * omission notice, never silent, when any had to be left out. Used for
  * both the affected-tags and preceding-deletions sections so an incident
  * with thousands of findings still produces a postable body instead of
  * failing exactly when the operator needs the issue filed most.
@@ -13958,15 +13958,15 @@ function renderTruncated(items, render, budget, emptyText, noun) {
     const omitted = items.length - lines.length;
     if (omitted > 0) {
         lines.push(`  ... and ${String(omitted)} more ${noun}${omitted === 1 ? "" : "s"} omitted here for ` +
-            `length (${String(items.length)} total) — see the journal for the full list.`);
+            `length (${String(items.length)} total); see the journal for the full list.`);
     }
     return lines.join("\n");
 }
-/** Assembles the full report body from its two variable-length sections — everything else is fixed text, shared by both the untruncated and truncated render paths. */
+/** Assembles the full report body from its two variable-length sections; everything else is fixed text, shared by both the untruncated and truncated render paths. */
 function assembleBody(incident, options, tagsSection, deletionsSection, truncationNotice) {
     const journalLine = options.journalPath
         ? `Journal file for this run: ${options.journalPath}`
-        : "Journal file for this run: not recorded — check the run's own logs/artifacts for its journal path.";
+        : "Journal file for this run: not recorded; check the run's own logs/artifacts for its journal path.";
     return [
         "ghcr-tidy detected a post-apply verification REGRESSION and stopped.",
         "",
@@ -13982,17 +13982,17 @@ function assembleBody(incident, options, tagsSection, deletionsSection, truncati
         journalLine,
         "",
         "GHCR HAS NO UNDELETE. Whatever this run deleted in this package cannot be",
-        "restored by GitHub — the only remediation is to rebuild and republish the",
+        "restored by GitHub; the only remediation is to rebuild and republish the",
         "affected tag(s) above from source.",
         "",
         "To clear this breaker: first understand the cause (read the journal above",
         "and confirm what actually broke and why), THEN close this issue. Closing",
-        "the issue is the only way to clear the breaker — there is no automatic",
+        "the issue is the only way to clear the breaker; there is no automatic",
         "reset and no override flag. ghcr-tidy will refuse to delete anything in",
         "any package, in any future run, for as long as this issue stays open.",
     ].join("\n");
 }
-const NO_DELETIONS_TEXT = "  (none — the regression was detected before this package deleted anything)";
+const NO_DELETIONS_TEXT = "  (none; the regression was detected before this package deleted anything)";
 /**
  * Renders the full incident report body, guaranteed to be no longer than
  * {@link MAX_INCIDENT_BODY_CHARS}. See this module's doc for the
@@ -14001,11 +14001,11 @@ const NO_DELETIONS_TEXT = "  (none — the regression was detected before this p
  * The common case (the incident is small enough to render in full) is
  * tried first and returned as-is. Only when that would exceed the
  * limit does this fall back to a truncated render: the affected-tags
- * list — the most actionable content, what actually regressed — gets
+ * list, the most actionable content, what actually regressed, gets
  * the larger share of the remaining budget; the preceding-deletions
  * list (already fully recorded in the run's own journal) gets the
  * smaller share. Either list that had to be cut states PLAINLY that it
- * was truncated and exactly how many entries were left out — a
+ * was truncated and exactly how many entries were left out; a
  * breaker that silently drops evidence to fit is exactly the kind of
  * blind spot post-apply verification exists to prevent.
  */
@@ -14018,7 +14018,7 @@ function formatIncidentReport(incident, options = {}) {
     }
     const truncationNotice = "NOTE: this report was truncated because the full incident exceeds GitHub's " +
         "issue body size limit. Counts below are of what is SHOWN, not the full " +
-        "incident — see each section's own omission notice for how much was left out.";
+        "incident; see each section's own omission notice for how much was left out.";
     // Fixed overhead (everything except the two variable-length sections)
     // measured with both sections empty, so the budget split below reacts
     // to the ACTUAL incident (package name length, journal path length,
@@ -14051,7 +14051,7 @@ function formatIncidentReport(incident, options = {}) {
  * recording every incident passed to `trip`, in order, regardless of
  * whether the breaker was already tripped. Once tripped (either via the
  * `initial` argument or a prior `trip` call), `isTripped` keeps
- * reporting the SAME tripped state forever — nothing in this function
+ * reporting the SAME tripped state forever; nothing in this function
  * ever clears it, matching the real breaker's no-reset contract.
  */
 function memoryBreaker(initial = null) {
@@ -14067,7 +14067,7 @@ function memoryBreaker(initial = null) {
     };
     return { breaker, trips };
 }
-/** Fixed, well-known title for the breaker issue — `isTripped`/`trip` locate it by this exact title (scoped further by {@link BREAKER_ISSUE_LABEL}), never by searching free text. */
+/** Fixed, well-known title for the breaker issue; `isTripped`/`trip` locate it by this exact title (scoped further by {@link BREAKER_ISSUE_LABEL}), never by searching free text. */
 const BREAKER_ISSUE_TITLE = "ghcr-tidy: deletion breaker tripped (post-apply verification found a regression)";
 /** Label applied to the breaker issue so it can be located by an exact, indexed field rather than a title-text search (GitHub's issue search is eventually consistent; label filtering on the list endpoint is not). */
 const BREAKER_ISSUE_LABEL = "ghcr-tidy-breaker";
@@ -14078,20 +14078,20 @@ function isRawIssueArray(data) {
             typeof d.number === "number" &&
             typeof d.html_url === "string"));
 }
-/** The HTTP status an Octokit `RequestError` carries — narrowed so a mis-scoped-token 404 can be told apart from any other failure without depending on `@octokit/request-error` directly. */
+/** The HTTP status an Octokit `RequestError` carries; narrowed so a mis-scoped-token 404 can be told apart from any other failure without depending on `@octokit/request-error` directly. */
 function requestErrorStatus(error) {
     const status = error?.status;
     return typeof status === "number" ? status : undefined;
 }
 /**
- * Wraps one `octokit.request` call so a bare 404 — GitHub's response to
+ * Wraps one `octokit.request` call so a bare 404; GitHub's response to
  * an issues call made with a token that has no `repo`/`issues` scope,
- * indistinguishable on the wire from "no such repo" — is rethrown with
+ * indistinguishable on the wire from "no such repo"; is rethrown with
  * the cause named. This is the fix for the incident that motivated it: a
  * PAT scoped `read:packages, delete:packages, read:org` (correct for
  * deleting GHCR versions, wrong for managing issues) produced exactly
  * this 404 with no indication anywhere that the token, not the repo, was
- * the problem — see this module's `githubIssueBreaker` doc for the token
+ * the problem; see this module's `githubIssueBreaker` doc for the token
  * this function expects to be handed instead.
  */
 async function requestOrExplain(octokit, owner, repo, route, params) {
@@ -14103,7 +14103,7 @@ async function requestOrExplain(octokit, owner, repo, route, params) {
             const message = error instanceof Error ? error.message : String(error);
             throw new Error(`ghcr-tidy breaker: GitHub returned 404 managing the breaker issue in ${owner}/${repo} ` +
                 `(${route}). This almost always means the token passed to githubIssueBreaker cannot ` +
-                `write issues — e.g. a delete:packages-scoped PAT used to delete GHCR versions has no ` +
+                `write issues; e.g. a delete:packages-scoped PAT used to delete GHCR versions has no ` +
                 `repo/issues access. Configure a SEPARATE token with issue write access for the ` +
                 `breaker (a plain GITHUB_TOKEN with \`issues: write\` permissions is enough). ` +
                 `Original error: ${message}`, { cause: error });
@@ -14115,15 +14115,15 @@ async function requestOrExplain(octokit, owner, repo, route, params) {
  * The real, GitHub-issue-backed {@link Breaker}.
  *
  * `isTripped` and `trip` both locate the breaker issue by listing OPEN
- * issues labelled {@link BREAKER_ISSUE_LABEL} — an exact, indexed match,
+ * issues labelled {@link BREAKER_ISSUE_LABEL}; an exact, indexed match,
  * not a title-text search. `trip` creates that issue if none is open, or
  * adds a comment to the existing one if the breaker was somehow already
  * tripped when a second regression is reported (e.g. two packages in the
- * same run, or a re-run before a human has caught up) — either way the
+ * same run, or a re-run before a human has caught up); either way the
  * issue stays open and no new issue is created for the same outage.
  *
  * `octokit` must be authenticated with a token that can create/comment on
- * issues in `owner/repo` — NOT necessarily the same token used to read
+ * issues in `owner/repo`, NOT necessarily the same token used to read
  * the registry or delete package versions (`delete:packages` carries no
  * issues access at all). See {@link requestOrExplain} for what happens
  * when it is the wrong one.
@@ -14172,7 +14172,7 @@ function githubIssueBreaker(octokit, owner, repo, options = {}) {
 /**
  * The real backing for `verify.ts`'s `RegressionSink` seam: every
  * recorded incident trips the breaker. This is the ONLY thing that
- * connects post-apply verification to the breaker — `applyPlan` itself
+ * connects post-apply verification to the breaker; `applyPlan` itself
  * never calls `trip` directly, it only checks `isTripped` (see
  * `apply.ts`). Wire this in as `VerificationOptions.sink` to make a
  * regression actually stop future runs, not merely this one.
@@ -14186,7 +14186,7 @@ function breakerRegressionSink(breaker) {
 ;// CONCATENATED MODULE: ./ghcr-tidy/src/journal.ts
 
 const systemClock = { now: () => new Date() };
-/** The real `Journal`: appends one NDJSON line per call to `path`. Never truncates or rewrites — appending only, so a partially-written run's history is never lost by a later run. */
+/** The real `Journal`: appends one NDJSON line per call to `path`. Never truncates or rewrites; appending only, so a partially-written run's history is never lost by a later run. */
 function ndjsonJournal(path, clock = systemClock) {
     async function append(entry) {
         await (0,promises_namespaceObject.appendFile)(path, `${JSON.stringify(entry)}\n`, "utf8");
@@ -14224,7 +14224,7 @@ var dist = __nccwpck_require__(8815);
  * CLOSED schema: an unknown top-level, per-package, or `retention` field
  * is a hard error, never a silently-ignored one. A silently ignored key
  * in a deletion tool's config produces a green run that did the wrong
- * thing — the exact failure class this strictness exists to remove. This
+ * thing; the exact failure class this strictness exists to remove. This
  * is also the migration mechanism for the retention redesign this
  * schema ships: `keepLast`, `protectedTags`, `graceDays`, `policy`, and
  * any per-package retention override are all REMOVED fields, so a
@@ -14233,7 +14233,7 @@ var dist = __nccwpck_require__(8815);
  *
  * `packages[].match` is a FULL package name (`registry/package-name.ts`'s
  * `PackageName`), never a `(prefix, image)` pair to be joined here or
- * anywhere else — see that module's doc for why: the two existing bash
+ * anywhere else; see that module's doc for why: the two existing bash
  * implementations concatenate a repo prefix onto an image name in two
  * mutually incompatible ways, and that exact bug class is what the branded
  * `PackageName` type exists to make structurally impossible. A manifest
@@ -14245,7 +14245,7 @@ var dist = __nccwpck_require__(8815);
  * within it. `keepDays` is the primary safety control: it is the ONLY
  * age-based check left in this tool (see `plan.ts`'s `PlanPolicy.keepDays`
  * doc), so lowering it is the single most dangerous edit available in
- * this configuration — it, not `keepMajors`/`keepMinors`/`keepPatches`,
+ * this configuration; it, not `keepMajors`/`keepMinors`/`keepPatches`,
  * is what bounds how much a first run under a tightened policy can ever
  * delete.
  */
@@ -14300,7 +14300,7 @@ function validatePackageEntry(raw, location, seenMatches) {
         schema_fail(`${location}.match`, error instanceof Error ? error.message : String(error));
     }
     if (seenMatches.has(match)) {
-        schema_fail(`${location}.match`, `duplicate package "${match}" — each package may be listed once`);
+        schema_fail(`${location}.match`, `duplicate package "${match}"; each package may be listed once`);
     }
     seenMatches.add(match);
     return { match };
@@ -14361,10 +14361,10 @@ function validateRetention(raw, location) {
 const MANIFEST_TOP_LEVEL_FIELDS = ["version", "owner", "packages", "retention", "canary"];
 /**
  * Validates a manifest already parsed from YAML into a plain JS value
- * (`unknown`). Pure — no I/O, no network.
+ * (`unknown`). Pure; no I/O, no network.
  *
  * Rejects: any unrecognised top-level, per-package, or `retention` field
- * (including under `canary`) — in particular every field this schema
+ * (including under `canary`); in particular every field this schema
  * removed (`keepLast`, `protectedTags`, `graceDays`, `policy`, and any
  * per-package retention override) now fails with `unknown field "..."`
  * naming the offending key; a missing or non-`1` `version`; a
@@ -14372,8 +14372,8 @@ const MANIFEST_TOP_LEVEL_FIELDS = ["version", "owner", "packages", "retention", 
  * `match` (or `canary.package`) that is not a syntactically valid
  * {@link PackageName}; an empty/missing `canary.tag`; and a negative or
  * non-integer `retention` field anywhere. Does NOT reject an empty
- * `packages` array — see {@link Manifest.packages}'s doc for why. Does
- * NOT reject a missing `canary` or a missing `retention` — see those
+ * `packages` array; see {@link Manifest.packages}'s doc for why. Does
+ * NOT reject a missing `canary` or a missing `retention`; see those
  * fields' docs for why both are optional.
  */
 function validateManifest(raw) {
@@ -14463,7 +14463,7 @@ function parseManifest(content, sourcePath) {
 const NUMERIC_RUN_RE = /\d+(?:\.\d+)*/g;
 /**
  * Parses one tag per this module's rule. Never throws: every input string
- * is either {@link VersionedTag} or {@link UnversionedTag} — see AC 1
+ * is either {@link VersionedTag} or {@link UnversionedTag}; see AC 1
  * (every one of the 362 corpus tags decomposes without error).
  */
 function parseTag(raw) {
@@ -14501,7 +14501,7 @@ function parseTag(raw) {
  * The grouping key for {@link ParsedTag}s that share a kind: same
  * `(prefix, suffix)` for a versioned tag, or the tag's own literal string
  * for an unversioned one (always a singleton). Package-scoping is the
- * caller's responsibility — this module operates on one package's tag
+ * caller's responsibility; this module operates on one package's tag
  * list at a time (see `retain.ts`'s `computeRetainedTags`), so no package
  * name needs to be folded into the key here.
  */
@@ -14512,7 +14512,7 @@ function kindKeyOf(parsed) {
 }
 /**
  * Ascending numeric comparison of two version tuples, padding the
- * shorter with trailing zeros — `[3]` compares equal to `[3, 0, 0]`. Used
+ * shorter with trailing zeros; `[3]` compares equal to `[3, 0, 0]`. Used
  * to rank candidates within a level's window and to find a kind's newest
  * member across levels (see `retain.ts`'s `computeFloorTags`).
  */
@@ -14537,7 +14537,7 @@ function topN(items, n, versionOf) {
 }
 /**
  * `RETAINED(tags)`: which of `tags` the resolved policy decided to keep,
- * per this module's doc. Pure and package-scoped — `tags` must be every
+ * per this module's doc. Pure and package-scoped; `tags` must be every
  * tag of ONE package (kinds are grouped within this call only, never
  * merged across packages).
  *
@@ -14546,7 +14546,7 @@ function topN(items, n, versionOf) {
  * VERSION that occurs anywhere in a kind, not over the tags that happen
  * to exist at each level. `majorSet` below is built from EVERY versioned
  * entry regardless of level, so a kind whose only member is
- * `alpine-3.23` (minor level, major `3` with no `alpine-3` tag anywhere —
+ * `alpine-3.23` (minor level, major `3` with no `alpine-3` tag anywhere;
  * `golang`'s real shape) still produces a major candidate `3`. The same
  * reasoning applies one level down: a kind's minor candidates are drawn
  * from every entry at level 2 OR 3 (`|v| >= 2`), so a patch tag whose
@@ -14556,11 +14556,11 @@ function topN(items, n, versionOf) {
  * A patch tag's own window (`keptPatches`) is built ONLY from
  * three-component versions. This is what stops a minor alias like
  * `1.26` from ever competing against a patch tag like `1.26.5` for a
- * place in the patch window — the separation is structural (different
+ * place in the patch window; the separation is structural (different
  * source sets), not a guard that could be forgotten.
  *
  * The nesting is a fixed three levels (major/minor/patch), matching the
- * tag generator's fixed three-component version grammar — written as
+ * tag generator's fixed three-component version grammar; written as
  * such rather than as an open-ended loop, since a loop would imply a
  * fourth level is meaningful, which `tag-kind.ts`'s parse rule already
  * forbids (more than 3 components is unversioned).
@@ -14571,7 +14571,7 @@ function computeRetainedTags(tags, policy) {
     for (const t of tags) {
         const parsed = parseTag(t);
         if (parsed.kind === "unversioned") {
-            // Always-retained singleton kind — see this module's and
+            // Always-retained singleton kind; see this module's and
             // `tag-kind.ts`'s doc for why no allow-list is needed here.
             retained.add(t);
             continue;
@@ -14628,7 +14628,7 @@ function computeRetainedTags(tags, policy) {
 /**
  * The floor set for `verify.ts`'s `ExpiryProducer`: the single newest
  * literal tag of every kind, computed directly from the version lattice
- * rather than from {@link computeRetainedTags}'s policy-windowed result —
+ * rather than from {@link computeRetainedTags}'s policy-windowed result;
  * an independent safety net so that a misconfigured policy (e.g.
  * `keepMajors: 0`) cannot, by itself, cause the currently-newest build of
  * a kind to be reported as intended expiry. `verify.ts`'s
@@ -14662,7 +14662,7 @@ function computeFloorTags(tags) {
     return floor;
 }
 /**
- * `KEEP_ROOTS = { r in LIVE_ROOTS : exists t in r.tags . RETAINED(t) }` —
+ * `KEEP_ROOTS = { r in LIVE_ROOTS : exists t in r.tags . RETAINED(t) }`;
  * a single existential over {@link computeRetainedTags}'s result,
  * replacing the old multi-clause `computeKeepRoots` (protected-tag
  * pattern, newest-`keepLast`, root-level `keepDays`) entirely. The cross-
@@ -14670,7 +14670,7 @@ function computeFloorTags(tags) {
  * afterwards: a retained tag protects its digest's entire manifest
  * closure via `plan.ts`'s reachability walk seeded from this set, so
  * filtering `DELETE` after the fact would keep an index's tag while
- * still deleting the platform manifests it points at — the exact
+ * still deleting the platform manifests it points at; the exact
  * broken-root corruption `deleteBrokenRoots` exists to remediate.
  *
  * Purely additive, like the clauses it replaces: no rule anywhere in
@@ -14678,11 +14678,11 @@ function computeFloorTags(tags) {
  * Deletion happens only by absence, in `plan.ts`'s
  * `ALL \ (REACHABLE union INFLIGHT)` subtraction.
  *
- * Age plays NO part here — see {@link RetentionPolicy}'s doc for where
+ * Age plays NO part here; see {@link RetentionPolicy}'s doc for where
  * it lives instead (`plan.ts`'s `PlanPolicy.keepDays`, applied uniformly
  * to every version). A tagged root can therefore be deleted purely for
  * falling outside its kind's kept window, once old enough: this is a
- * deliberate capability, not a regression of the old root protection —
+ * deliberate capability, not a regression of the old root protection;
  * it is what makes it possible to ever retire a frozen series at all.
  */
 function computeKeepRoots(roots, policy) {
@@ -14725,7 +14725,7 @@ function skipReasonFor(resolution) {
 
 /**
  * Builds `LIVE_ROOTS = image(TAGMAP)` by listing the registry's own tags
- * and resolving each one — NEVER by reading the Packages API's per-version
+ * and resolving each one; NEVER by reading the Packages API's per-version
  * `tags` array.
  *
  * This is the single most important departure from the bash reference,
@@ -14735,7 +14735,7 @@ function skipReasonFor(resolution) {
  * different, healthy digest". A version whose `tags` array is stale-empty
  * while a registry tag genuinely points at it would, under that model,
  * not be a root, not be reachable, and get deleted along with its
- * children — precisely how `flutter-rfw`'s image was hollowed out.
+ * children; precisely how `flutter-rfw`'s image was hollowed out.
  * Rooting in the registry closes that class of bug by construction: if a
  * tag resolves to a digest, that digest is live, full stop, regardless of
  * what the Packages API's cache says.
@@ -14743,27 +14743,27 @@ function skipReasonFor(resolution) {
  * Every tag must resolve for `LIVE_ROOTS` (and therefore `KEEP_ROOTS`) to
  * be computable at all, so this function fails the WHOLE package closed
  * (see the `plan.ts` module doc) on the first tag that does not resolve
- * with a `"success"` status — there is no smaller safe unit than "we do
+ * with a `"success"` status; there is no smaller safe unit than "we do
  * not know what this tag points at". Listing the tags in the first place
  * is held to the same standard: {@link RegistryReader.listTags} has no
- * failure channel of its own (it throws — see `adapters.ts`'s doc), and a
+ * failure channel of its own (it throws; see `adapters.ts`'s doc), and a
  * thrown listing failure is caught here and turned into the identical
  * `"failed"` outcome, so a package whose tag list cannot even be read is
  * SKIPPED like any other fail-closed package, never left to propagate an
  * uncaught exception out of the whole run (that used to abort the entire
  * `plan`/`apply` invocation over ONE package's transient registry error,
  * while sibling packages already in flight kept running to completion in
- * the background regardless — see `cli.ts`'s `--jobs` doc for why that
+ * the background regardless; see `cli.ts`'s `--jobs` doc for why that
  * mattered in practice).
  *
  * Every tag is resolved CONCURRENTLY (`Promise.all`) rather than one at a
- * time — this function itself imposes no concurrency limit; the
+ * time; this function itself imposes no concurrency limit; the
  * `RegistryReader` it is given is expected to already bound real HTTP
  * concurrency (see `limiter.ts`/`resolve-cache.ts` and `cli.ts`'s
  * `--jobs` wiring). Results are kept indexed by the tag list's own order
  * so that, if more than one tag fails, the FIRST one in list order is
- * always what gets reported — independent of which network round trip
- * happens to finish first — keeping the emitted skip reason
+ * always what gets reported; independent of which network round trip
+ * happens to finish first; keeping the emitted skip reason
  * deterministic regardless of concurrency (see `plan.test.ts`'s
  * determinism-under-concurrency test).
  */
@@ -14820,8 +14820,8 @@ async function buildLiveRoots(path, registry) {
  * `REACHABLE = least fixed point R with KEEP_ROOTS subset R and, for all
  * d in R, CHILDREN(d) subset R`.
  *
- * Walks EVERY keep-root's subtree CONCURRENTLY — one BFS per root, all
- * started together via `Promise.all` — over a SHARED `reachable` set (so
+ * Walks EVERY keep-root's subtree CONCURRENTLY; one BFS per root, all
+ * started together via `Promise.all`; over a SHARED `reachable` set (so
  * a digest shared by two keep-roots is resolved once, whichever root's
  * walk gets there first). This replaced a per-root `for` loop that walked
  * one root's whole subtree to completion before starting the next: for a
@@ -14829,10 +14829,10 @@ async function buildLiveRoots(path, registry) {
  * children per multi-arch index), the old loop left most of `--jobs`'
  * concurrency budget idle, since only one root's handful of in-flight
  * requests ever competed for it at once. Firing every root's walk at once
- * does not add a second concurrency budget — see the note on the shared
- * limiter below — it just gives the one existing budget enough
+ * does not add a second concurrency budget; see the note on the shared
+ * limiter below; it just gives the one existing budget enough
  * simultaneous candidate work to actually fill it. (For a package that
- * keeps only a HANDFUL of roots — e.g. `keepLast: 1` — this walk was
+ * keeps only a HANDFUL of roots, e.g. `keepLast: 1`, this walk was
  * never the dominant cost in the first place; see `deletion-group.ts`'s
  * `buildDeletionGroups`/`collectGroupMembers`, which walks the far larger
  * DELETE set and remains sequential root-by-root AND node-by-node, for
@@ -14842,7 +14842,7 @@ async function buildLiveRoots(path, registry) {
  * closed, per `plan.ts`'s module doc).
  *
  * `rootChildren` (from {@link buildLiveRoots}) supplies each root's direct
- * children for free — resolving a tag already fetched them — so the first
+ * children for free, resolving a tag already fetched them, so the first
  * BFS level never re-resolves a root's own manifest.
  *
  * On any non-`"success"` resolution the WHOLE package must be treated as
@@ -14852,11 +14852,11 @@ async function buildLiveRoots(path, registry) {
  * for diagnostics.
  *
  * Each BFS level (the current `frontier`, de-duplicated) is ALSO resolved
- * concurrently (`Promise.all`), not one node at a time — this is usually
+ * concurrently (`Promise.all`), not one node at a time; this is usually
  * where most of a package's fan-out actually lives (a multi-arch index's
  * platform + attestation children, all siblings in one level). Like
  * `roots.ts`'s per-tag resolution, this function imposes no concurrency
- * limit of its own — real HTTP concurrency, across every root's every
+ * limit of its own; real HTTP concurrency, across every root's every
  * level at once, is bounded entirely by the shared `RegistryReader`
  * (`limiter.ts`, `cli.ts`'s `--jobs`) applied once at the registry-adapter
  * boundary, so root-level and level-level fan-out here never multiply
@@ -14865,19 +14865,19 @@ async function buildLiveRoots(path, registry) {
  * itself has resolved); de-duplication against the shared `reachable` set
  * is exactly as it was before, just checked once per level up front
  * instead of node-by-node as each resolve returns, so concurrent
- * siblings — whether in the same root's level or in a different root's
- * walk entirely — never race each other into resolving the same digest
+ * siblings; whether in the same root's level or in a different root's
+ * walk entirely; never race each other into resolving the same digest
  * twice (JS's single-threaded, run-to-completion semantics make each
  * level's synchronous de-dup-and-reserve pass atomic; see `walkRoot`'s
  * own comment below).
  *
- * When more than one node fails — whether siblings in one level or nodes
- * in different roots' walks — the FIRST one in `keepRoots`' root order,
+ * When more than one node fails; whether siblings in one level or nodes
+ * in different roots' walks; the FIRST one in `keepRoots`' root order,
  * and within a root the first in that level's (de-duplicated,
  * order-preserving) frontier order, is always what gets reported:
  * `Promise.all` collects every root's outcome before any is inspected,
  * and outcomes are then scanned in root order, never by which network
- * round trip happens to finish first — so the emitted skip reason stays
+ * round trip happens to finish first, so the emitted skip reason stays
  * deterministic regardless of concurrency (see `plan.test.ts`'s
  * determinism-under-concurrency test).
  */
@@ -14890,7 +14890,7 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
     // `Promise.all` below) but reads/writes the OUTER `reachable`/`edges`
     // safely: JS is single-threaded and every mutation here happens in a
     // synchronous stretch with no `await` in between, so two roots' walks
-    // can never interleave mid-check — each de-dup-and-reserve pass over a
+    // can never interleave mid-check; each de-dup-and-reserve pass over a
     // level's frontier still completes atomically before this walk yields
     // to the next `await`, exactly as it did when levels were the only
     // thing resolved concurrently.
@@ -14905,7 +14905,7 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
                 throw new Error(`reachability walk rooted at ${root} exceeded the depth cap (${String(depthCap)})`);
             }
             // De-duplicate the level up front (a digest can appear more than
-            // once in one frontier — e.g. two parents at the same level sharing
+            // once in one frontier; e.g. two parents at the same level sharing
             // a child, or two DIFFERENT roots' frontiers converging on the same
             // shared descendant) so concurrent resolution below never issues
             // two requests for the same digest, and order is preserved for
@@ -14926,7 +14926,7 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
                 // Reserved up front (before any resolve completes, and before
                 // this walk's next `await`) so the node cap above is checked
                 // against an accurate count even though the resolves below run
-                // concurrently — both within this level and across sibling
+                // concurrently; both within this level and across sibling
                 // roots' own levels.
                 reachable.add(d);
             }
@@ -14968,15 +14968,15 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
         }
         return { status: "success" };
     }
-    // Every root's BFS is kicked off together — this is the fix for the
+    // Every root's BFS is kicked off together; this is the fix for the
     // planner's bottleneck (see the module doc above): a keep-set with
     // hundreds of roots but only ~4 children per multi-arch index used to
     // leave almost all of `--jobs`' budget idle, because only ONE root's
     // handful of concurrent requests was ever in flight at a time. Real HTTP
-    // concurrency is still bounded exactly as before — by the shared
+    // concurrency is still bounded exactly as before; by the shared
     // `RegistryReader`'s own limiter (`limiter.ts`, `cli.ts`'s `--jobs`) at
     // the registry-adapter boundary, applied to every resolve this function
-    // (and every OTHER root's) issues — so firing all roots' walks at once
+    // (and every OTHER root's) issues, so firing all roots' walks at once
     // does not add a second, uncoordinated concurrency budget: it simply
     // gives the one existing budget enough simultaneous candidate work to
     // actually fill it.
@@ -14984,7 +14984,7 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
     // Outcomes are collected via `Promise.all` (not raced) and then scanned
     // in `keepRoots`' OWN order below, so which failure gets reported is
     // determined purely by root order, never by which root's network calls
-    // happen to finish first — the same determinism guarantee the
+    // happen to finish first; the same determinism guarantee the
     // per-level frontier resolution already gave within a single root, now
     // extended across roots too.
     const outcomes = await Promise.all([...keepRoots].map((root) => walkRoot(root)));
@@ -15000,28 +15000,28 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
 
 /**
  * Best-effort BFS over `deleteSet`-only nodes rooted at `root`, computing
- * `root`'s FULL transitive closure within `deleteSet` — as if `root` were
+ * `root`'s FULL transitive closure within `deleteSet`; as if `root` were
  * the only candidate, with no cross-candidate ownership to respect. Used
  * as {@link buildDeletionGroups}'s phase 1 (see that function's doc): the
  * closure computed here is candidate-LOCAL (only `localVisited`, scoped
  * to this one call, guards against re-visiting a node reachable two ways
- * within `root`'s own subtree — e.g. a diamond), so it can safely run
- * CONCURRENTLY with every other candidate's closure. Ownership — which
+ * within `root`'s own subtree; e.g. a diamond), so it can safely run
+ * CONCURRENTLY with every other candidate's closure. Ownership, which
  * candidate actually gets to keep a digest reachable from more than
- * one — is resolved afterward, deterministically, by
+ * one; is resolved afterward, deterministically, by
  * {@link buildDeletionGroups} itself; this function neither knows nor
  * cares about it.
  *
  * Each BFS level's children are resolved CONCURRENTLY (`Promise.all`),
  * matching `reachability.ts`'s own per-level fan-out; like that function,
- * this imposes no concurrency limit of its own — real HTTP concurrency is
+ * this imposes no concurrency limit of its own; real HTTP concurrency is
  * bounded entirely by the shared `RegistryReader` (`limiter.ts`, `cli.ts`'s
  * `--jobs`), and a digest reachable from more than one candidate is only
  * ever fetched once regardless (`resolve-cache.ts`, shared across the
  * whole run).
  *
  * This walk is REPORTING/GROUPING ONLY and never influences `DELETE`
- * itself (`DELETE` is pure set arithmetic — see `plan.ts`). Consequently a
+ * itself (`DELETE` is pure set arithmetic; see `plan.ts`). Consequently a
  * failed or 404 resolution here must NOT fail the plan closed: a deleted
  * root's child that itself 404s is exactly the "stale Packages API entry"
  * case the design accepts into `DELETE` without ceremony. Resolution here
@@ -15029,9 +15029,9 @@ async function computeReachability(path, keepRoots, rootChildren, registry, opti
  * digest is still in the group as a childless leaf (or, if unresolved
  * itself with no known parent, as its own singleton group root). A
  * genuinely UNEXPECTED failure (a bug, not a modeled 404/transient
- * response) still propagates as a rejected promise out of this function —
+ * response) still propagates as a rejected promise out of this function;
  * it is never silently swallowed into a truncated-but-plausible-looking
- * member list — which fails the whole package closed at the `planPackage`
+ * member list, which fails the whole package closed at the `planPackage`
  * level (`cli.ts`'s per-package isolation keeps that from touching any
  * OTHER package's plan).
  */
@@ -15080,8 +15080,8 @@ async function computeCandidateClosure(path, root, deleteSet, rootChildren, regi
  *    transitive closure within `deleteSet` is computed independently and
  *    at the same time ({@link computeCandidateClosure}, fired via
  *    `Promise.all`). This replaced a `for` loop that walked one
- *    candidate's whole subtree to completion — resolving one digest at a
- *    time — before starting the next: with hundreds of candidates (every
+ *    candidate's whole subtree to completion; resolving one digest at a
+ *    time; before starting the next: with hundreds of candidates (every
  *    deleted image is its own candidate), that left almost all of
  *    `--jobs`' concurrency budget idle for the same reason
  *    `reachability.ts`'s old per-root loop did. Real HTTP concurrency is
@@ -15093,21 +15093,21 @@ async function computeCandidateClosure(path, root, deleteSet, rootChildren, regi
  *    exactly as before) and each one's precomputed closure is filtered
  *    against a single shared `visited` set, claiming whichever digests
  *    are not already owned by an earlier candidate. A digest reachable
- *    from more than one candidate's closure — the ownership race phase 1
- *    deliberately ignores — is always won by whichever candidate comes
+ *    from more than one candidate's closure; the ownership race phase 1
+ *    deliberately ignores; is always won by whichever candidate comes
  *    FIRST in this fixed order, exactly matching what the original
  *    sequential-BFS algorithm did (the first candidate to reach a shared
  *    digest always fully expanded into its descendants before any later
  *    candidate got a chance to). Because this phase does no I/O and never
  *    awaits, it can never race: the outcome depends only on candidate
  *    order, never on which candidate's network calls happened to resolve
- *    first — so the emitted groups (root, member order, and ownership of
+ *    first, so the emitted groups (root, member order, and ownership of
  *    every shared digest) are byte-for-byte deterministic regardless of
  *    concurrency.
  *
  * Within a kept group, member order matches `computeCandidateClosure`'s
  * own BFS order (parents before children) with any digest claimed by an
- * earlier candidate filtered out — filtering out entries never reorders
+ * earlier candidate filtered out; filtering out entries never reorders
  * the survivors, so parents still precede their children.
  */
 async function buildDeletionGroups(path, deleteSet, liveRootDigests, rootChildren, registry) {
@@ -15143,7 +15143,7 @@ async function buildDeletionGroups(path, deleteSet, liveRootDigests, rootChildre
 /**
  * Static integrity assertion: no digest in `DELETE` may still be
  * referenced as a child of a digest in `reachable` (a "surviving parent").
- * `edges` here should be the reachability walk's own edge map — every
+ * `edges` here should be the reachability walk's own edge map; every
  * digest it contains as a key was successfully resolved, so its recorded
  * children are exactly what the registry itself reports.
  *
@@ -15173,21 +15173,21 @@ const MS_PER_DAY = 86_400_000;
 /**
  * Wraps {@link computeReachability} to optionally tolerate a keep-root
  * whose subtree contains a PROVEN not-found descendant (a confirmed
- * registry 404 — see `skip-reason.ts`'s `"not-found"`; NEVER a
+ * registry 404; see `skip-reason.ts`'s `"not-found"`; NEVER a
  * transient/5xx/auth/network failure, which always fails closed exactly
- * as `computeReachability` already does on its own — that distinction is
+ * as `computeReachability` already does on its own, that distinction is
  * `skipReasonFor`'s whole reason for existing, and this function leans on
  * it rather than re-deriving anything).
  *
  * When `deleteBrokenRoots` is `false` (the default everywhere except the
- * explicit `--delete-broken-roots` CLI opt-in — see `cli.ts`), this is a
+ * explicit `--delete-broken-roots` CLI opt-in; see `cli.ts`), this is a
  * pure passthrough: exactly one `computeReachability` call, `brokenRoots`
  * always empty, byte-identical to calling `computeReachability` directly.
  *
  * When `true`: on a `"not-found"` failure, the FAILING ROOT ITSELF
- * (`result.root` — never a broader guess, never the `failedDigest` that
+ * (`result.root`; never a broader guess, never the `failedDigest` that
  * may be several levels below it) is removed from the keep-root set and
- * the ENTIRE walk is retried from scratch over the reduced set — each
+ * the ENTIRE walk is retried from scratch over the reduced set; each
  * retry starts with fresh `reachable`/`edges` state (a brand-new
  * `computeReachability` call), so a root excluded on one iteration can
  * never leave partially-resolved data behind to contaminate a later
@@ -15195,7 +15195,7 @@ const MS_PER_DAY = 86_400_000;
  * subtree resolves cleanly (`"success"`, with every excluded root
  * reported in `brokenRoots`) or a failure that does not qualify (any
  * `"transient"` reason, or `deleteBrokenRoots` itself being `false`) is
- * hit — at which point the WHOLE package still fails closed exactly as it
+ * hit; at which point the WHOLE package still fails closed exactly as it
  * always has: a broken root already found on an earlier iteration never
  * gets "half credit" while something else remains genuinely unknown, so
  * this function only ever returns `brokenRoots` alongside a `"success"`
@@ -15204,7 +15204,7 @@ const MS_PER_DAY = 86_400_000;
  * An excluded root is not force-added to `DELETE` here or anywhere else:
  * it is simply no longer a keep-root, so `planPackage`'s ordinary
  * `ALL \ (REACHABLE union INFLIGHT)` set subtraction picks it up exactly
- * like any other digest that is not reachable from anything — including
+ * like any other digest that is not reachable from anything, including
  * still respecting `keepDays`, on the chance a "broken" root is actually
  * an in-flight push race (the index pushed, its child not yet) rather
  * than settled corruption.
@@ -15218,10 +15218,10 @@ async function computeReachabilityToleratingBrokenRoots(path, keepRoots, rootChi
             return { result, brokenRoots };
         }
         // Not "success": either the mode is off, the failure is not a proven
-        // not-found (transient — never tolerated regardless of the flag), or
-        // — defensively, should be unreachable in practice since
+        // not-found (transient; never tolerated regardless of the flag), or
+        // a defensive case, which should be unreachable in practice since
         // `computeReachability` only ever reports a root drawn from the set
-        // it was given — the reported root is not even one still under
+        // it was given; the reported root is not even one still under
         // consideration. Any of these fails the whole package closed, same
         // as calling `computeReachability` directly, and any roots already
         // excluded on an earlier iteration are discarded (see this
@@ -15246,26 +15246,26 @@ function mergeEdges(a, b) {
  * Plans a single package. Implements, in order:
  *
  * ```
- * ALL         = Packages API versions (id, digest, createdAt) — version ids and ages ONLY
+ * ALL         = Packages API versions (id, digest, createdAt); version ids and ages ONLY
  * LIVE_ROOTS  = image(TAGMAP), from the REGISTRY tag list (never the Packages API's `tags`)
- * KEEP_ROOTS  = { d in LIVE_ROOTS : exists t in d.tags . RETAINED(t) } — see `retain.ts`
+ * KEEP_ROOTS  = { d in LIVE_ROOTS : exists t in d.tags . RETAINED(t) }; see `retain.ts`
  * REACHABLE   = least fixed point containing KEEP_ROOTS, closed under CHILDREN
  * INFLIGHT    = { v in ALL : age(v) < keepDays }
  * DELETE      = ALL \ (REACHABLE union INFLIGHT)
  * ```
  *
  * FAIL-CLOSED: if any keep-root or any of its descendants fails to
- * resolve, the WHOLE package is skipped — see {@link buildLiveRoots} and
+ * resolve, the WHOLE package is skipped; see {@link buildLiveRoots} and
  * {@link computeReachability} for why there is no smaller safe unit. Note
  * this is stricter than it sounds for `LIVE_ROOTS`: computing `KEEP_ROOTS`
  * at all requires knowing every live root's digest, which requires every
  * tag to resolve, so in practice ANY tag failing to resolve already fails
- * the package closed — not only tags that would end up kept.
+ * the package closed, not only tags that would end up kept.
  *
  * A digest that is in `ALL`, 404s in the registry, and is unreachable
  * from any kept root is deliberately NOT a fail-closed condition: it is
  * simply never resolved (nothing walks to it), and correctly falls into
- * `DELETE` via the set subtraction above — a stale Packages API entry,
+ * `DELETE` via the set subtraction above; a stale Packages API entry,
  * not evidence of corruption.
  */
 async function planPackage(options) {
@@ -15355,7 +15355,7 @@ async function planPackage(options) {
  * gets deleted) without being tripped by routine steady-state churn.
  *
  * This module knows nothing about where the baseline comes from (a
- * journal, a metrics store, a flat file committed alongside the plan —
+ * journal, a metrics store, a flat file committed alongside the plan;
  * not this module's problem) or about GHCR, `Plan`, or any I/O. The
  * caller supplies the trailing baseline and the planned count; this
  * module only decides and explains why.
@@ -15375,7 +15375,7 @@ async function planPackage(options) {
  * baseline, not a marginal one. There is no measured production
  * distribution to fit this to yet (unlike the reference tool's
  * documented 80-90% steady state, which this module deliberately does
- * NOT try to replicate — see the module doc); 3x is a starting point to
+ * NOT try to replicate; see the module doc); 3x is a starting point to
  * be tightened once real run history exists.
  */
 const DEFAULT_VOLUME_ALARM_MULTIPLE = 3;
@@ -15383,12 +15383,12 @@ const DEFAULT_VOLUME_ALARM_MULTIPLE = 3;
  * Decides whether a plan deleting `plannedCount` versions should be
  * allowed to proceed.
  *
- * When `options.baseline` is `undefined` (no trailing history supplied —
+ * When `options.baseline` is `undefined` (no trailing history supplied;
  * e.g. the very first run, or a caller that hasn't wired history yet),
  * the decision is a DELIBERATE, DOCUMENTED `allowed: true`: refusing
  * every baseline-less run would make the alarm block indefinitely until
  * something seeds a baseline, which is worse than the risk it's meant to
- * catch. This is a deliberate choice, not an oversight — a caller that
+ * catch. This is a deliberate choice, not an oversight; a caller that
  * wants a stricter posture for the no-history case must decide that
  * explicitly, e.g. by treating a missing baseline as `0` itself before
  * calling this function.
@@ -15400,7 +15400,7 @@ function checkVolumeAlarm(plannedCount, options = {}) {
             allowed: true,
             plannedCount,
             multiple,
-            reason: "no trailing baseline supplied — proceeding without a volume check " +
+            reason: "no trailing baseline supplied; proceeding without a volume check " +
                 "(deliberate default; see checkVolumeAlarm's doc)",
         };
     }
@@ -15480,7 +15480,7 @@ async function snapshotTag(path, t, registry, cache) {
     }
     const d = digest(resolution.digest);
     // The tag's own resolution already gave us its direct children for
-    // free (mirroring `roots.ts`'s `rootChildren` reuse) — no need to
+    // free (mirroring `roots.ts`'s `rootChildren` reuse); no need to
     // re-resolve `d` itself, only walk what it points at.
     cache.set(d, "resolved");
     let closure = "resolved";
@@ -15499,7 +15499,7 @@ async function snapshotTag(path, t, registry, cache) {
 /**
  * Snapshots every tag currently listed by the registry for `path`,
  * resolving each one and its full manifest closure. This is the ONLY
- * legitimate snapshot source for verification — see `roots.ts`'s module
+ * legitimate snapshot source for verification; see `roots.ts`'s module
  * doc on why ghcr-tidy never roots on anything but the registry's own tag
  * list. Snapshotting what the planner believed (its keep-roots) would
  * inherit whatever the planner got wrong; snapshotting the registry
@@ -15530,11 +15530,11 @@ async function snapshotPackage(path, registry) {
  * The pre-flight canary: resolves one known-good tag end to end (tag +
  * full closure) BEFORE the first deletion of the whole run. If this
  * fails, the read path is broken today, independent of anything this run
- * is about to delete — the run must not mistake a bad registry day for
+ * is about to delete; the run must not mistake a bad registry day for
  * damage it caused.
  *
  * Returns a {@link CanaryCheckResult} rather than a bare boolean so a
- * failure always carries its cause (see {@link CanaryFailureReason}) —
+ * failure always carries its cause (see {@link CanaryFailureReason});
  * fail-closed behaviour is unchanged, only the diagnosis improves.
  */
 async function checkCanary(path, canaryTag, registry) {
@@ -15562,11 +15562,11 @@ async function checkCanary(path, canaryTag, registry) {
 function isHealthy(s) {
     return s.resolve === "resolved" && s.closure === "resolved";
 }
-/** Confirmed broken by direct 404 evidence — NOT merely "unknown". */
+/** Confirmed broken by direct 404 evidence, NOT merely "unknown". */
 function isConfirmedBroken(s) {
     return s.resolve === "not-found" || (s.resolve === "resolved" && s.closure === "not-found");
 }
-/** Neither confirmed healthy nor confirmed broken — a transient read failure occurred somewhere in this tag's resolution. */
+/** Neither confirmed healthy nor confirmed broken; a transient read failure occurred somewhere in this tag's resolution. */
 function isUnknown(s) {
     return s.resolve === "unknown" || (s.resolve === "resolved" && s.closure === "unknown");
 }
@@ -15599,20 +15599,20 @@ const verify_MS_PER_DAY = 86_400_000;
  * `keepDays` age gate `plan.ts` applies afterwards.
  *
  * `unclassifiable` is always empty: `tag-kind.ts`'s parse rule never
- * fails to classify a tag (AC 1 of issue #23 — every tag decomposes into
+ * fails to classify a tag (AC 1 of issue #23; every tag decomposes into
  * a kind, a level, and a version, or is unversioned), so there is
  * nothing this producer could ever refuse to classify.
  *
  * `floor` is computed independently from `computeRetainedTags` (see
  * `computeFloorTags`'s doc) rather than derived from it, so a
  * misconfigured policy cannot, by construction, make this producer's own
- * `expiry` and `floor` overlap — `resolveExpirySet` still checks this
+ * `expiry` and `floor` overlap; `resolveExpirySet` still checks this
  * rather than trusting it, per that function's doc.
  *
  * Fails safe on missing data, in both directions: a tag with no known
  * digest (its own pre-apply resolution failed) and a digest with no
  * known `createdAt` (absent from the independent `listVersions` read)
- * are both simply never added to `expiry` — an uncertain fact is never
+ * are both simply never added to `expiry`; an uncertain fact is never
  * grounds for asserting a tag SHOULD be gone, only for declining to
  * assert it, exactly like `retain.ts`'s pre-#23 `isRetainedByAge` did for
  * an unknown-age root.
@@ -15686,7 +15686,7 @@ const policyDrivenExpiryProducer = {
  *
  * Takes the full {@link ExpiryProducerInput} record (mirroring
  * {@link ExpiryProducer.produce}'s own signature) purely as a pass-
- * through — this function's own two checks below are unchanged and
+ * through; this function's own two checks below are unchanged and
  * still only ever look at the RESULT the producer returns, never at the
  * input itself.
  */
@@ -15709,20 +15709,20 @@ function resolveExpirySet(producer, input) {
  * 2. its full child closure must still resolve;
  * 3. IF it still resolves and its closure still resolves, a digest
  *    change is `republished` (a concurrent publish), never a
- *    regression — see {@link CompareSnapshotsResult.republished}'s doc
+ *    regression; see {@link CompareSnapshotsResult.republished}'s doc
  *    for why: deleting a manifest can only make a tag fail to resolve,
  *    it can never repoint a tag to a different digest, so a
  *    healthy-to-healthy digest change is never evidence THIS run
  *    caused damage.
  *
  * A tag confirmed broken in BOTH `pre` and `post` is reported separately
- * (`preExisting`) and does not count as a regression — a budgeted
+ * (`preExisting`) and does not count as a regression; a budgeted
  * multi-run drain of an already-broken package must not report the same
  * known damage as fresh every run. A tag whose pre-apply state could not
- * be confirmed either way (`"unknown"` — a transient read failure) is
+ * be confirmed either way (`"unknown"`; a transient read failure) is
  * held to the STRICT posture: any CONFIRMED-broken post state counts as
  * a regression, because there is no confirmed-broken pre state to excuse
- * it into `preExisting` — but a merely `"unknown"` post state still only
+ * it into `preExisting`, but a merely `"unknown"` post state still only
  * ever lands in `unverified`, never `regressions`, same as everywhere
  * else in this predicate.
  *
@@ -15743,7 +15743,7 @@ function compareSnapshots(pre, post, options = {}) {
         if (postSnapshotFailed) {
             // See `CompareSnapshotsOptions.postSnapshotFailed`'s doc: the read
             // itself failed, so `post` (however it looks) is not trustworthy
-            // evidence for ANY tag — never fall through to the "absent means
+            // evidence for ANY tag; never fall through to the "absent means
             // not-found" default below, which is only valid when the post read
             // actually succeeded.
             return { resolve: "unknown", closure: "unknown" };
@@ -15751,7 +15751,7 @@ function compareSnapshots(pre, post, options = {}) {
         return post.get(t) ?? { resolve: "not-found", closure: "unknown" };
     }
     // When the PRE-snapshot itself failed there is no reliable baseline to
-    // iterate (`pre` is empty) — instead walk every tag `post` currently
+    // iterate (`pre` is empty), instead walk every tag `post` currently
     // knows about, each with a synthetic `"unknown"` pre-state, so the
     // per-tag classification below still runs and still separates
     // confirmed damage from merely-unverifiable tags.
@@ -15782,7 +15782,7 @@ function compareSnapshots(pre, post, options = {}) {
                 if (preState.digest === postState.digest) {
                     continue;
                 }
-                // Still fully healthy — tag resolves, full closure resolves —
+                // Still fully healthy, tag resolves, full closure resolves:
                 // just pointing somewhere else. Deleting a manifest cannot
                 // repoint a tag, only make it fail to resolve, so this is never
                 // evidence that THIS run's deletions caused any damage: it is a
@@ -15793,7 +15793,7 @@ function compareSnapshots(pre, post, options = {}) {
                 continue;
             }
             if (isUnknown(postState)) {
-                // Cannot confirm the tag is broken — only that this run's read of
+                // Cannot confirm the tag is broken, only that this run's read of
                 // it, post-apply, was inconclusive. Surfaced, but not a
                 // regression: see this module's doc on why `isUnknown` must never
                 // trip the breaker.
@@ -15808,7 +15808,7 @@ function compareSnapshots(pre, post, options = {}) {
             }
             else {
                 // isConfirmedBroken(postState): either the tag itself now 404s,
-                // or it still resolves but its closure does not — both are real,
+                // or it still resolves but its closure does not; both are real,
                 // confirmed damage regardless of any digest change, so neither
                 // is ever redirected into `republished`.
                 regressions.push(toFinding(t, preState, postState));
@@ -15822,20 +15822,20 @@ function compareSnapshots(pre, post, options = {}) {
             else if (isUnknown(postState)) {
                 unverified.push(toFinding(t, preState, postState));
             }
-            // Else: post state is healthy — resolved fine, nothing to report.
+            // Else: post state is healthy; resolved fine, nothing to report.
             // (There is no pre-apply digest to compare against here, so a
             // healthy post state can never be classified as `republished`
-            // either — there is nothing to say it changed FROM.)
+            // either; there is nothing to say it changed FROM.)
             continue;
         }
-        // isConfirmedBroken(preState) must hold — isHealthy and isUnknown are exhaustive otherwise.
+        // isConfirmedBroken(preState) must hold; isHealthy and isUnknown are exhaustive otherwise.
         if (isConfirmedBroken(postState)) {
             preExisting.push(toFinding(t, preState, postState));
         }
         else if (isUnknown(postState)) {
             unverified.push(toFinding(t, preState, postState));
         }
-        // Else: improved (now resolves) — no confirmed new damage to act on.
+        // Else: improved (now resolves); no confirmed new damage to act on.
     }
     return { regressions, preExisting, unverified, republished, expired, notExpired };
 }
@@ -15856,7 +15856,7 @@ function memoryRegressionSink() {
 
 
 
-/** Total number of individual version deletions this plan would attempt across every package and group, budget permitting — what the volume alarm (`volume-alarm.ts`) compares against its baseline. */
+/** Total number of individual version deletions this plan would attempt across every package and group, budget permitting; what the volume alarm (`volume-alarm.ts`) compares against its baseline. */
 function plannedDeletionCount(plan) {
     return plan.packages.reduce((sum, p) => sum + p.groups.reduce((s, g) => s + g.members.length, 0), 0);
 }
@@ -15871,18 +15871,18 @@ function isSuccess(result) {
  * This is the structural fix for the defect that hollowed out
  * `flutter-rfw`: the hardened bash ordered tagged roots before their
  * (not directly tag-referenced) children but, on a failed ROOT delete,
- * merely logged and continued straight on to that root's children anyway
- * — leaving a tag resolving to an index whose children were all gone. Here, any
+ * merely logged and continued straight on to that root's children anyway,
+ * leaving a tag resolving to an index whose children were all gone. Here, any
  * non-success on ANY member (root or descendant) immediately abandons
  * every member after it in the group's parents-first order; those
  * members are recorded `"not-attempted"` and no further calls are made
  * for this group. An abandoned group therefore leaves behind, at worst,
- * unreferenced garbage below whatever was deleted before the failure —
+ * unreferenced garbage below whatever was deleted before the failure;
  * never a live tag whose children were deleted out from under it, since
  * the root is always `members[0]` and is always attempted first.
  *
  * `"already-gone"` (a 404) is treated exactly like success: the digest is
- * already absent, which is the desired end state, not a failure — this
+ * already absent, which is the desired end state, not a failure; this
  * is also what makes applying the same plan twice idempotent.
  */
 async function applyGroup(pkg, group, mutator, journal, remainingBudget) {
@@ -15925,7 +15925,7 @@ async function applyGroup(pkg, group, mutator, journal, remainingBudget) {
                 // "last-version-conflict": a 400, GHCR's undocumented refusal to
                 // delete a package's last remaining version via this endpoint
                 // (see registry/packages.ts). Surfaced as-is, never retried
-                // in a loop (that loop would never terminate) — just abandons
+                // in a loop (that loop would never terminate), just abandons
                 // the rest of this group like any other non-success.
                 members.push({
                     digest: member.digest,
@@ -15948,7 +15948,7 @@ async function applyGroup(pkg, group, mutator, journal, remainingBudget) {
         attempted,
     };
 }
-/** Every member across `groups` that was actually deleted (success, including a 404-as-already-gone) — what {@link RegressionIncident.precedingDeletions} reports for a package. */
+/** Every member across `groups` that was actually deleted (success, including a 404-as-already-gone); what {@link RegressionIncident.precedingDeletions} reports for a package. */
 function deletedMembers(groups) {
     const out = [];
     for (const g of groups) {
@@ -15971,14 +15971,14 @@ async function trySnapshot(path, registry) {
 }
 /**
  * Applies `plan` group by group, package by package, in the plan's own
- * order. Enforces {@link assertGroupsAreWellFormed} BEFORE any mutation —
+ * order. Enforces {@link assertGroupsAreWellFormed} BEFORE any mutation;
  * throws (never mutates anything) on a structurally malformed plan, e.g.
  * one hand-edited after `grantApply` validated it.
  *
  * Budget accounting is GROUP-granular (see `ApplyOptions.budget`'s doc):
  * checked before a group starts, decremented by the number of members
  * actually ATTEMPTED once it finishes (which can be less than the
- * group's full size if it was abandoned partway through — the unspent
+ * group's full size if it was abandoned partway through; the unspent
  * remainder is available to later groups).
  *
  * When `options.verification` is set: the pre-flight canary is resolved
@@ -15986,7 +15986,7 @@ async function trySnapshot(path, registry) {
  * aborts before touching anything. Each package is then snapshotted from
  * the registry's own tag list immediately BEFORE its deletions begin and
  * again immediately AFTER they finish (interleaved, never batched to the
- * end of the run — see this module's and `verify.ts`'s docs for why: a
+ * end of the run; see this module's and `verify.ts`'s docs for why: a
  * regression from an early package must not be masked by continuing to
  * apply a plan whose underlying model has just been shown to be wrong).
  * A regression aborts the WHOLE run before the next package is started;
@@ -16059,7 +16059,7 @@ async function applyPlan(plan, mutator, options) {
         if (verification?.expiry) {
             const policy = verification.expiry.policyFor(pkgPlan.packageName);
             const tags = preSnapshot ? [...preSnapshot.keys()] : [];
-            // `digestOf` needs no new I/O — it is the SAME pre-apply
+            // `digestOf` needs no new I/O; it is the SAME pre-apply
             // `preSnapshot` already read above, just narrowed to the tags
             // that actually resolved. `createdAtOf` is the one genuinely new,
             // INDEPENDENT read: see `verify.ts`'s `ExpiryProducerInput.
@@ -16116,7 +16116,7 @@ async function applyPlan(plan, mutator, options) {
         let regressionToRecord;
         let abortReason;
         // A crisp, PER-PACKAGE, group-granular fact (see `applyGroup`'s
-        // `"skipped-budget"` doc) — never a run-global gate on remaining
+        // `"skipped-budget"` doc); never a run-global gate on remaining
         // budget, so a package processed before the budget ran out still
         // gets its real `notExpiredTags` below, even if a LATER package in
         // this same run gets suppressed instead.
@@ -16129,7 +16129,7 @@ async function applyPlan(plan, mutator, options) {
             // regression, but it also cannot be silently waved through. Unlike
             // the pre-fix behaviour, `post.failed` is now THREADED into
             // `compareSnapshots` as `postSnapshotFailed` rather than silently
-            // discarded — passing only `post.snapshot` (empty on failure) let
+            // discarded; passing only `post.snapshot` (empty on failure) let
             // the ordinary "absent from post means confirmed not-found" rule
             // fire for every tag the pre-snapshot had ever seen healthy, which
             // is exactly what turned one failed `listTags` call into a mass
@@ -16138,7 +16138,7 @@ async function applyPlan(plan, mutator, options) {
             if (preSnapshotFailed && post.failed) {
                 // Neither snapshot could be taken at all: there is no per-tag
                 // data in either direction for this package, so there is
-                // nothing for `compareSnapshots` to compare — bypass it rather
+                // nothing for `compareSnapshots` to compare; bypass it rather
                 // than let it silently report zero findings. This is NOT
                 // evidence of a regression (nothing here is confirmed broken),
                 // but the run must still stop and this must still be surfaced
@@ -16200,7 +16200,7 @@ async function applyPlan(plan, mutator, options) {
         });
         if (regressionToRecord) {
             // Recorded locally BEFORE the sink (which may make network calls,
-            // e.g. `breaker.ts`'s `githubIssueBreaker`) is even attempted —
+            // e.g. `breaker.ts`'s `githubIssueBreaker`) is even attempted;
             // see `VerificationOptions.onIncident`'s doc: this is what makes
             // the incident survive a breaker outage.
             verification?.onIncident?.(regressionToRecord);
@@ -16211,7 +16211,7 @@ async function applyPlan(plan, mutator, options) {
             catch (error) {
                 // The regression is real and confirmed either way; a failure
                 // notifying the breaker about it must not swallow the run's own
-                // summary (see this module's doc on the incident this fixes) —
+                // summary (see this module's doc on the incident this fixes);
                 // reported alongside the abort reason instead of propagating and
                 // killing the whole process before the caller can print
                 // anything.
@@ -16235,7 +16235,7 @@ async function applyPlan(plan, mutator, options) {
     }
     return { packages, attempted: totalAttempted, remainingBudget };
 }
-/** Total number of groups across every package in the plan — used by {@link classifyApplyExit} to distinguish "nothing to do" from "something was supposed to happen and didn't". */
+/** Total number of groups across every package in the plan; used by {@link classifyApplyExit} to distinguish "nothing to do" from "something was supposed to happen and didn't". */
 function totalGroupCount(plan) {
     return plan.packages.reduce((sum, p) => sum + p.groups.length, 0);
 }
@@ -16248,7 +16248,7 @@ const EXIT_APPLY_SAFETY = 4;
  *
  * The zero-mutation guard: if the plan contained at least one group but
  * NOTHING was attempted (e.g. the whole budget was `0`, or every group
- * was skipped for budget reasons), that is a FAILURE — a
+ * was skipped for budget reasons), that is a FAILURE; a
  * non-empty plan silently doing nothing is exactly the kind of runner
  * malfunction `4` exists to flag loudly rather than let masquerade as
  * `0 = ok`. Distinguished from a normal `1 = mutation failure` (some
@@ -16260,7 +16260,7 @@ const EXIT_APPLY_SAFETY = 4;
  * ALSO `4`, checked first: a regression can leave `result.attempted > 0`
  * (the aborting package's own deletions already happened), which would
  * otherwise fall through to the `1`/`0` logic below and understate what
- * went wrong — verification catching a wrong model is exactly the same
+ * went wrong; verification catching a wrong model is exactly the same
  * severity as the zero-mutation guard below it, not merely "some deletes
  * failed".
  */
@@ -16297,7 +16297,7 @@ function classifyApplyExit(plan, result) {
 
 
 /**
- * `ghcr-tidy` — the CLI entrypoint wiring the pure planning core
+ * `ghcr-tidy`; the CLI entrypoint wiring the pure planning core
  * (`plan.ts`), the apply path (`apply-capability.ts`, `apply.ts`,
  * `mutator.ts`), and safety machinery (`breaker.ts`, `volume-alarm.ts`,
  * `verify.ts`) into three subcommands driven by one config manifest,
@@ -16310,25 +16310,25 @@ function classifyApplyExit(plan, result) {
  *
  * A single, TOTAL mapping, reused unchanged by every subcommand:
  *
- * - `0` — ok. Nothing wrong; for `apply`, every attempted deletion
+ * - `0`; ok. Nothing wrong; for `apply`, every attempted deletion
  *   succeeded (or there was nothing to do).
- * - `1` — FINDINGS: `plan` skipped at least one package fail-closed
+ * - `1`; FINDINGS: `plan` skipped at least one package fail-closed
  *   (`SkippedPlan`), or `apply` had at least one abandoned deletion group
- *   (the registry itself rejected part of a delete — see
+ *   (the registry itself rejected part of a delete; see
  *   `apply.ts`'s `EXIT_APPLY_MUTATION_FAILURE`). The run itself worked;
  *   something it found or did was not clean.
- * - `2` — CONFIG: an invalid manifest, a CLI usage error, `--package`
+ * - `2`; CONFIG: an invalid manifest, a CLI usage error, `--package`
  *   matching no configured package, or a required credential/flag missing
  *   (no `GITHUB_TOKEN`, `apply` requested with no `--apply` flag, no
  *   breaker configured for `apply`, no canary configured for an `apply`
  *   that has work to do).
- * - `3` — INFRASTRUCTURE: an unexpected error escaped the planning core
+ * - `3`; INFRASTRUCTURE: an unexpected error escaped the planning core
  *   or the apply path (a network failure, an auth failure, anything not
  *   already classified as a finding or a safety trip).
- * - `4` — SAFETY: the breaker was already tripped, the volume alarm
+ * - `4`; SAFETY: the breaker was already tripped, the volume alarm
  *   refused the plan, the pre-flight canary failed, post-apply
  *   verification found a regression, or `apply.ts`'s own plan-integrity
- *   assertion threw — see `apply.ts`'s `EXIT_APPLY_SAFETY` for the
+ *   assertion threw; see `apply.ts`'s `EXIT_APPLY_SAFETY` for the
  *   zero-mutation guard this also covers.
  */
 const EXIT_OK = 0;
@@ -16345,7 +16345,7 @@ const DEFAULT_MANIFEST_PATH = ".ghcr-tidy.yaml";
  * via the same-sized limiter wrapped around the registry reader in
  * {@link buildRegistryAdapters}, how many per-tag/per-BFS-node requests
  * the planning core (`roots.ts`, `reachability.ts`) may have in flight at
- * once — across every package, not per package, so this stays the actual
+ * once; across every package, not per package, so this stays the actual
  * ceiling on concurrent requests hitting `ghcr.io` regardless of how many
  * packages or BFS levels are logically "active" at once.
  *
@@ -16360,7 +16360,7 @@ const DEFAULT_JOBS = 4;
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
-/** A CLI usage problem (bad flag, missing value, unrecognised subcommand) — always a CONFIG error. */
+/** A CLI usage problem (bad flag, missing value, unrecognised subcommand); always a CONFIG error. */
 class UsageError extends Error {
     constructor(message) {
         super(message);
@@ -16371,7 +16371,7 @@ class UsageError extends Error {
  * Parses argv (without `node`/script path). The first token is a
  * subcommand (`validate`/`plan`/`apply`) ONLY if it exactly matches one of
  * those three names; otherwise the whole of argv is treated as `plan`'s
- * flags — `plan` is the default subcommand since it is the read-only,
+ * flags; `plan` is the default subcommand since it is the read-only,
  * safe-to-run-with-no-ceremony operation.
  */
 function parseArgv(argv) {
@@ -16492,7 +16492,7 @@ function selectPackages(manifest, filters) {
 }
 /**
  * Runs `worker` over `items` with at most `limit` concurrently in flight,
- * writing each result to its original index — a small bounded pool. Not a
+ * writing each result to its original index; a small bounded pool. Not a
  * plain `Promise.all`: that would fire every item at once with no cap on
  * concurrent registry requests.
  */
@@ -16521,7 +16521,7 @@ const cli_systemClock = { now: () => new Date() };
 function requireToken(env) {
     const token = env.GITHUB_TOKEN;
     if (!token) {
-        throw new UsageError("GITHUB_TOKEN is not set — required to read the GHCR registry and Packages API " +
+        throw new UsageError("GITHUB_TOKEN is not set; required to read the GHCR registry and Packages API " +
             "(and, for `apply`, to delete versions and manage the breaker issue)");
     }
     return token;
@@ -16535,14 +16535,14 @@ function requireToken(env) {
  * The raw registry reader is wrapped in exactly two decorators, in this
  * order:
  *
- * 1. {@link createCachingRegistryReader} (outermost — checked first): a
+ * 1. {@link createCachingRegistryReader} (outermost; checked first): a
  *    digest already resolved anywhere in this run, for this package, is
  *    served from memory with no HTTP call and no limiter slot consumed.
  * 2. {@link createLimiter}, sized {@link DEFAULT_JOBS}/`--jobs`: every
  *    cache MISS queues behind this ONE shared gate, so the planning
  *    core's newly-concurrent per-tag and per-BFS-node fan-out
- *    (`roots.ts`, `reachability.ts`) — now fired freely with no limit of
- *    its own — still hits `ghcr.io` with no more than `jobs` requests in
+ *    (`roots.ts`, `reachability.ts`); now fired freely with no limit of
+ *    its own; still hits `ghcr.io` with no more than `jobs` requests in
  *    flight at any moment, for the whole run, not per package.
  *
  * This is the ONLY place either decorator is applied: `planPackage` and
@@ -16563,7 +16563,7 @@ function requireToken(env) {
  * it gets the rate-limited reader with no cache in front of it.
  *
  * `canaryPackage`, when given, is registered in the same `pathFor` token
- * map as every selected package — the apply canary is a property of the
+ * map as every selected package; the apply canary is a property of the
  * WHOLE RUN, not of whichever packages `--package` happened to select,
  * so it must resolve a bearer token regardless of scoping. Without this,
  * `--package <x>` where the canary lives in some other package leaves
@@ -16577,8 +16577,8 @@ function requireToken(env) {
  * Builds the `RegistryPath -> PackageName` map {@link buildRegistryAdapters}
  * uses to resolve a GHCR bearer token per package. Extracted as its own
  * pure, exported function (no network, no token exchange) specifically so
- * the `--package`-scoping defect this fixes — the canary's package
- * silently absent from the map whenever `--package` excludes it — is
+ * the `--package`-scoping defect this fixes; the canary's package
+ * silently absent from the map whenever `--package` excludes it; is
  * unit-testable without touching the registry at all: the bug and its fix
  * are both fully expressed in which keys end up in this map, before any
  * HTTP request is ever made.
@@ -16624,18 +16624,18 @@ function decorateRegistry(raw, jobs) {
     return { planningRegistry, verificationRegistry };
 }
 /**
- * Which token `githubIssueBreaker` should authenticate with — deliberately
+ * Which token `githubIssueBreaker` should authenticate with; deliberately
  * SEPARATE from the registry/Packages-API token, which for `apply` is
  * typically a `delete:packages`-scoped PAT with no issues access (see
  * `breaker.ts`'s `githubIssueBreaker` doc for what happens when the two
  * are conflated: a bare 404 with no indication the token was the
  * problem). Precedence, highest first: `--breaker-token`, then
- * `GHCR_TIDY_BREAKER_TOKEN`, then `fallback` (the registry token itself)
- * — the last resort exists only for setups where one token legitimately
+ * `GHCR_TIDY_BREAKER_TOKEN`, then `fallback` (the registry token itself).
+ * The last resort exists only for setups where one token legitimately
  * carries both scopes (e.g. local/dry-run use with a broadly-scoped PAT).
  * Pure and side-effect-free specifically so this precedence is
  * unit-testable without constructing an Octokit client or making any
- * network call — mirroring {@link buildPackageTokenMap}'s reason for
+ * network call; mirroring {@link buildPackageTokenMap}'s reason for
  * being its own function.
  */
 function resolveBreakerToken(args, env, fallback) {
@@ -16660,7 +16660,7 @@ function buildRegistryAdapters(token, owner, registryOwner, entries, octokit, jo
     const packages = createPackagesClient(octokit);
     return { planningRegistry, verificationRegistry, packages, pathFor };
 }
-/** One line per {@link PackagePlanResult}, terse enough for {@link runPlanning}'s per-package progress lines — NOT the multi-line detail `formatPlanSummary` prints at the end of a run. */
+/** One line per {@link PackagePlanResult}, terse enough for {@link runPlanning}'s per-package progress lines, NOT the multi-line detail `formatPlanSummary` prints at the end of a run. */
 function progressOutcomeSummary(result) {
     switch (result.status) {
         case "nothing-to-do":
@@ -16680,13 +16680,13 @@ function progressOutcomeSummary(result) {
  * Concurrency bounded by `--jobs` (default {@link DEFAULT_JOBS}).
  *
  * Emits one terse progress line via `progress` when each package STARTS
- * and another when it FINISHES (with its result and elapsed time) — a
+ * and another when it FINISHES (with its result and elapsed time); a
  * multi-package run against a real registry is dominated by HTTP round
  * trips per package and can legitimately take minutes; with no output at
  * all in between, that is indistinguishable from a hang. `progress`
  * defaults to `process.stderr.write` (not stdout: stdout is reserved for
  * `formatPlanSummary`'s final report and, when `--out` is not used, is
- * the only machine-parseable-adjacent output this CLI produces — progress
+ * the only machine-parseable-adjacent output this CLI produces; progress
  * lines must never get mixed into it) and is injectable purely so tests
  * do not have to assert against real stderr.
  */
@@ -16742,7 +16742,7 @@ function formatPlanSummary(outcomes) {
         }
         else if (result.status === "skipped") {
             skipped += 1;
-            lines.push(`  ${entry.match}: SKIPPED (${result.reason}) — ${result.detail}`);
+            lines.push(`  ${entry.match}: SKIPPED (${result.reason}); ${result.detail}`);
         }
         else {
             totalDelete += result.deleteCount;
@@ -16751,7 +16751,7 @@ function formatPlanSummary(outcomes) {
                 `(live roots ${String(result.liveRootsCount)}, kept ${String(result.keepRootsCount)}, ` +
                 `reachable ${String(result.reachableCount)}, inflight ${String(result.inflightCount)})` +
                 (result.brokenRootDigests.length > 0
-                    ? ` — broken root(s) proven not-found: ${result.brokenRootDigests.join(", ")}`
+                    ? `; broken root(s) proven not-found: ${result.brokenRootDigests.join(", ")}`
                     : ""));
         }
     }
@@ -16768,7 +16768,7 @@ async function writePlanFile(plan, outPath, fs) {
 }
 async function runValidateCommand(args) {
     const manifest = await loadManifestFile(args.manifest);
-    process.stdout.write(`manifest OK — owner "${manifest.owner}", ${String(manifest.packages.length)} package(s) configured\n`);
+    process.stdout.write(`manifest OK; owner "${manifest.owner}", ${String(manifest.packages.length)} package(s) configured\n`);
     return EXIT_OK;
 }
 async function runPlanCommand(args, deps) {
@@ -16800,7 +16800,7 @@ async function runPlanCommand(args, deps) {
     const hadSkip = outcomes.some((o) => o.result.status === "skipped");
     return hadSkip ? EXIT_FINDINGS : EXIT_OK;
 }
-/** Renders one {@link CanaryFailureReason} into an operator-facing phrase — see that type's doc for the three cases. */
+/** Renders one {@link CanaryFailureReason} into an operator-facing phrase; see that type's doc for the three cases. */
 function formatCanaryFailureReason(reason) {
     switch (reason.kind) {
         case "resolve-failed":
@@ -16811,16 +16811,16 @@ function formatCanaryFailureReason(reason) {
             return `error while resolving: ${reason.message}`;
     }
 }
-/** Renders one {@link ApplyAbortReason} for the `ABORTED:` line — the `canary-failed` case additionally names the canary's own path/tag and the cause, since a bare "canary-failed" gave no way to diagnose the first real apply's spurious abort. The `regression` case additionally names a `sinkError` (the breaker itself failed to record the — still real, still confirmed — regression) rather than letting that failure erase the summary line entirely, as it did in the incident that motivated `sinkError`. */
+/** Renders one {@link ApplyAbortReason} for the `ABORTED:` line. The `canary-failed` case additionally names the canary's own path/tag and the cause, since a bare "canary-failed" gave no way to diagnose the first real apply's spurious abort. The `regression` case additionally names a `sinkError` (the breaker itself failed to record the still real, still confirmed regression) rather than letting that failure erase the summary line entirely, as it did in the incident that motivated `sinkError`. */
 function formatAbortReason(reason) {
     if (reason.kind === "canary-failed") {
-        return `canary-failed (canary ${reason.path}:${reason.tag} — ${formatCanaryFailureReason(reason.reason)})`;
+        return `canary-failed (canary ${reason.path}:${reason.tag}; ${formatCanaryFailureReason(reason.reason)})`;
     }
     if (reason.kind === "regression" && reason.sinkError !== undefined) {
         return `regression (breaker also failed to record it: ${reason.sinkError})`;
     }
     if (reason.kind === "verification-unavailable") {
-        return `verification-unavailable (${String(reason.tags.length)} tag(s) could not be confirmed healthy or broken in package ${reason.packageName} — not treated as a regression, breaker not tripped)`;
+        return `verification-unavailable (${String(reason.tags.length)} tag(s) could not be confirmed healthy or broken in package ${reason.packageName}, not treated as a regression, breaker not tripped)`;
     }
     if (reason.kind === "expiry-producer-invalid") {
         return (`expiry-producer-invalid (package ${reason.packageName}, ${reason.reason}: ` +
@@ -16835,11 +16835,11 @@ function summarizeApplyResult(plan, result) {
             const deleted = group.members.filter((m) => m.result === "deleted" || m.result === "already-gone").length;
             const failed = group.members.filter((m) => m.result === "error" || m.result === "last-version-conflict").length;
             const notAttempted = group.members.filter((m) => m.result === "not-attempted").length;
-            lines.push(`  ${pkg.packageName} group ${group.root}: ${group.status} — ${String(deleted)} deleted, ` +
+            lines.push(`  ${pkg.packageName} group ${group.root}: ${group.status}; ${String(deleted)} deleted, ` +
                 `${String(failed)} failed, ${String(notAttempted)} not attempted`);
         }
         // Never a failure and never sunk to the breaker (see `verify.ts`'s
-        // `republished` doc) — reported here purely as context: the
+        // `republished` doc); reported here purely as context: the
         // registry changed under this run, which is normal in a repo whose
         // CI publishes continuously, not something an operator needs to act
         // on.
@@ -16875,22 +16875,22 @@ function summarizeApplyResult(plan, result) {
 }
 async function runApplyCommand(args, deps) {
     if (!args.apply) {
-        throw new UsageError("`apply` requires the explicit --apply flag in addition to the subcommand — " +
+        throw new UsageError("`apply` requires the explicit --apply flag in addition to the subcommand; " +
             "two independent gestures are required to delete anything");
     }
     if (args.budget === undefined) {
         throw new UsageError("`apply` requires --budget <n>");
     }
     if (args.out === undefined) {
-        throw new UsageError("`apply` requires --out <path> — the plan is written there and re-read before any deletion is granted (grantApply's round trip)");
+        throw new UsageError("`apply` requires --out <path>; the plan is written there and re-read before any deletion is granted (grantApply's round trip)");
     }
     const manifest = await loadManifestFile(args.manifest);
     const entries = selectPackages(manifest, args.packages);
     const registryOwner = args.registryOwner ?? manifest.owner;
     const clock = deps.clock ?? cli_systemClock;
     const jobs = args.jobs ?? DEFAULT_JOBS;
-    // The canary's package, resolved here — BEFORE `--package` filtering
-    // is baked into the registry adapters below — because the canary is a
+    // The canary's package, resolved here; BEFORE `--package` filtering
+    // is baked into the registry adapters below, because the canary is a
     // property of the whole run, not of whichever packages `--package`
     // happened to select (see `buildRegistryAdapters`'s doc). A malformed
     // name is swallowed here on purpose: this is only a best-effort
@@ -16909,7 +16909,7 @@ async function runApplyCommand(args, deps) {
         }
     }
     // A production Octokit client is needed for any of: the registry
-    // adapters, the mutator, or the breaker — built once, lazily, only if at
+    // adapters, the mutator, or the breaker; built once, lazily, only if at
     // least one of those was not already supplied by `deps` (tests supply
     // all of them and so never require a real token at all).
     const needsOctokit = !deps.registry || !deps.packages || !deps.mutator || !deps.breaker;
@@ -16937,7 +16937,7 @@ async function runApplyCommand(args, deps) {
         verificationRegistry = adapters.verificationRegistry;
         packagesClient = adapters.packages;
     }
-    // The breaker is mandatory, unconditionally — see this module's doc and
+    // The breaker is mandatory, unconditionally; see this module's doc and
     // apply.ts's doc on why "apply with no breaker" must not be reachable.
     let breaker;
     if (deps.breaker) {
@@ -16946,8 +16946,8 @@ async function runApplyCommand(args, deps) {
     else {
         const repoSpec = args.breakerRepo ?? process.env.GITHUB_REPOSITORY;
         if (!repoSpec) {
-            throw new UsageError("no breaker configured: pass --breaker-repo <owner>/<repo> or set GITHUB_REPOSITORY " +
-                "— apply refuses to run without a circuit breaker");
+            throw new UsageError("no breaker configured: pass --breaker-repo <owner>/<repo> or set GITHUB_REPOSITORY; " +
+                "apply refuses to run without a circuit breaker");
         }
         const [breakerOwner, breakerRepo] = repoSpec.split("/", 2);
         if (!breakerOwner || !breakerRepo) {
@@ -16973,13 +16973,13 @@ async function runApplyCommand(args, deps) {
         // `--canary-package`/`--canary-tag` OVERRIDE `manifest.canary`,
         // field by field, when present; otherwise the manifest's value (if
         // any) is used. The manifest is the source that survives every
-        // trigger — see `manifest/schema.ts`'s `ManifestCanary` doc for why a
+        // trigger; see `manifest/schema.ts`'s `ManifestCanary` doc for why a
         // `schedule`-triggered run can never rely on a CLI-flag-only canary.
         // `canaryPackageRaw` was already resolved above (before the registry
         // adapters were built); only `canaryTagRaw` is new here.
         const canaryTagRaw = args.canaryTag ?? manifest.canary?.tag;
         if (!canaryPackageRaw || !canaryTagRaw) {
-            throw new UsageError("this plan has deletions to attempt but no canary is configured — add `canary: " +
+            throw new UsageError("this plan has deletions to attempt but no canary is configured; add `canary: " +
                 "{ package, tag }` to the manifest, or pass --canary-package <name> --canary-tag " +
                 "<tag> (a known-good tag resolved before any deletion). Verification is not " +
                 "optional on the apply path.");
@@ -17005,7 +17005,7 @@ async function runApplyCommand(args, deps) {
         catch (error) {
             throw new UsageError(`canary tag "${canaryTagRaw}": ${errorMessage(error)}`);
         }
-        // Retention is a single global policy (no per-package override — see
+        // Retention is a single global policy (no per-package override; see
         // `manifest/schema.ts`'s `ResolvedPolicy` doc), so it is resolved
         // ONCE here and reused for every package `resolveExpirySet` is
         // invoked for. `policyFor` keeps its per-package shape (matching
@@ -17021,7 +17021,7 @@ async function runApplyCommand(args, deps) {
                 producer: policyDrivenExpiryProducer,
                 policyFor: () => policy,
                 // Deliberately `packagesClient`, not a fresh client: it is never
-                // cached (unlike `registry`/`verificationRegistry` — see
+                // cached (unlike `registry`/`verificationRegistry`; see
                 // `verify.ts`'s `ExpiryProducerInput.createdAtOf` doc and
                 // `buildRegistryAdapters`'s doc on why the registry side needs
                 // two DISTINCT readers), so calling it again here is already a
@@ -17030,7 +17030,7 @@ async function runApplyCommand(args, deps) {
                 now: () => clock.now(),
             },
             // Printed to stdout BEFORE `sink.record` (which calls the
-            // breaker, a network operation) is even attempted — so the
+            // breaker, a network operation) is even attempted, so the
             // incident survives a breaker outage instead of vanishing behind
             // a bare "Not Found" the way it did in the run that motivated
             // this (see `apply.ts`'s `VerificationOptions.onIncident` doc).
@@ -17056,14 +17056,14 @@ async function runApplyCommand(args, deps) {
         return EXIT_FINDINGS;
     }
     if (applyExit !== EXIT_APPLY_OK) {
-        // Unreachable given classifyApplyExit's three-value range — guards
+        // Unreachable given classifyApplyExit's three-value range; guards
         // against a silent exit-code drift if that range ever grows.
         throw new Error(`unexpected apply exit classification: ${String(applyExit)}`);
     }
     const hadPlanSkip = outcomes.some((o) => o.result.status === "skipped");
     return hadPlanSkip ? EXIT_FINDINGS : EXIT_OK;
 }
-/** Runs the CLI end-to-end and returns the process exit code — never calls `process.exit` itself. */
+/** Runs the CLI end-to-end and returns the process exit code; never calls `process.exit` itself. */
 async function runCommand(argv, deps = {}) {
     let subcommand;
     let args;
@@ -17090,7 +17090,7 @@ async function runCommand(argv, deps = {}) {
             return EXIT_CONFIG;
         }
         // A plan-integrity violation (assertGroupsAreWellFormed / assertNoSurvivingParent)
-        // is a thrown Error, not a return value — and is exactly a safety-severity
+        // is a thrown Error, not a return value, and is exactly a safety-severity
         // finding: the plan itself was shown to be structurally wrong.
         if (error instanceof Error && /plan integrity violation/.test(error.message)) {
             process.stderr.write(`${error.message}\n`);
@@ -17153,7 +17153,7 @@ function resolveArgv(env, argv) {
         return [...argv];
     }
     if (inputArgs.trim() === "") {
-        throw new UsageError("the `args` input is empty — pass a subcommand and flags (e.g. `plan --manifest .ghcr-tidy.yaml`)");
+        throw new UsageError("the `args` input is empty; pass a subcommand and flags (e.g. `plan --manifest .ghcr-tidy.yaml`)");
     }
     return tokenizeArgs(inputArgs);
 }

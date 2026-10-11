@@ -149,7 +149,7 @@ describe("checkCanary", () => {
   });
 });
 
-describe("compareSnapshots — the three-part predicate", () => {
+describe("compareSnapshots: the three-part predicate", () => {
   const t = tag("latest");
 
   it("no regression when the tag is healthy and unchanged", () => {
@@ -181,7 +181,7 @@ describe("compareSnapshots — the three-part predicate", () => {
     ]);
   });
 
-  it("republished, NOT a regression: healthy before and after, but a different digest — a concurrent publish, since deleting a manifest cannot repoint a tag", () => {
+  it("republished, NOT a regression: healthy before and after, but a different digest: a concurrent publish, since deleting a manifest cannot repoint a tag", () => {
     const pre = new Map<Tag, TagSnapshot>([[t, healthy("sha256:a")]]);
     const post = new Map<Tag, TagSnapshot>([[t, healthy("sha256:b")]]);
 
@@ -202,7 +202,7 @@ describe("compareSnapshots — the three-part predicate", () => {
     ]);
   });
 
-  it("regression: healthy before, CONFIRMED broken after (tag itself 404s) — still a regression regardless of digest bookkeeping", () => {
+  it("regression: healthy before, CONFIRMED broken after (tag itself 404s): still a regression regardless of digest bookkeeping", () => {
     const pre = new Map<Tag, TagSnapshot>([[t, healthy("sha256:a")]]);
     const post = new Map<Tag, TagSnapshot>([[t, notFound()]]);
 
@@ -213,7 +213,7 @@ describe("compareSnapshots — the three-part predicate", () => {
     expect(result.republished).toEqual([]);
   });
 
-  it("regression: healthy before, tag still resolves but its CLOSURE broke and the digest also changed — closure breakage always wins over a digest change", () => {
+  it("regression: healthy before, tag still resolves but its CLOSURE broke and the digest also changed: closure breakage always wins over a digest change", () => {
     const pre = new Map<Tag, TagSnapshot>([[t, healthy("sha256:a")]]);
     const post = new Map<Tag, TagSnapshot>([[t, closureBroken("sha256:b")]]);
 
@@ -318,7 +318,7 @@ describe("compareSnapshots — the three-part predicate", () => {
     expect(result.unverified).toEqual([]);
   });
 
-  it("preSnapshotFailed: a merely UNKNOWN post tag is unverified, not a regression — the false-positive this predicate must not repeat", () => {
+  it("preSnapshotFailed: a merely UNKNOWN post tag is unverified, not a regression: the false-positive this predicate must not repeat", () => {
     const flakyTag = tag("flaky");
     const post = new Map<Tag, TagSnapshot>([[flakyTag, unknown()]]);
 
@@ -353,15 +353,15 @@ describe("compareSnapshots — the three-part predicate", () => {
     expect(result.unverified).toHaveLength(1);
   });
 
-  it("postSnapshotFailed: every tag pre knew as healthy is unverified, NEVER defaulted to confirmed-broken — the exact defect that turned one failed listTags call into a mass false regression", () => {
+  it("postSnapshotFailed: every tag pre knew as healthy is unverified, NEVER defaulted to confirmed-broken: the exact defect that turned one failed listTags call into a mass false regression", () => {
     const liveTag1 = tag("stable-1");
     const liveTag2 = tag("stable-2");
     const pre = new Map<Tag, TagSnapshot>([
       [liveTag1, healthy("sha256:a")],
       [liveTag2, healthy("sha256:b")],
     ]);
-    // Whatever the (necessarily unreliable) post map looks like — even
-    // completely empty, as a totally failed read produces — must never
+    // Whatever the (necessarily unreliable) post map looks like, even
+    // completely empty, as a totally failed read produces; must never
     // be trusted as "these tags are gone".
     const post = new Map<Tag, TagSnapshot>();
 
@@ -384,7 +384,7 @@ describe("compareSnapshots — the three-part predicate", () => {
   });
 });
 
-describe("resolveExpirySet — the two safety obligations, unchanged (test 7)", () => {
+describe("resolveExpirySet: the two safety obligations, unchanged (test 7)", () => {
   it("ok: true with the producer's expiry set when floor and unclassifiable are disjoint from it", () => {
     const producer: ExpiryProducer = {
       produce: () => ({
@@ -564,7 +564,7 @@ describe("policyDrivenExpiryProducer", () => {
     expect(result.expiry).toEqual(new Set([tag("1.0"), tag("2.0")]));
   });
 
-  it("TEST 1 (conjunction): a digest carrying one retained and one non-retained tag yields an EMPTY expiry for both, even though the digest is old — pinned independently of the age half", () => {
+  it("TEST 1 (conjunction): a digest carrying one retained and one non-retained tag yields an EMPTY expiry for both, even though the digest is old: pinned independently of the age half", () => {
     const retainedTag = tag("golang-2"); // sole member of its kind -> retained major
     const staleTag = tag("claude-9.9.9"); // different kind, non-retained under keepMinors:0
     const sharedDigest = digest("sha256:shared");
@@ -648,7 +648,7 @@ describe("policyDrivenExpiryProducer", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("TEST 3 (the safety direction): a tag INSIDE the keepDays window that then disappears is a regression, never expired — the hole issue #27 closes", () => {
+  it("TEST 3 (the safety direction): a tag INSIDE the keepDays window that then disappears is a regression, never expired: the hole issue #27 closes", () => {
     const inWindowTag = tag("claude-9.9.9"); // outside its semver window, but its digest is YOUNG
     const d = digest("sha256:in-window");
     const input = producerInput({
@@ -678,19 +678,19 @@ describe("policyDrivenExpiryProducer", () => {
   });
 });
 
-describe("policyDrivenExpiryProducer — TEST 4: corpus silence at the shipped default policy", () => {
+describe("policyDrivenExpiryProducer, TEST 4: corpus silence at the shipped default policy", () => {
   const byPackage = loadBaseimagesTagDigestAge();
   const policy: ResolvedPolicy = { keepMajors: 1, keepMinors: 3, keepPatches: 5, keepDays: 30 };
 
   /**
    * Runs the real producer against one package's ground-truth corpus at
-   * the PINNED instant and asserts the residual is exactly zero — the
+   * the PINNED instant and asserts the residual is exactly zero; the
    * literal meaning of "notExpired is empty on a correct run": every
    * tag either resolves normally forever or is a genuine, correctly
    * classified expiry candidate. Nothing here simulates a snapshot: an
    * empty `expiry` set makes `compareSnapshots`'s `notExpired` bucket
    * empty for ANY post-apply outcome, by construction (see
-   * `compareSnapshots`'s doc — membership in `expectedExpiry` is the
+   * `compareSnapshots`'s doc; membership in `expectedExpiry` is the
    * only way into that bucket), so asserting the set itself is the
    * direct, sufficient claim.
    */

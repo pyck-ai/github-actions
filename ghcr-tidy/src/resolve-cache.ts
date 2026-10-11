@@ -4,7 +4,7 @@ import type { RegistryReader } from "./ports.js";
 
 /**
  * Decorates a {@link RegistryReader} so that within one run, the same
- * `(path, ref)` pair is never sent to the underlying registry twice — and
+ * `(path, ref)` pair is never sent to the underlying registry twice, and
  * two callers racing on the SAME digest (e.g. two keep-roots whose BFS
  * frontiers both reach a shared platform manifest in the same tick, now
  * that `reachability.ts` resolves a frontier level concurrently) share one
@@ -16,7 +16,7 @@ import type { RegistryReader } from "./ports.js";
  * never be skipped just because some other tag happens to already be
  * known to point at the same digest. What this DOES eliminate is the
  * common case this model produces constantly: the same DIGEST reached
- * from more than one place — a child shared by several roots (already
+ * from more than one place; a child shared by several roots (already
  * partly handled by `reachability.ts`'s own `reachable`/`rootChildren`
  * bookkeeping) or a manifest fetched once as a BFS child and later found
  * again as an unrelated live root.
@@ -27,7 +27,7 @@ import type { RegistryReader } from "./ports.js";
  * digest resolved successfully under one package's path says nothing
  * about whether it exists under a different package's path.
  *
- * Does not cache `listTags` — the tag list is read exactly once per
+ * Does not cache `listTags`; the tag list is read exactly once per
  * package already (`roots.ts` is `buildLiveRoots`'s only caller besides
  * `verify.ts`'s snapshotting, and those are different logical reads at
  * different times), so there is nothing to de-duplicate there.

@@ -51,7 +51,7 @@ describe("memoryBreaker", () => {
     expect(await breaker.isTripped()).not.toBeNull();
   });
 
-  it("has no reset/clear method — nothing in this module can un-trip a breaker", () => {
+  it("has no reset/clear method: nothing in this module can un-trip a breaker", () => {
     const { breaker } = memoryBreaker();
     expect((breaker as unknown as Record<string, unknown>).reset).toBeUndefined();
     expect((breaker as unknown as Record<string, unknown>).clear).toBeUndefined();
@@ -144,8 +144,8 @@ describe("githubIssueBreaker", () => {
   });
 });
 
-describe("githubIssueBreaker — mis-scoped token diagnostic", () => {
-  /** A fake whose every request 404s, as GitHub does for an issues call made with a token that has no repo/issues access — indistinguishable on the wire from "no such repo". */
+describe("githubIssueBreaker: mis-scoped token diagnostic", () => {
+  /** A fake whose every request 404s, as GitHub does for an issues call made with a token that has no repo/issues access; indistinguishable on the wire from "no such repo". */
   function fake404Requestable(): IssuesRequestable {
     return {
       request: () => {

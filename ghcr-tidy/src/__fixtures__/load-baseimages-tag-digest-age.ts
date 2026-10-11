@@ -14,7 +14,7 @@ export interface PackageTagDigestAge {
  * Loads `baseimages-tag-digest-age.tsv` (`package<TAB>tag<TAB>digest<TAB>
  * created_at`, 246 rows: `all-in-one` 114 tags + `agent` 132 tags, every
  * tag joined to its digest and that digest's authoritative Packages API
- * `created_at`) — the ground truth issue #27's corpus test verifies
+ * `created_at`); the ground truth issue #27's corpus test verifies
  * `policyDrivenExpiryProducer` against. Real data pulled from the live
  * registry and Packages API, oldest `2026-08-24T09:19:13Z`, newest
  * `2026-09-21T20:20:49Z`.
@@ -22,7 +22,7 @@ export interface PackageTagDigestAge {
  * Several tags legitimately share one digest here (the same build
  * carrying multiple version aliases across different tag kinds, e.g. a
  * `golang` minor/patch pair alongside an `opencode` alias produced by
- * the same `all-in-one` layer) — this is exactly the shape the digest
+ * the same `all-in-one` layer); this is exactly the shape the digest
  * existential in `policyDrivenExpiryProducer` exists to handle, not a
  * fixture artifact to normalise away.
  */

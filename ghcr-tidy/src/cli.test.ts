@@ -335,10 +335,10 @@ describe("plan subcommand", () => {
     const manifestPath = await writeManifest(VALID_MANIFEST);
     const fake = new FakeGhcr();
     fake.setTag(tag("latest"), digest("sha256:live"));
-    // No manifest registered for sha256:live — it will 404 on resolve, failing the package closed.
+    // No manifest registered for sha256:live; it will 404 on resolve, failing the package closed.
     // A non-empty version listing is required too: planPackage short-circuits
     // to "nothing-to-do" (never touching the registry at all) when the
-    // Packages API reports zero versions — see plan.ts's first check.
+    // Packages API reports zero versions; see plan.ts's first check.
     fake.addVersion(version(1, "sha256:live", "2026-09-01T00:00:00.000Z"));
 
     const exitCode = await runCommand(["plan", "--manifest", manifestPath], baseDeps(fake));
@@ -362,15 +362,15 @@ describe("plan subcommand", () => {
       }),
     );
     // A "planned" outcome (broken root identified and swept into DELETE,
-    // nothing left "skipped") is exit 0, not 1 — proving the whole
+    // nothing left "skipped") is exit 0, not 1; proving the whole
     // package is no longer fail-closed once the broken root is excluded.
     expect(withFlag).toBe(0);
     expect(logs.join("")).toContain("broken root(s)");
   });
 
-  it("exits 1 (findings), not 3, when listTags itself fails — the package is SKIPPED, not the whole run aborted", async () => {
+  it("exits 1 (findings), not 3, when listTags itself fails: the package is SKIPPED, not the whole run aborted", async () => {
     // This was the production incident: `listTags` throwing (a real
-    // `network-error`, or anything else — see `roots.ts`'s doc) used to
+    // `network-error`, or anything else; see `roots.ts`'s doc) used to
     // propagate all the way out of `runCommand` uncaught, aborting the
     // ENTIRE plan/apply over one package's transient registry error while
     // sibling packages already in flight under `--jobs` kept running to
@@ -398,7 +398,7 @@ describe("plan subcommand", () => {
   it("exits 3 (infrastructure) when the registry throws an unexpected error that is NOT a tag-listing failure", async () => {
     // `resolve()` throwing (as opposed to returning a typed non-success
     // result, which is all a real adapter ever does) is not a case
-    // `roots.ts`/`reachability.ts` catch — it is exactly the "truly
+    // `roots.ts`/`reachability.ts` catch; it is exactly the "truly
     // unexpected" case `runCommand`'s outer catch exists for.
     const manifestPath = await writeManifest(VALID_MANIFEST);
     const throwingRegistry: RegistryReader = {
@@ -723,7 +723,7 @@ describe("apply subcommand", () => {
 
   it("--canary-package/--canary-tag OVERRIDE a manifest canary that would otherwise fail", async () => {
     // The manifest's own canary tag does not resolve to anything (no
-    // matching setTag/setManifest below) — if the manifest canary were
+    // matching setTag/setManifest below), if the manifest canary were
     // used instead of the CLI override, verification would fail (exit 4).
     const manifestPath = await writeManifest(
       "version: 1\nowner: acme\npackages:\n  - match: widget\ncanary:\n  package: widget\n  tag: broken-canary\n",
@@ -807,7 +807,7 @@ describe("apply subcommand", () => {
     );
 
     // Findings (1): the package is skipped fail-closed, nothing to apply
-    // to, so nothing is attempted at all — not a zero-mutation safety
+    // to, so nothing is attempted at all, not a zero-mutation safety
     // trip, since there was no work in the (empty) plan.
     expect(exitCode).toBe(1);
     expect(attemptedVersionIds).toEqual([]);
@@ -881,7 +881,7 @@ describe("apply subcommand", () => {
 
   it("--apply --delete-broken-roots: budget too small to cover the group leaves it skipped-budget, mutating nothing (budget gating still applies)", async () => {
     // The broken root's group has TWO members (root + a healthy but
-    // otherwise-unreferenced sibling — see the parents-first test below
+    // otherwise-unreferenced sibling; see the parents-first test below
     // for the exact fixture) so a budget of 1 cannot cover the whole
     // group and the group is skipped in full rather than partially spent.
     const manifestPath = await writeManifest(VALID_MANIFEST_ZERO_GRACE);
@@ -928,7 +928,7 @@ describe("apply subcommand", () => {
   it("--apply --delete-broken-roots: a failed tagged root delete abandons the rest of that group (the flutter-rfw-style parents-first rule still holds)", async () => {
     // The broken root here has a SECOND child, "sha256:sibling", that is
     // NOT itself missing (it resolves fine) but is otherwise unreferenced
-    // and unprotected — so it also lands in DELETE, in the SAME group as
+    // and unprotected, so it also lands in DELETE, in the SAME group as
     // the broken root (root is always members[0]). Faulting the root's
     // own delete must abandon "sibling" too, never attempting it.
     const manifestPath = await writeManifest(VALID_MANIFEST_ZERO_GRACE);
@@ -968,7 +968,7 @@ describe("apply subcommand", () => {
     );
 
     // Findings (1): the root's own delete failed, so the group was
-    // abandoned — "sibling" (version id 2) must never have been attempted.
+    // abandoned; "sibling" (version id 2) must never have been attempted.
     expect(exitCode).toBe(1);
     expect(attemptedVersionIds).toEqual([1]);
     expect(deletedVersionIds).toEqual([]);
@@ -1008,7 +1008,7 @@ describe("buildPackageTokenMap", () => {
     return { match: name };
   }
 
-  it("registers the canary's package even when --package scopes selection to a DIFFERENT package — the exact regression that aborted the first real apply", () => {
+  it("registers the canary's package even when --package scopes selection to a DIFFERENT package: the exact regression that aborted the first real apply", () => {
     // `--package baseimages/buildcache` selects only `buildcache`; the
     // canary lives in `base`, which is NOT among `entries`. Before the
     // fix, `base`'s registry path was absent from this map entirely,
@@ -1024,7 +1024,7 @@ describe("buildPackageTokenMap", () => {
   it("still resolves the canary's package on an unscoped run (every package, including the canary's, selected)", () => {
     // The accidental-working case: no --package filter, so every
     // configured entry (including the canary's own package) is already
-    // selected — must not regress.
+    // selected; must not regress.
     const map = buildPackageTokenMap(owner, [entryFor(buildcache), entryFor(base)], base);
 
     expect(map.get(registryPathFor(owner, base))).toBe(base);
@@ -1040,7 +1040,7 @@ describe("buildPackageTokenMap", () => {
   });
 });
 
-describe("resolveBreakerToken — never let the delete:packages PAT double as the issues token", () => {
+describe("resolveBreakerToken, never let the delete:packages PAT double as the issues token", () => {
   it("prefers --breaker-token over everything else", () => {
     expect(
       resolveBreakerToken(
@@ -1057,7 +1057,7 @@ describe("resolveBreakerToken — never let the delete:packages PAT double as th
     );
   });
 
-  it("falls back to the registry token as a last resort when neither is configured — the pre-fix (and still-supported single-token) behaviour", () => {
+  it("falls back to the registry token as a last resort when neither is configured: the pre-fix (and still-supported single-token) behaviour", () => {
     expect(resolveBreakerToken({}, {}, "registry-token")).toBe("registry-token");
   });
 });
