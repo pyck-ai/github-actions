@@ -12,15 +12,15 @@ on:
   schedule:
     # Daily. Neither ci.yml nor release.yml (nor any other workflow in this
     # repo) declares a `schedule:` trigger, so there is nothing to collide
-    # with here — this slot is picked purely to avoid the round-hour stampede
+    # with here; this slot is picked purely to avoid the round-hour stampede
     # of crons that fire across GitHub at :00.
     - cron: "17 5 * * *"
   workflow_dispatch:
 
 # Required by tidy-repo.yml's own contract (see its header comment): the
 # callee deliberately declares no concurrency block of its own, because
-# inside a called workflow `github.workflow` resolves to the CALLER's name
-# — a duplicate block would compute the same group and GitHub would kill
+# inside a called workflow `github.workflow` resolves to the CALLER's name,
+# so a duplicate block would compute the same group and GitHub would kill
 # the run with zero jobs. `cancel-in-progress: false`
 # because a half-finished cleanup is worse than none.
 concurrency:

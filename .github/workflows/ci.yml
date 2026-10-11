@@ -8,7 +8,7 @@ on:
   push:
     branches: [main]
 
-# Cancel superseded runs for the same ref (PR head or main) — nothing here
+# Cancel superseded runs for the same ref (PR head or main); nothing here
 # publishes anything, so an in-flight run can always be safely replaced.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

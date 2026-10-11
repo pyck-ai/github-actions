@@ -4,7 +4,7 @@ name: tidy-ghcr
 # ghcr-tidy/README.md for the model it implements: reachability-based delete
 # set, grace window, breaker, volume alarm, canary and post-apply
 # verification). Callers own the trigger (schedule /
-# workflow_dispatch) — see tidy-repo.yml's header for the same rule and why
+# workflow_dispatch); see tidy-repo.yml's header for the same rule and why
 # a shared workflow must not own the cron.
 #
 # This workflow only PUBLISHES the capability. Nothing in this repo wires it
@@ -17,7 +17,7 @@ on:
       apply:
         description: >-
           If true, actually delete planned versions. If false (the
-          default), only plan and report — nothing is deleted. On a
+          default), only plan and report; nothing is deleted. On a
           `schedule` trigger the `inputs` context is EMPTY and this default
           does not apply (see the `apply-effective` step below for how
           that is handled); dispatch runs use this value directly.
@@ -28,14 +28,14 @@ on:
         description: >-
           Maximum number of version-deletion attempts this run may make
           (required for `apply` to do anything; ignored for plan-only
-          runs). Must be a non-negative integer if set — validated in the
+          runs). Must be a non-negative integer if set; validated in the
           `Validate string inputs` step below, which fails the run early
           rather than let a malformed value reach the CLI. `type: string`
           (not `number`): every caller value ends up as a shell argv
           string for the `ghcr-tidy` CLI's own `--budget` flag anyway, so
           the conversion belongs here rather than forcing every caller
           through `fromJSON()`. Same "schedule inputs are empty" caveat as
-          `apply` — see the `apply-effective` step.
+          `apply`; see the `apply-effective` step.
         type: string
         required: false
         default: "200"
@@ -43,11 +43,11 @@ on:
         description: >-
           Opt-in remediation for a keep-root whose subtree contains a
           PROVEN not-found descendant (a confirmed registry 404, e.g. an
-          already-garbage-collected multi-arch child) — see the
+          already-garbage-collected multi-arch child); see the
           `ghcr-tidy` CLI's `--delete-broken-roots` flag and
           `plan.ts`'s `computeReachabilityToleratingBrokenRoots`.
-          Deleting such a root still requires `apply: true` as well — two
-          independent gestures, same posture as `apply` itself — and this
+          Deleting such a root still requires `apply: true` as well; two
+          independent gestures, same posture as `apply` itself, and this
           input is DELIBERATELY, UNCONDITIONALLY forced off on a
           `schedule` trigger regardless of its configured value (see the
           `apply-effective` step below): an unattended destructive mode
@@ -74,24 +74,24 @@ on:
           Trailing baseline for the volume alarm: `apply` refuses to run
           when the plan deletes more than a configurable multiple (see the
           CLI's own default) of this many versions. Leave empty (the
-          default) to disable the volume alarm for this call — an empty
+          default) to disable the volume alarm for this call; an empty
           `baseline` here means the `--baseline` flag is omitted entirely
           from the CLI invocation below, never passed as `0` (which would
           instead mean "refuse any plan that deletes anything"; there is
           no other way to express "off" once the input is a plain string,
           so this omission happens in the run steps below rather than via
           a workflow_call default). `type: string`, same reasoning as
-          `budget` above. Must be a non-negative integer if set —
+          `budget` above. Must be a non-negative integer if set;
           validated in the `Validate string inputs` step below.
         type: string
         required: false
 
-# NO top-level `concurrency:` here, deliberately — see tidy-repo.yml's
+# NO top-level `concurrency:` here, deliberately; see tidy-repo.yml's
 # identical comment. Inside a called workflow
 # `github.workflow` resolves to the CALLING workflow's name, so a block
 # here computes the same group the caller's own block computes and GitHub
 # kills the run with zero jobs. Concurrency belongs to the caller, which
-# should set `cancel-in-progress: false` — a half-finished prune (deletions
+# should set `cancel-in-progress: false`; a half-finished prune (deletions
 # attempted, budget partially spent) is worse than none.
 jobs:
   tidy:
@@ -131,7 +131,7 @@ jobs:
       # it surface as a confusing `ghcr-tidy` usage error or an empty/NaN
       # budget deep inside the apply path. Empty is valid for both (it
       # means "use the schedule default" for `budget`, "disable the
-      # volume alarm" for `baseline` — see the `apply-effective` step and
+      # volume alarm" for `baseline`; see the `apply-effective` step and
       # the `Apply` step's `--baseline` construction respectively).
       - name: Validate string inputs
         run: |
@@ -150,11 +150,11 @@ jobs:
           validate baseline "${{ inputs.baseline }}"
 
       # On a `schedule` event the `inputs` context is EMPTY (not merely
-      # defaulted) — GitHub does not evaluate `workflow_call` input
+      # defaulted); GitHub does not evaluate `workflow_call` input
       # defaults for schedule-triggered runs of the CALLER, so
       # `inputs.apply` and `inputs.budget` read as empty string there, and
       # `${{ inputs.apply || 'true' }}`-style fallback COERCES an explicit
-      # `apply: false` dispatch into `true` — false is falsy in Actions
+      # `apply: false` dispatch into `true`; false is falsy in Actions
       # expressions, so `||` treats it exactly like "unset". Each
       # expression below tests `github.event_name == 'schedule'` directly
       # instead of ever treating an empty/false input as "use the
@@ -165,7 +165,7 @@ jobs:
       # `delete-broken-roots` follows the SAME pattern but with the
       # opposite schedule default: a `schedule` run is forced to `false`
       # unconditionally (never `inputs.delete-broken-roots`, whatever it
-      # was configured to) — see this input's own doc above for why an
+      # was configured to); see this input's own doc above for why an
       # unattended destructive mode must never be the cron's default.
       - name: Resolve effective apply/budget/delete-broken-roots
         id: effective
@@ -217,7 +217,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Uploaded `if: always()` so a failed, aborted, or breaker-tripped run
-      # still leaves its forensic record — the plan shows exactly what was
+      # still leaves its forensic record; the plan shows exactly what was
       # decided and the journal shows exactly what was attempted, which is
       # what a human needs to diagnose a trip without re-running anything.
       - name: Upload plan and journal

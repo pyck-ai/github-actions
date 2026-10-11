@@ -1,7 +1,7 @@
 name: ghcr-tidy
 description: >-
   Runs the pyck-ai ghcr-tidy CLI (this action's own `dist/` bundle) to plan
-  and/or apply GHCR retention, using the runner's bundled Node — no system
+  and/or apply GHCR retention, using the runner's bundled Node; no system
   `node` or `setup-node` step required.
 inputs:
   args:

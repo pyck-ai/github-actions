@@ -12,7 +12,7 @@ name: build-image
 # Consumers pin this workflow by commit SHA:
 # pyck-ai/github-actions/.github/workflows/build-image.yml@<sha>
 #
-# Triggers stay in the caller (schedule / workflow_dispatch / pull_request) —
+# Triggers stay in the caller (schedule / workflow_dispatch / pull_request);
 # a shared workflow must not own the cron, since the offset encodes a real
 # dependency on when an upstream image publishes.
 
@@ -139,10 +139,10 @@ jobs:
               # references it via `contexts = { x = "target:base" }`), and
               # worse, each of those redundant jobs still carries the
               # dependency's own `cache-to`, so concurrent jobs race to write
-              # the same registry cache ref — last writer wins, degrading
+              # the same registry cache ref; last writer wins, degrading
               # every subsequent run in a way invisible in any single run's
               # logs. `name` is the component's root (the target with no
-              # outgoing edges, i.e. nothing it depends on) — chosen purely so
+              # outgoing edges, i.e. nothing it depends on); chosen purely so
               # job/builder names read well; it plays no role in the grouping.
               # Ported from pyck-ai/baseimages'
               # .github/scripts/build-images/discover.sh.
@@ -193,7 +193,7 @@ jobs:
               # poison the registry build cache that scheduled builds rely on.
               echo '*.cache-to='
             fi
-            # Push every build by digest only, on every trigger — never a floating
+            # Push every build by digest only, on every trigger; never a floating
             # or version tag directly. Tags are applied afterwards by the `publish`
             # job, once every leg of `build` has verified its own pushed digest, so
             # a bad image never gets the chance to be reachable by `latest`. The
@@ -220,7 +220,7 @@ jobs:
       packages: write # required to push images/digests to ghcr.io
     env:
       # Hoisted to job level because `secrets` is not available in an `if:`
-      # expression — the conditional login step below reads this env var
+      # expression; the conditional login step below reads this env var
       # instead. Left unset (empty string) when the caller doesn't define the
       # secret, e.g. github-runner, which never sets Docker Hub credentials.
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -250,7 +250,7 @@ jobs:
           # Per-repo AND per-leg isolation: `builder-name` is workflow-scoped
           # and required, so with a many-component matrix every leg would
           # otherwise call `docker buildx create --name <same>` concurrently
-          # on the same runner — creation conflicts, buildkit contention, and
+          # on the same runner; creation conflicts, buildkit contention, and
           # setup-buildx-action's post-step `docker buildx rm` potentially
           # tearing the builder out from under a still-running sibling leg.
           # Suffixing with the component name keeps each leg's builder
@@ -272,7 +272,7 @@ jobs:
       # pull base images from Docker Hub. Anonymous pulls there are rate
       # limited per-IP (100/6h), and with `pull: true`, two platforms, and a
       # many-component fan-out, an unauthenticated shared self-hosted runner
-      # IP can exceed that limit — surfacing as an intermittent-looking
+      # IP can exceed that limit; surfacing as an intermittent-looking
       # network flake. A consumer that defines neither secret (e.g.
       # github-runner) simply skips this step. `secrets` isn't readable in an
       # `if:`, hence the job-level `env.DOCKERHUB_USERNAME` hop above.
@@ -316,8 +316,8 @@ jobs:
       # file per matrix component (a component can bake multiple real bake
       # targets; the metadata dict below is already keyed by each real
       # target's name, so the component name here is only used to make the
-      # artifact filename unique). Still uploaded as an artifact — not just
-      # used locally — because `publish` runs in a separate job and needs
+      # artifact filename unique). Still uploaded as an artifact, not just
+      # used locally, because `publish` runs in a separate job and needs
       # every leg's digest, merged downstream via an artifact handshake, not
       # job outputs, because matrix outputs are last-writer-wins and would
       # silently corrupt digest tracking if a variant is added.
@@ -342,15 +342,15 @@ jobs:
           path: ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
           retention-days: 1
 
-      # Verify the EXACT digest(s) this leg just pushed — a real pre-tag gate
-      # rather than a post-publish smoke test — right here in the same job,
+      # Verify the EXACT digest(s) this leg just pushed; a real pre-tag gate
+      # rather than a post-publish smoke test; right here in the same job,
       # instead of a separate job that waits on every leg's digest artifact.
       # Every real bake target in `matrix.component.targets` (newline-
       # separated; see the `discover` job's comment on why that separator is
-      # load-bearing) gets its own `verify.sh` run, not just the first — a
+      # load-bearing) gets its own `verify.sh` run, not just the first; a
       # component can bake several (e.g. baseimages' alpine dependency chain
       # bakes 7 targets in one leg). `publish` (via `needs: [discover,
-      # build]`) only runs once every leg of this matrix has succeeded — so a
+      # build]`) only runs once every leg of this matrix has succeeded, so a
       # bad image never has a chance to be reachable by a floating tag. With
       # `fail-fast: false`, a failing leg doesn't stop its siblings, but it
       # does fail this `build` job overall, which is what `publish`'s `needs:
@@ -359,21 +359,21 @@ jobs:
       # Caveat: a multi-arch target's `docker pull` on the recorded digest only
       # fetches the manifest for the puller's own platform (amd64, since
       # self-hosted runners here are amd64). So this verifies the amd64 half
-      # only — any arm64 half is published unverified. `--load` cannot load a
+      # only; any arm64 half is published unverified. `--load` cannot load a
       # multi-arch result at all; pulling the real pushed digest is strictly
       # better than a fresh single-platform rebuild (it's the actual pushed
       # artifact) but does not close this platform gap. See the same note in
       # pyck-ai/baseimages' verify.sh.
 
       # `$/` is the self-repository reference: it resolves an action stored
-      # in THIS repository at the running commit's SHA — the same SHA as
-      # this workflow — with no separate checkout needed. Documented at
+      # in THIS repository at the running commit's SHA; the same SHA as
+      # this workflow, with no separate checkout needed. Documented at
       # https://docs.github.com/actions/using-workflows/reusing-workflows
       # (composite-actions "referencing an action in the same repository"),
       # and already proven in production by `tidy-ghcr.yml`'s
       # `uses: $/ghcr-tidy`. This means a consumer pinning
       # build-image.yml@<sha> always gets the verify-image action from that
-      # SAME sha — the workflow and the action can never drift apart, and no
+      # SAME sha; the workflow and the action can never drift apart, and no
       # self-referencing SHA needs to be hardcoded or bumped on release.
       # `$/` is unsupported on GitHub Enterprise Server; fine here since this
       # runs on github.com only.

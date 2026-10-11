@@ -1,8 +1,8 @@
 name: verify-image
 description: >-
   Runs each target's own verify.sh INSIDE the image just built for it, for
-  every target a leg built, and fails if ANY of them fail — not just the
-  first. A target with no verify.sh is a hard failure, not a skip — this is
+  every target a leg built, and fails if ANY of them fail, not just the
+  first. A target with no verify.sh is a hard failure, not a skip; this is
   deliberate: it is what guarantees every taggable image is actually
   verified before a tag can move.
 inputs:

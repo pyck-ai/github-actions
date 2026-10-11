@@ -7,7 +7,7 @@ name: tidy-repo
 # upstream publishes.
 #
 # Jobs are chained via `needs:` (not parallel) deliberately, to avoid hitting
-# GitHub API rate limits — preserve that ordering if this workflow changes.
+# GitHub API rate limits; preserve that ordering if this workflow changes.
 
 on:
   workflow_call:

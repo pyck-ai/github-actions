@@ -19,7 +19,7 @@
 #                   `docker run --env-file`; tolerated if absent
 #
 # Verifies EVERY target in the list rather than stopping at the first
-# failure — a run that reports every broken image beats one failure per push
+# failure; a run that reports every broken image beats one failure per push
 # cycle, since a re-run only ever surfaces the next one. A target with no
 # verify.sh is a hard failure, not a skip, for every target checked: this is
 # the property that guarantees every taggable image is actually verified
@@ -38,8 +38,8 @@ fi
 
 # Verifies a single target. Callers must invoke this as `( verify_one ... )`
 # (a subshell): the EXIT trap it installs then only ever cleans up ITS OWN
-# derived busybox image, regardless of how the subshell exits — success, a
-# failing verify.sh, or an early `return` for a missing verify.sh — without
+# derived busybox image, regardless of how the subshell exits; success, a
+# failing verify.sh, or an early `return` for a missing verify.sh; without
 # one target's cleanup racing another's when the loop below keeps going.
 verify_one() {
   local target="$1" context="$2" image="$3"
@@ -60,7 +60,7 @@ verify_one() {
 
   local ref="$image"
   # NOT `local`: the EXIT trap below fires once this subshell's last command
-  # (this function call) returns — by which point a `local` var's scope has
+  # (this function call) returns; by which point a `local` var's scope has
   # already been popped, so `cleanup` would read an unset `derived_tag`
   # under `set -u`. A plain (subshell-global) assignment survives until the
   # subshell process itself exits, which is exactly when the trap runs.
@@ -75,7 +75,7 @@ verify_one() {
   }
   trap cleanup EXIT
 
-  # Builds (once per target — callers must check `$derived_tag` is still
+  # Builds (once per target; callers must check `$derived_tag` is still
   # empty first) a throwaway image that layers busybox's /bin (a directory
   # of applet symlinks) onto the exact digest under test, so it's provably
   # "the published artifact plus one directory". Sets `derived_tag` on
@@ -118,14 +118,14 @@ verify_one() {
   run_verify_sh "$ref" || rc=$?
 
   # A *partial* shell (enough applets for the probe above to pass, not
-  # enough for what verify.sh itself calls — e.g. printenv/grep/sleep) fails
+  # enough for what verify.sh itself calls; e.g. printenv/grep/sleep) fails
   # here instead, distinctly from the no-shell case above. Rather than
   # requiring every target to permanently ship whatever verify.sh happens to
   # use beyond its own entrypoint's runtime needs, retry once against a
   # derived busybox image before giving up. Only reachable once per target
   # ($derived_tag empty means the probe above didn't already retry this
   # way), so a genuinely shell-less image never gets a redundant second
-  # build. This can only turn a false failure (missing tool) into a pass —
+  # build. This can only turn a false failure (missing tool) into a pass;
   # it cannot mask a real verify.sh assertion failure, since the identical
   # assertion still runs against the same image plus strictly more tools.
   if [ "$rc" -ne 0 ] && [ -z "$derived_tag" ]; then

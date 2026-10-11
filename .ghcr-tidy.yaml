@@ -1,7 +1,7 @@
 # ghcr-tidy config manifest for pyck-ai/github-actions itself.
 #
-# This repository publishes no container images — it is the source repo
-# for imgverify/ghcr-tidy/ghcr-audit, not a consumer of them — so it has
+# This repository publishes no container images; it is the source repo
+# for imgverify/ghcr-tidy/ghcr-audit, not a consumer of them, so it has
 # no GHCR packages of its own to prune. `packages: []` is a deliberate,
 # permanent steady state here, not a placeholder: see
 # `ghcr-tidy/src/manifest/schema.ts`'s doc comment on `Manifest.packages`

@@ -89,7 +89,7 @@ jobs:
       # failure here, not a silent pass: `git diff --exit-code` and
       # `git status --porcelain` both succeed vacuously against a missing
       # path, which is exactly how this check went blind when verify-image
-      # dropped its dist/ — the gate kept going green while asserting
+      # dropped its dist/; the gate kept going green while asserting
       # nothing.
       - name: Rebuild bundles and check dist/ is up to date
         run: |
@@ -97,15 +97,15 @@ jobs:
           known_dists="ghcr-tidy/dist"
           for dist in $known_dists; do
             if [ ! -d "$dist" ]; then
-              echo "::error::$dist/ does not exist — update this check (it no longer matches the repo's bundled actions)" >&2
+              echo "::error::$dist/ does not exist; update this check (it no longer matches the repo's bundled actions)" >&2
               exit 1
             fi
             if ! git diff --exit-code -- "$dist/"; then
-              echo "::error::$dist/ is stale for this tag — run \"npm run bundle\" and commit the result before retagging" >&2
+              echo "::error::$dist/ is stale for this tag; run \"npm run bundle\" and commit the result before retagging" >&2
               exit 1
             fi
             if [ -n "$(git status --porcelain -- "$dist/")" ]; then
-              echo "::error::$dist/ has untracked output — run \"npm run bundle\" and commit the result before retagging" >&2
+              echo "::error::$dist/ has untracked output; run \"npm run bundle\" and commit the result before retagging" >&2
               exit 1
             fi
           done
@@ -116,7 +116,7 @@ jobs:
             case " $known_dists " in
               *" $found "*) ;;
               *)
-                echo "::error::$found/ exists but isn't checked by this workflow — add it to known_dists above" >&2
+                echo "::error::$found/ exists but isn't checked by this workflow; add it to known_dists above" >&2
                 exit 1
                 ;;
             esac
