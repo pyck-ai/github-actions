@@ -15,7 +15,8 @@ A plain-bash composite action, not a CLI. Inputs and defaults live in [`action.y
 
 - `targets`: newline-separated bake target names built by one leg.
 - `contexts`: JSON map of `target -> {context, repo}`.
-- The leg's own digest file (`target -> digest`).
+- `digests`: path to the JSON `target -> digest` file of this leg, so the exact pushed artifact is verified.
+- `buildargs`: path to `buildargs.conf` (default `buildargs.conf`, optional), passed to each `verify.sh` as environment through `docker run --env-file`.
 
 ## Behavior
 
