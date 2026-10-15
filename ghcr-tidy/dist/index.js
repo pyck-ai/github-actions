@@ -10184,7 +10184,7 @@ var __webpack_exports__ = {};
 // EXPORTS
 __nccwpck_require__.d(__webpack_exports__, {
   e: () => (/* binding */ DEFAULT_MANIFEST_PATH),
-  E5: () => (/* binding */ LEGACY_MANIFEST_PATH),
+  Ny: () => (/* binding */ LEGACY_MANIFEST_PATHS),
   QH: () => (/* binding */ buildPackageTokenMap),
   BE: () => (/* binding */ decorateRegistry),
   SB: () => (/* binding */ parseArgv),
@@ -14221,7 +14221,7 @@ var dist = __nccwpck_require__(8815);
 
 
 /**
- * `.github/ghcr-tidy.yml` config manifest schema (version 1): which packages
+ * `.github/tidy-ghcr.yml` config manifest schema (version 1): which packages
  * `ghcr-tidy` manages and, optionally, a global retention override.
  *
  * CLOSED schema: an unknown top-level, per-package, or `retention` field
@@ -14429,7 +14429,7 @@ function resolvePolicy(manifest) {
 
 
 /**
- * Parses `.github/ghcr-tidy.yml` from raw YAML text into a validated
+ * Parses `.github/tidy-ghcr.yml` from raw YAML text into a validated
  * {@link Manifest}. `sourcePath` is used only for error messages. A YAML
  * syntax error and a schema violation are both surfaced as the same
  * catchable {@link ManifestError}, naming the manifest file either way.
@@ -16304,7 +16304,7 @@ function classifyApplyExit(plan, result) {
  * (`plan.ts`), the apply path (`apply-capability.ts`, `apply.ts`,
  * `mutator.ts`), and safety machinery (`breaker.ts`, `volume-alarm.ts`,
  * `verify.ts`) into three subcommands driven by one config manifest,
- * `.github/ghcr-tidy.yml`: closed-schema config, explicit argv parsing, a
+ * `.github/tidy-ghcr.yml`: closed-schema config, explicit argv parsing, a
  * small, total exit-code mapping, and the `INPUT_ARGS`-vs-argv duality
  * that lets this same bundle serve as both a plain CLI and (later) a JS
  * action.
@@ -16339,10 +16339,13 @@ const EXIT_FINDINGS = 1;
 const EXIT_CONFIG = 2;
 const EXIT_INFRA = 3;
 const EXIT_SAFETY = 4;
-/** Where the manifest lives by default, next to the repo's other tool configs. */
-const DEFAULT_MANIFEST_PATH = ".github/ghcr-tidy.yml";
-/** The previous default, at the repo root. Still read (with a warning) when it is the only manifest. */
-const LEGACY_MANIFEST_PATH = ".ghcr-tidy.yaml";
+/** Where the manifest lives by default: named after the `tidy-ghcr.yml` workflow that uses it. */
+const DEFAULT_MANIFEST_PATH = ".github/tidy-ghcr.yml";
+/** Earlier default paths. Still read (with a warning) when one of them is the only manifest. */
+const LEGACY_MANIFEST_PATHS = [
+    ".github/ghcr-tidy.yml",
+    ".ghcr-tidy.yaml",
+];
 /**
  * `--jobs`' default: ONE shared bound on real registry HTTP concurrency
  * for the whole run (see `limiter.ts`'s doc on why one shared limiter, not
@@ -16478,32 +16481,33 @@ async function pathExists(p) {
 }
 /**
  * Picks the manifest file. An explicit `--manifest` is used as given. With
- * no flag, `.github/ghcr-tidy.yml` wins; `.ghcr-tidy.yaml` at the root is
- * the deprecated fallback and yields a `deprecation` message for the
- * caller to print. Both present is a {@link ManifestError}: two manifests
- * could disagree, and this tool deletes things, so it refuses to guess.
- * When neither exists the new path is returned, so the read error names
- * the path to create.
+ * no flag, `.github/tidy-ghcr.yml` wins; a manifest at one of the
+ * {@link LEGACY_MANIFEST_PATHS} is still read when it is the only one, and
+ * yields a `deprecation` message for the caller to print. More than one
+ * manifest is a {@link ManifestError}: two manifests could disagree, and
+ * this tool deletes things, so it refuses to guess. When none exists the
+ * new path is returned, so the read error names the path to create.
  */
 async function resolveManifestPath(manifestFlag, cwd) {
     if (manifestFlag !== undefined) {
         return { path: external_node_path_default().resolve(cwd, manifestFlag) };
     }
-    const current = external_node_path_default().resolve(cwd, DEFAULT_MANIFEST_PATH);
-    const legacy = external_node_path_default().resolve(cwd, LEGACY_MANIFEST_PATH);
-    const [hasCurrent, hasLegacy] = await Promise.all([pathExists(current), pathExists(legacy)]);
-    if (hasCurrent && hasLegacy) {
-        throw new ManifestError(`found both ${DEFAULT_MANIFEST_PATH} and ${LEGACY_MANIFEST_PATH}; ` +
-            `delete ${LEGACY_MANIFEST_PATH} (or pass --manifest) so only one manifest decides what gets deleted`, current);
+    const candidates = [DEFAULT_MANIFEST_PATH, ...LEGACY_MANIFEST_PATHS];
+    const exists = await Promise.all(candidates.map((p) => pathExists(external_node_path_default().resolve(cwd, p))));
+    const found = candidates.filter((_, i) => exists[i]);
+    if (found.length > 1) {
+        throw new ManifestError(`found more than one manifest (${found.join(", ")}); ` +
+            `keep only ${DEFAULT_MANIFEST_PATH} (or pass --manifest) so only one manifest decides what gets deleted`, external_node_path_default().resolve(cwd, DEFAULT_MANIFEST_PATH));
     }
-    if (hasLegacy) {
-        return {
-            path: legacy,
-            deprecation: `${LEGACY_MANIFEST_PATH} is deprecated; move it to ${DEFAULT_MANIFEST_PATH} ` +
-                "(the old path is still read for now)",
-        };
+    const only = found[0] ?? DEFAULT_MANIFEST_PATH;
+    if (only === DEFAULT_MANIFEST_PATH) {
+        return { path: external_node_path_default().resolve(cwd, only) };
     }
-    return { path: current };
+    return {
+        path: external_node_path_default().resolve(cwd, only),
+        deprecation: `${only} is deprecated; move it to ${DEFAULT_MANIFEST_PATH} ` +
+            "(the old path is still read for now)",
+    };
 }
 /** Formats a warning for the Actions log (`::warning::`) or, elsewhere, a plain stderr line. */
 function formatWarning(message, env) {
@@ -17229,7 +17233,7 @@ if (isDirectRun) {
 /* c8 ignore stop */
 
 var __webpack_exports__DEFAULT_MANIFEST_PATH = __webpack_exports__.e;
-var __webpack_exports__LEGACY_MANIFEST_PATH = __webpack_exports__.E5;
+var __webpack_exports__LEGACY_MANIFEST_PATHS = __webpack_exports__.Ny;
 var __webpack_exports__buildPackageTokenMap = __webpack_exports__.QH;
 var __webpack_exports__decorateRegistry = __webpack_exports__.BE;
 var __webpack_exports__parseArgv = __webpack_exports__.SB;
@@ -17238,4 +17242,4 @@ var __webpack_exports__resolveBreakerToken = __webpack_exports__.u9;
 var __webpack_exports__resolveManifestPath = __webpack_exports__.Nq;
 var __webpack_exports__runCommand = __webpack_exports__.d1;
 var __webpack_exports__tokenizeArgs = __webpack_exports__.vL;
-export { __webpack_exports__DEFAULT_MANIFEST_PATH as DEFAULT_MANIFEST_PATH, __webpack_exports__LEGACY_MANIFEST_PATH as LEGACY_MANIFEST_PATH, __webpack_exports__buildPackageTokenMap as buildPackageTokenMap, __webpack_exports__decorateRegistry as decorateRegistry, __webpack_exports__parseArgv as parseArgv, __webpack_exports__resolveArgv as resolveArgv, __webpack_exports__resolveBreakerToken as resolveBreakerToken, __webpack_exports__resolveManifestPath as resolveManifestPath, __webpack_exports__runCommand as runCommand, __webpack_exports__tokenizeArgs as tokenizeArgs };
+export { __webpack_exports__DEFAULT_MANIFEST_PATH as DEFAULT_MANIFEST_PATH, __webpack_exports__LEGACY_MANIFEST_PATHS as LEGACY_MANIFEST_PATHS, __webpack_exports__buildPackageTokenMap as buildPackageTokenMap, __webpack_exports__decorateRegistry as decorateRegistry, __webpack_exports__parseArgv as parseArgv, __webpack_exports__resolveArgv as resolveArgv, __webpack_exports__resolveBreakerToken as resolveBreakerToken, __webpack_exports__resolveManifestPath as resolveManifestPath, __webpack_exports__runCommand as runCommand, __webpack_exports__tokenizeArgs as tokenizeArgs };

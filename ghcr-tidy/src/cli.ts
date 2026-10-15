@@ -46,7 +46,7 @@ import type { PackagesClient, RegistryReader } from "./ports.js";
  * (`plan.ts`), the apply path (`apply-capability.ts`, `apply.ts`,
  * `mutator.ts`), and safety machinery (`breaker.ts`, `volume-alarm.ts`,
  * `verify.ts`) into three subcommands driven by one config manifest,
- * `.github/ghcr-tidy.yml`: closed-schema config, explicit argv parsing, a
+ * `.github/tidy-ghcr.yml`: closed-schema config, explicit argv parsing, a
  * small, total exit-code mapping, and the `INPUT_ARGS`-vs-argv duality
  * that lets this same bundle serve as both a plain CLI and (later) a JS
  * action.
@@ -83,10 +83,13 @@ const EXIT_CONFIG = 2;
 const EXIT_INFRA = 3;
 const EXIT_SAFETY = 4;
 
-/** Where the manifest lives by default, next to the repo's other tool configs. */
-export const DEFAULT_MANIFEST_PATH = ".github/ghcr-tidy.yml";
-/** The previous default, at the repo root. Still read (with a warning) when it is the only manifest. */
-export const LEGACY_MANIFEST_PATH = ".ghcr-tidy.yaml";
+/** Where the manifest lives by default: named after the `tidy-ghcr.yml` workflow that uses it. */
+export const DEFAULT_MANIFEST_PATH = ".github/tidy-ghcr.yml";
+/** Earlier default paths. Still read (with a warning) when one of them is the only manifest. */
+export const LEGACY_MANIFEST_PATHS: readonly string[] = [
+  ".github/ghcr-tidy.yml",
+  ".ghcr-tidy.yaml",
+];
 /**
  * `--jobs`' default: ONE shared bound on real registry HTTP concurrency
  * for the whole run (see `limiter.ts`'s doc on why one shared limiter, not
@@ -269,12 +272,12 @@ async function pathExists(p: string): Promise<boolean> {
 
 /**
  * Picks the manifest file. An explicit `--manifest` is used as given. With
- * no flag, `.github/ghcr-tidy.yml` wins; `.ghcr-tidy.yaml` at the root is
- * the deprecated fallback and yields a `deprecation` message for the
- * caller to print. Both present is a {@link ManifestError}: two manifests
- * could disagree, and this tool deletes things, so it refuses to guess.
- * When neither exists the new path is returned, so the read error names
- * the path to create.
+ * no flag, `.github/tidy-ghcr.yml` wins; a manifest at one of the
+ * {@link LEGACY_MANIFEST_PATHS} is still read when it is the only one, and
+ * yields a `deprecation` message for the caller to print. More than one
+ * manifest is a {@link ManifestError}: two manifests could disagree, and
+ * this tool deletes things, so it refuses to guess. When none exists the
+ * new path is returned, so the read error names the path to create.
  */
 export async function resolveManifestPath(
   manifestFlag: string | undefined,
@@ -283,25 +286,26 @@ export async function resolveManifestPath(
   if (manifestFlag !== undefined) {
     return { path: path.resolve(cwd, manifestFlag) };
   }
-  const current = path.resolve(cwd, DEFAULT_MANIFEST_PATH);
-  const legacy = path.resolve(cwd, LEGACY_MANIFEST_PATH);
-  const [hasCurrent, hasLegacy] = await Promise.all([pathExists(current), pathExists(legacy)]);
-  if (hasCurrent && hasLegacy) {
+  const candidates = [DEFAULT_MANIFEST_PATH, ...LEGACY_MANIFEST_PATHS];
+  const exists = await Promise.all(candidates.map((p) => pathExists(path.resolve(cwd, p))));
+  const found = candidates.filter((_, i) => exists[i]);
+  if (found.length > 1) {
     throw new ManifestError(
-      `found both ${DEFAULT_MANIFEST_PATH} and ${LEGACY_MANIFEST_PATH}; ` +
-        `delete ${LEGACY_MANIFEST_PATH} (or pass --manifest) so only one manifest decides what gets deleted`,
-      current,
+      `found more than one manifest (${found.join(", ")}); ` +
+        `keep only ${DEFAULT_MANIFEST_PATH} (or pass --manifest) so only one manifest decides what gets deleted`,
+      path.resolve(cwd, DEFAULT_MANIFEST_PATH),
     );
   }
-  if (hasLegacy) {
-    return {
-      path: legacy,
-      deprecation:
-        `${LEGACY_MANIFEST_PATH} is deprecated; move it to ${DEFAULT_MANIFEST_PATH} ` +
-        "(the old path is still read for now)",
-    };
+  const only = found[0] ?? DEFAULT_MANIFEST_PATH;
+  if (only === DEFAULT_MANIFEST_PATH) {
+    return { path: path.resolve(cwd, only) };
   }
-  return { path: current };
+  return {
+    path: path.resolve(cwd, only),
+    deprecation:
+      `${only} is deprecated; move it to ${DEFAULT_MANIFEST_PATH} ` +
+      "(the old path is still read for now)",
+  };
 }
 
 /** Formats a warning for the Actions log (`::warning::`) or, elsewhere, a plain stderr line. */

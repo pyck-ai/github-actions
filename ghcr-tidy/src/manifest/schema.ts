@@ -2,7 +2,7 @@ import { packageName, type PackageName } from "../../../registry/package-name.js
 import { tag, type Tag } from "../domain.js";
 
 /**
- * `.github/ghcr-tidy.yml` config manifest schema (version 1): which packages
+ * `.github/tidy-ghcr.yml` config manifest schema (version 1): which packages
  * `ghcr-tidy` manages and, optionally, a global retention override.
  *
  * CLOSED schema: an unknown top-level, per-package, or `retention` field
@@ -89,7 +89,7 @@ export interface Manifest {
   /**
    * The packages this manifest manages. MAY be empty: a repository that
    * publishes no container images (this repository, dogfooding itself;
-   * see this repo's own `.github/ghcr-tidy.yml`) is a legitimate, permanent steady
+   * see this repo's own `.github/tidy-ghcr.yml`) is a legitimate, permanent steady
    * state, not a misconfiguration, and must not be worked around by
    * inventing a fake package entry just to satisfy a non-empty rule.
    * Emptiness is deliberately NOT rejected here: it simply means "this

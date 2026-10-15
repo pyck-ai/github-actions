@@ -11,7 +11,7 @@ import { parsePlan } from "./persisted-plan.js";
 import {
   buildPackageTokenMap,
   DEFAULT_MANIFEST_PATH,
-  LEGACY_MANIFEST_PATH,
+  LEGACY_MANIFEST_PATHS,
   decorateRegistry,
   parseArgv,
   resolveArgv,
@@ -195,8 +195,11 @@ describe("tokenizeArgs / resolveArgv", () => {
 });
 
 describe("manifest path resolution", () => {
-  const NEW_PATH = ".github/ghcr-tidy.yml";
-  const OLD_PATH = ".ghcr-tidy.yaml";
+  const NEW_PATH = ".github/tidy-ghcr.yml";
+  const LEGACY_GITHUB_PATH = ".github/ghcr-tidy.yml";
+  const LEGACY_ROOT_PATH = ".ghcr-tidy.yaml";
+  const LEGACY_PATHS = [LEGACY_GITHUB_PATH, LEGACY_ROOT_PATH];
+  const ALL_PATHS = [NEW_PATH, ...LEGACY_PATHS];
 
   async function put(relative: string, content = VALID_MANIFEST): Promise<void> {
     const full = path.join(tmpDir, relative);
@@ -224,73 +227,93 @@ describe("manifest path resolution", () => {
     }
   }
 
-  it("defaults to .github/ghcr-tidy.yml, with the old root path as the named fallback", () => {
+  const deprecationText = (legacy: string): string =>
+    `${legacy} is deprecated; move it to ${NEW_PATH} (the old path is still read for now)`;
+
+  it("defaults to .github/tidy-ghcr.yml, with both earlier paths as the named legacy fallbacks", () => {
     expect(DEFAULT_MANIFEST_PATH).toBe(NEW_PATH);
-    expect(LEGACY_MANIFEST_PATH).toBe(OLD_PATH);
+    expect(LEGACY_MANIFEST_PATHS).toEqual(LEGACY_PATHS);
   });
 
-  it("reads .github/ghcr-tidy.yml when it is the only manifest, without a warning", async () => {
+  it("reads .github/tidy-ghcr.yml when it is the only manifest, without a warning", async () => {
     await put(NEW_PATH);
     const resolved = await resolveManifestPath(undefined, tmpDir);
     expect(resolved).toEqual({ path: path.join(tmpDir, NEW_PATH) });
-    const run = await runInTmp(["validate"]);
-    expect(run.exitCode).toBe(0);
-    expect(run.stderr).toBe("");
-  });
-
-  it("falls back to the root .ghcr-tidy.yaml with a deprecation warning naming the new path", async () => {
-    await put(OLD_PATH);
-    const resolved = await resolveManifestPath(undefined, tmpDir);
-    expect(resolved.path).toBe(path.join(tmpDir, OLD_PATH));
-    expect(resolved.deprecation).toContain(NEW_PATH);
-    // Set explicitly: CI runs under GitHub Actions, where the same warning is an annotation (next test).
     const run = await runInTmp(["validate"], { GITHUB_ACTIONS: "" });
     expect(run.exitCode).toBe(0);
-    expect(run.stderr).toBe(
-      `warning: ${OLD_PATH} is deprecated; move it to ${NEW_PATH} (the old path is still read for now)\n`,
-    );
+    expect(run.stderr).toBe("");
   });
 
-  it("emits the fallback warning as a ::warning:: annotation under GitHub Actions", async () => {
-    await put(OLD_PATH);
-    const run = await runInTmp(["validate"], { GITHUB_ACTIONS: "true" });
-    expect(run.exitCode).toBe(0);
-    expect(run.stderr).toBe(
-      `::warning::${OLD_PATH} is deprecated; move it to ${NEW_PATH} (the old path is still read for now)\n`,
-    );
-  });
+  it.each(LEGACY_PATHS)(
+    "reads %s alone with a deprecation warning naming the new path",
+    async (legacy) => {
+      await put(legacy);
+      const resolved = await resolveManifestPath(undefined, tmpDir);
+      expect(resolved.path).toBe(path.join(tmpDir, legacy));
+      expect(resolved.deprecation).toBe(deprecationText(legacy));
+      // Set explicitly: CI runs under GitHub Actions, where the same warning is an annotation (next test).
+      const run = await runInTmp(["validate"], { GITHUB_ACTIONS: "" });
+      expect(run.exitCode).toBe(0);
+      expect(run.stderr).toBe(`warning: ${deprecationText(legacy)}\n`);
+    },
+  );
 
-  it("fails with exit 2 and a clear error when both manifests exist", async () => {
-    await put(NEW_PATH);
-    await put(OLD_PATH);
-    await expect(resolveManifestPath(undefined, tmpDir)).rejects.toThrow(
-      /found both \.github\/ghcr-tidy\.yml and \.ghcr-tidy\.yaml/,
-    );
-    const run = await runInTmp(["validate"]);
-    expect(run.exitCode).toBe(2);
-    expect(run.stderr).toContain(`found both ${NEW_PATH} and ${OLD_PATH}`);
-    expect(run.stderr).toContain(`delete ${OLD_PATH}`);
-  });
+  it.each(LEGACY_PATHS)(
+    "emits the %s warning as a ::warning:: annotation under GitHub Actions",
+    async (legacy) => {
+      await put(legacy);
+      const run = await runInTmp(["validate"], { GITHUB_ACTIONS: "true" });
+      expect(run.exitCode).toBe(0);
+      expect(run.stderr).toBe(`::warning::${deprecationText(legacy)}\n`);
+    },
+  );
 
-  it("uses an explicit --manifest as given, even when both default paths exist", async () => {
-    await put(NEW_PATH);
-    await put(OLD_PATH);
+  const combinations: string[][] = [
+    [NEW_PATH, LEGACY_GITHUB_PATH],
+    [NEW_PATH, LEGACY_ROOT_PATH],
+    [LEGACY_GITHUB_PATH, LEGACY_ROOT_PATH],
+    ALL_PATHS,
+  ];
+
+  it.each(combinations.map((files) => [files.join(" + "), files] as const))(
+    "fails with exit 2 and a clear error when more than one manifest exists: %s",
+    async (_label, files) => {
+      for (const file of files) {
+        await put(file);
+      }
+      await expect(resolveManifestPath(undefined, tmpDir)).rejects.toThrow(
+        /found more than one manifest/,
+      );
+      const run = await runInTmp(["validate"], { GITHUB_ACTIONS: "" });
+      expect(run.exitCode).toBe(2);
+      expect(run.stderr).toContain(`found more than one manifest (${files.join(", ")})`);
+      expect(run.stderr).toContain(`keep only ${NEW_PATH}`);
+      expect(run.stderr).not.toContain("deprecated");
+    },
+  );
+
+  it("uses an explicit --manifest as given, even when every default path exists", async () => {
+    for (const file of ALL_PATHS) {
+      await put(file);
+    }
     await put("custom/place.yml");
-    const run = await runInTmp(["validate", "--manifest", "custom/place.yml"]);
+    const run = await runInTmp(["validate", "--manifest", "custom/place.yml"], {
+      GITHUB_ACTIONS: "",
+    });
     expect(run.exitCode).toBe(0);
     expect(run.stderr).toBe("");
   });
 
-  it("does not fall back from an explicit --manifest to the old path", async () => {
-    await put(OLD_PATH);
-    const run = await runInTmp(["validate", "--manifest", "missing.yml"]);
+  it.each(LEGACY_PATHS)("does not fall back from an explicit --manifest to %s", async (legacy) => {
+    await put(legacy);
+    const run = await runInTmp(["validate", "--manifest", "missing.yml"], { GITHUB_ACTIONS: "" });
     expect(run.exitCode).toBe(2);
     expect(run.stderr).toContain("could not read manifest");
     expect(run.stderr).not.toContain("deprecated");
   });
 
-  it("names the new path when neither manifest exists", async () => {
-    const run = await runInTmp(["validate"]);
+  it("names the new path when no manifest exists", async () => {
+    const run = await runInTmp(["validate"], { GITHUB_ACTIONS: "" });
     expect(run.exitCode).toBe(2);
     expect(run.stderr).toContain("could not read manifest");
     expect(run.stderr).toContain(NEW_PATH);

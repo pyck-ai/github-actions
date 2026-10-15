@@ -67,9 +67,9 @@ on:
       manifest:
         description: >-
           Path to the ghcr-tidy config manifest in the caller's repo. Leave
-          empty (the default) to let the tool choose: `.github/ghcr-tidy.yml`,
-          else the deprecated `.ghcr-tidy.yaml` with a warning, and an error
-          when both exist.
+          empty (the default) to let the tool choose: `.github/tidy-ghcr.yml`,
+          else the deprecated `.github/ghcr-tidy.yml` or `.ghcr-tidy.yaml`
+          with a warning, and an error when more than one exists.
         type: string
         required: false
         default: ""

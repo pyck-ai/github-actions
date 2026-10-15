@@ -5,7 +5,7 @@ run-name: Tidy repo
 # workflow runs, close stale issues/PRs, delete stale branches) and GHCR
 # retention. Every consumer of tidy-repo.yml/tidy-ghcr.yml wires them up
 # like this; the provider should too. This repo publishes no container
-# images (see `.github/ghcr-tidy.yml`'s own header), so the tidy-ghcr job always
+# images (see `.github/tidy-ghcr.yml`'s own header), so the tidy-ghcr job always
 # plans/applies against zero packages: it proves the workflow's wiring and
 # token permissions on every run, never its deletion path.
 on:
@@ -60,7 +60,7 @@ jobs:
       packages: write
       issues: write
     secrets: inherit
-    # No inputs: `.github/ghcr-tidy.yml` (packages: []) and the workflow's own
+    # No inputs: `.github/tidy-ghcr.yml` (packages: []) and the workflow's own
     # defaults are enough. On the daily `schedule` trigger tidy-ghcr.yml
     # forces `apply` on regardless of `inputs.apply` (see its
     # `apply-effective` step): harmless here since there is never
