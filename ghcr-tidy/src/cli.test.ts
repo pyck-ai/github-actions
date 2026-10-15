@@ -326,7 +326,7 @@ describe("validate subcommand", () => {
     const exitCode = await runCommand([
       "validate",
       "--manifest",
-      path.join(repoRoot, ".github", "ghcr-tidy.yml"),
+      path.join(repoRoot, ".github", "tidy-ghcr.yml"),
     ]);
     expect(exitCode).toBe(0);
   });
