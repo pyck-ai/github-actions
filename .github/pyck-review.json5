@@ -4,4 +4,11 @@
 // preset's.
 {
   extends: ["renovate-prs"],
+  pullRequests: {
+    problems: true,
+    commits: true,
+  },
+  issues: {
+    problems: true,
+  },
 }
