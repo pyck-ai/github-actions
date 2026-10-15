@@ -48,19 +48,22 @@ jobs:
       - name: Run the CI checks
         run: task ci
 
-  # Aggregate check for branch protection: a single required status that
-  # fails if any of the jobs above failed, was cancelled, or was skipped.
-  gate:
+  # Aggregate check for branch protection: the one required status, named
+  # `ci-success` after its group. It fails if any job it needs failed or was
+  # cancelled; a skipped job passes. The logic is this repo's own ./gate action.
+  ci-success:
     if: always()
     needs: [ci]
-    # Only inspects job results from the GitHub context; touches no repo
-    # content and no packages.
-    permissions: {}
+    # The only content it reads is the ./gate action itself, which the local
+    # `uses:` path needs a checkout for.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Check all required jobs succeeded
-        run: |
-          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
-            echo "::error::one or more required jobs did not succeed"
-            exit 1
-          fi
+        uses: ./gate
+        with:
+          needs: ${{ toJSON(needs) }}
