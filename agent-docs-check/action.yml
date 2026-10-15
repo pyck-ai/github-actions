@@ -1,0 +1,21 @@
+name: agent-docs-check
+description: >-
+  Checks agent-facing docs against the pyck-ai budgets: no CLAUDE.md, AGENTS.md
+  budgets and a line limit for agent files (skill dirs, CODING_STANDARDS.md).
+  Plain Node, no dependencies; runs locally as
+  `node agent-docs-check/check.mjs <path>`.
+inputs:
+  path:
+    description: Directory to check, relative to the workspace.
+    required: false
+    default: "."
+  profile:
+    description: >-
+      Budget profile. `repo` (default) for ordinary repos, `central` for the
+      pyck-ai/guidelines repo, whose root AGENTS.md is the org-wide one and has
+      a tighter budget.
+    required: false
+    default: repo
+runs:
+  using: node24
+  main: check.mjs

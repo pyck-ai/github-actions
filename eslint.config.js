@@ -19,11 +19,11 @@ export default tseslint.config(
     },
   },
   {
-    // tools/ holds plain Node scripts (the equivalence-oracle harness). They
-    // are not bundled, not published, and not part of `npm test` — but they do
-    // run under Node, so `process`, `console` and `Buffer` are legitimate
+    // agent-docs-check/check.mjs is a plain Node script: no build step, no
+    // bundle, run by the runner's own Node (and locally with `node`). It runs
+    // under Node, so `process`, `console` and friends are legitimate
     // globals rather than undefined references.
-    files: ["tools/**/*.mjs"],
+    files: ["agent-docs-check/**/*.mjs"],
     languageOptions: {
       globals: {
         process: "readonly",
@@ -32,11 +32,6 @@ export default tseslint.config(
         URL: "readonly",
         TextDecoder: "readonly",
       },
-    },
-    rules: {
-      // The oracle strips ANSI escapes from the bash side's output before
-      // parsing verdicts, so matching \x1b is the point, not an accident.
-      "no-control-regex": "off",
     },
   },
 );

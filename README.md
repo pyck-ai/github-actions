@@ -15,6 +15,7 @@ copy and silently never reached the others.
 | GHCR retention           | `pyck-ai/github-actions/.github/workflows/tidy-ghcr.yml@<sha>`   |
 | GHCR retention CLI step  | `pyck-ai/github-actions/ghcr-tidy@<sha>`                         |
 | Batch jev check          | `pyck-ai/github-actions/jev-check@<sha>`                         |
+| Agent docs check         | `pyck-ai/github-actions/agent-docs-check@<sha>`                  |
 
 Pin by commit SHA. `build-image.yml` builds by digest, verifies the pushed
 digest, and only then applies tags — a failed verification means no tag ever
@@ -150,6 +151,7 @@ attempted, budget partially spent) is worse than none.
   error · `4` safety (breaker tripped, volume alarm, canary failure,
   verification regression, plan-integrity violation).
 
+- **`agent-docs-check`**: see [`agent-docs-check/README.md`](./agent-docs-check/README.md).
 - **`ghcr-audit`** — registry integrity checks. Not yet implemented.
 
 ## Layout
@@ -159,6 +161,7 @@ attempted, budget partially spent) is worse than none.
 ghcr-tidy/           action (bundled): action.yml, src/, dist/
 verify-image/        action (plain bash, no bundle): action.yml, run.sh
 jev-check/           action (plain bash, no bundle): action.yml, run.sh
+agent-docs-check/    action (plain JavaScript, no bundle): action.yml, check.mjs
 registry/            shared: registry API client
 ```
 
