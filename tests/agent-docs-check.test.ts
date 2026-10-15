@@ -541,6 +541,101 @@ describe("agent-docs-check", () => {
     });
   });
 
+  describe("rule 5: skill frontmatter", () => {
+    it("passes a valid skill", () => expectPass("skill-frontmatter-pass"));
+    it.each([
+      ["skill-frontmatter-missing-fail", "needs YAML frontmatter"],
+      ["skill-frontmatter-name-mismatch-fail", 'name "other" must equal the directory name "demo"'],
+      ["skill-frontmatter-name-claude-fail", 'must not contain "anthropic" or "claude"'],
+      ["skill-frontmatter-name-anthropic-fail", 'must not contain "anthropic" or "claude"'],
+      ["skill-frontmatter-name-chars-fail", "must match ^[a-z0-9-]{1,64}$"],
+      ["skill-frontmatter-desc-empty-fail", "missing or empty description"],
+      ["skill-frontmatter-desc-brackets-fail", "description must not contain < or >"],
+      ["skill-frontmatter-desc-long-fail", "description is 1025 chars, limit is 1024"],
+    ])("fails: %s", (fixture, message) => expectFail(fixture, ["skill-frontmatter:", message]));
+    it("checks the frontmatter of a top-level skills/<name>/SKILL.md", () =>
+      expectFail("skills-top-name-fail", [
+        'skills/demo/SKILL.md:1: skill-frontmatter: name "other" must equal the directory name "demo"',
+      ]));
+  });
+
+  describe("rule 5b: frontmatter values are valid YAML", () => {
+    it.each([
+      "frontmatter-yaml-double-pass",
+      "frontmatter-yaml-single-pass",
+      "frontmatter-yaml-url-pass",
+      "frontmatter-yaml-block-pass",
+    ])("passes: %s", (fixture) => expectPass(fixture));
+    it.each([
+      "frontmatter-yaml-colon-fail",
+      "frontmatter-yaml-hash-fail",
+      "frontmatter-yaml-trailing-colon-fail",
+    ])("fails an unquoted scalar: %s", (fixture) =>
+      expectFail(fixture, [
+        /skills\/demo\/SKILL\.md:3: frontmatter-yaml: the value of "description"/,
+        "quote the value",
+      ]),
+    );
+    it("also checks agent files outside skill dirs", () =>
+      expectFail("frontmatter-yaml-agent-fail", [
+        /agents\/helper\.md:3: frontmatter-yaml: the value of "description"/,
+      ]));
+  });
+
+  describe("rule 5c: skill-harness", () => {
+    const flag = ["--require-skill-harness"];
+    it.each([
+      "skill-harness-generic-pass",
+      "skill-harness-opencode-pass",
+      "skill-harness-quoted-double-pass",
+      "skill-harness-quoted-single-pass",
+    ])("passes with and without the flag: %s", (fixture) => {
+      expectPass(fixture);
+      expectPass(fixture, flag);
+    });
+    it("fails an unknown value, with or without the flag", () => {
+      for (const args of [[], flag]) {
+        expectFail(
+          "skill-harness-unknown-fail",
+          ['skill-harness: metadata.harness is "claude", must be generic or opencode'],
+          args,
+        );
+      }
+    });
+    it("fails a metadata that is not a map", () =>
+      expectFail("skill-harness-nonmap-fail", ["skill-harness: metadata must be a map"]));
+    it("does not report a missing tag without the flag", () => {
+      expectPass("skill-harness-missing");
+      expectPass("skill-harness-metadata-other");
+    });
+    it.each(["skill-harness-missing", "skill-harness-metadata-other"])(
+      "reports a missing tag with --require-skill-harness: %s",
+      (fixture) =>
+        expectFail(
+          fixture,
+          [/skills\/demo\/SKILL\.md:1: skill-harness: missing metadata\.harness/, "1 error(s)"],
+          flag,
+        ),
+    );
+    it("reads the flag from the require-skill-harness input", () => {
+      const env = { GITHUB_ACTIONS: "true", "INPUT_REQUIRE-SKILL-HARNESS": "true" };
+      withFixture("skill-harness-missing", (dir) => {
+        const res = spawnSync("node", [script], {
+          encoding: "utf8",
+          env: { ...process.env, ...env, INPUT_PATH: dir, GIT_CEILING_DIRECTORIES: tmpBase },
+        });
+        expect(`${res.stdout}${res.stderr}`).toContain("skill-harness: missing metadata.harness");
+        expect(res.status).toBe(1);
+      });
+    });
+    it("does not check a SKILL.md outside a skill dir", () =>
+      expectPass("skill-harness-outside-skill-pass", ["--require-skill-harness"]));
+    it("checks a nested value for frontmatter-yaml", () =>
+      expectFail("frontmatter-yaml-nested-fail", [
+        /skills\/demo\/SKILL\.md:6: frontmatter-yaml: the value of "metadata\.note"/,
+      ]));
+  });
+
   describe("output modes", () => {
     it("prints workflow annotations in GitHub Actions", () => {
       const { code, out } = withFixture("claude-md-fail", (dir) => {

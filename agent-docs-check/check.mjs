@@ -4,6 +4,7 @@
 // Plain ESM, Node stdlib only, no build step: it runs as a `node24` JavaScript
 // action on the runner's bundled Node and locally as
 //   node agent-docs-check/check.mjs [path] [--profile repo|central] [--fix]
+//     [--require-skill-harness]
 // Exit 1 if any error was found, 0 otherwise (warnings do not fail).
 
 import { execFileSync } from "node:child_process";
@@ -26,6 +27,8 @@ const LIMITS = {
 const NESTED_AGENTS = LIMITS.repo;
 const AGENT_FILE_MAX_LINES = 200;
 const TOC_MIN_H2 = 2;
+const DESCRIPTION_MAX = 1024;
+const SKILL_HARNESSES = ["generic", "opencode"];
 
 const SKILL_DIR_RE = /(?:^|\/)\.(?:claude|opencode|agents)\/skills\/([^/]+)\//;
 const TOP_SKILL_DIR_RE = /^skills\/([^/]+)\//;
@@ -40,6 +43,7 @@ function parseArgs(argv, env) {
       path: env.INPUT_PATH || ".",
       profile: env.INPUT_PROFILE || "repo",
       fix: (env.INPUT_FIX || "false").toLowerCase() === "true",
+      requireSkillHarness: (env["INPUT_REQUIRE-SKILL-HARNESS"] || "false").toLowerCase() === "true",
       actions: true,
     };
   }
@@ -47,6 +51,7 @@ function parseArgs(argv, env) {
     path: ".",
     profile: "repo",
     fix: false,
+    requireSkillHarness: false,
     actions: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -54,8 +59,11 @@ function parseArgs(argv, env) {
     if (a === "--profile") opts.profile = argv[++i] ?? "";
     else if (a.startsWith("--profile=")) opts.profile = a.slice("--profile=".length);
     else if (a === "--fix") opts.fix = true;
+    else if (a === "--require-skill-harness") opts.requireSkillHarness = true;
     else if (a === "-h" || a === "--help") {
-      console.log("usage: node check.mjs [path] [--profile repo|central] [--fix]");
+      console.log(
+        "usage: node check.mjs [path] [--profile repo|central] [--fix] [--require-skill-harness]",
+      );
       process.exit(0);
     } else if (a.startsWith("-")) {
       console.error(`agent-docs-check: unknown option ${a}`);
@@ -225,13 +233,88 @@ function annotateFences(lines) {
   });
 }
 
-/** Parse leading `---` frontmatter: the 1-based line of the closing `---`, or null when absent. */
+const NESTED_LINE_RE = /^[ \t]+([A-Za-z0-9_.-]+):[ \t]*(.*)$/;
+
+/** Strip one pair of matching quotes. */
+function unquote(value) {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+/** An unquoted plain scalar that YAML rejects (": ") or misreads (" #", trailing ":"). */
+function badPlainScalar(raw) {
+  const plain = raw.trim();
+  return (
+    plain !== "" &&
+    !/^["'|>[{]/.test(plain) &&
+    (plain.includes(": ") || plain.includes(" #") || plain.endsWith(":"))
+  );
+}
+
+/**
+ * Parse leading `---` frontmatter. Returns null when absent.
+ *
+ * A lenient line parser, not YAML. `fields` maps each top-level key to its
+ * scalar text (continuation lines joined). One nested level is also read: a
+ * `key:` line with an empty value followed by indented `child: value` lines
+ * (and nothing else) is a map, returned in `maps[key]`; `fields[key]` keeps
+ * the joined text for such a key.
+ */
 function parseFrontmatter(lines) {
   if (lines[0]?.trim() !== "---") return null;
+  let end = -1;
   for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === "---") return { endLine: i + 1 };
+    if (lines[i].trim() === "---") {
+      end = i;
+      break;
+    }
   }
-  return null;
+  if (end === -1) return null;
+  const fields = {};
+  const maps = {};
+  const yamlIssues = [];
+  for (let i = 1; i < end; i++) {
+    const m = /^([A-Za-z0-9_-]+):[ \t]*(.*)$/.exec(lines[i]);
+    if (!m) continue;
+    const [, key, raw] = m;
+    // An unquoted plain scalar that YAML rejects (": ") or misreads (" #", trailing ":").
+    if (badPlainScalar(raw)) yamlIssues.push({ line: i + 1, key });
+    const cont = [];
+    const contLines = [];
+    while (i + 1 < end && /^[ \t]+\S|^[ \t]*$/.test(lines[i + 1])) {
+      cont.push(lines[i + 1].trim());
+      contLines.push({ line: i + 2, text: lines[i + 1] });
+      i++;
+    }
+    const nested = contLines.filter((c) => c.text.trim() !== "");
+    if (
+      raw.trim() === "" &&
+      nested.length > 0 &&
+      nested.every((c) => NESTED_LINE_RE.test(c.text))
+    ) {
+      const map = {};
+      for (const c of nested) {
+        const [, child, childRaw] = NESTED_LINE_RE.exec(c.text);
+        if (badPlainScalar(childRaw)) yamlIssues.push({ line: c.line, key: `${key}.${child}` });
+        map[child] = unquote(childRaw.trim());
+      }
+      maps[key] = map;
+    }
+    let value;
+    if (/^[>|][+-]?$/.test(raw.trim())) {
+      value = raw.trim().startsWith("|") ? cont.join("\n") : cont.join(" ");
+    } else {
+      value = [raw.trim(), ...cont].filter(Boolean).join(" ");
+    }
+    fields[key] = unquote(value.trim());
+  }
+  return { fields, maps, yamlIssues, endLine: end + 1 }; // endLine: 1-based line of the closing ---
 }
 
 // ----------------------------------------------------------------------- TOC
@@ -496,7 +579,7 @@ function fixToc(root, rel) {
 
 // ----------------------------------------------------------------- the checks
 
-async function check(root, profile) {
+async function check(root, profile, requireSkillHarness) {
   /** @type {Finding[]} */
   const findings = [];
   /** @type {{ rel: string }[]} */
@@ -526,6 +609,7 @@ async function check(root, profile) {
     const inSkill = skillName !== null;
     const isMd = name.endsWith(".md");
     const isAgents = name === "AGENTS.md";
+    const isSkillMd = inSkill && rel.endsWith(`skills/${skillName}/SKILL.md`);
     const isCoding = name === "CODING_STANDARDS.md";
     const sizeLimited = inSkill || isCoding;
     const isLink = lstatSync(join(root, rel)).isSymbolicLink();
@@ -594,10 +678,99 @@ async function check(root, profile) {
 
     // Rule 4: every doc with two or more `##` headings has a table of contents.
     const fm = isMd ? parseFrontmatter(lines) : null;
+    for (const y of fm?.yamlIssues ?? []) {
+      add(
+        "error",
+        rel,
+        y.line,
+        `frontmatter-yaml: the value of "${y.key}" is an unquoted YAML scalar that contains ": " or " #" or ends with ":"; quote the value (YAML reads ": " as a new key and " #" as a comment)`,
+      );
+    }
     if (isMd && !tocIgnore.ignored.has(rel) && isTocDoc(rel, lines)) {
       const { problems } = analyzeToc(lines, fm);
       for (const p of problems) add("error", rel, p.line, `${p.code}: ${p.msg}`);
       if (problems.some((p) => p.fix)) tocFixes.push({ rel });
+    }
+
+    // Rule 5
+    if (isSkillMd) {
+      const dir = skillName;
+      if (!fm) {
+        add(
+          "error",
+          rel,
+          1,
+          "skill-frontmatter: SKILL.md needs YAML frontmatter (--- name, description ---)",
+        );
+      } else {
+        const { name: n, description: d } = fm.fields;
+        if (n === undefined || n === "") {
+          add("error", rel, 1, "skill-frontmatter: missing name");
+        } else {
+          if (n !== dir) {
+            add(
+              "error",
+              rel,
+              1,
+              `skill-frontmatter: name "${n}" must equal the directory name "${dir}"`,
+            );
+          }
+          if (!/^[a-z0-9-]{1,64}$/.test(n)) {
+            add("error", rel, 1, `skill-frontmatter: name "${n}" must match ^[a-z0-9-]{1,64}$`);
+          }
+          if (/anthropic|claude/.test(n)) {
+            add(
+              "error",
+              rel,
+              1,
+              `skill-frontmatter: name "${n}" must not contain "anthropic" or "claude"`,
+            );
+          }
+        }
+        if (d === undefined || d === "") {
+          add("error", rel, 1, "skill-frontmatter: missing or empty description");
+        } else {
+          if (d.length > DESCRIPTION_MAX) {
+            add(
+              "error",
+              rel,
+              1,
+              `skill-frontmatter: description is ${d.length} chars, limit is ${DESCRIPTION_MAX}`,
+            );
+          }
+          if (/[<>]/.test(d)) {
+            add("error", rel, 1, "skill-frontmatter: description must not contain < or >");
+          }
+        }
+
+        // Rule 5c: where the skill is installed, in `metadata.harness`.
+        const hasMetadata = Object.hasOwn(fm.fields, "metadata");
+        const metadata = fm.maps.metadata;
+        if (hasMetadata && !metadata) {
+          add(
+            "error",
+            rel,
+            1,
+            "skill-harness: metadata must be a map of indented `key: value` lines (metadata:, then e.g. `  harness: generic`)",
+          );
+        } else if (metadata && Object.hasOwn(metadata, "harness")) {
+          if (!SKILL_HARNESSES.includes(metadata.harness)) {
+            add(
+              "error",
+              rel,
+              1,
+              `skill-harness: metadata.harness is "${metadata.harness}", must be ${SKILL_HARNESSES.join(" or ")}`,
+            );
+          }
+        } else if (requireSkillHarness) {
+          add(
+            "error",
+            rel,
+            1,
+            `skill-harness: missing metadata.harness (${SKILL_HARNESSES.join(" or ")}); add "metadata:" with an indented "harness: <value>" line`,
+          );
+        }
+      }
     }
   }
 
@@ -626,12 +799,12 @@ async function main() {
     process.exit(2);
   }
 
-  let result = await check(root, opts.profile);
+  let result = await check(root, opts.profile, opts.requireSkillHarness);
   if (opts.fix) {
     for (const { rel } of result.tocFixes) {
       if (fixToc(root, rel)) console.log(`fixed: ${display(opts.path, rel)}`);
     }
-    if (result.tocFixes.length) result = await check(root, opts.profile);
+    if (result.tocFixes.length) result = await check(root, opts.profile, opts.requireSkillHarness);
   }
   const { findings, checked } = result;
   for (const f of findings) {
