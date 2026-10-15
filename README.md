@@ -29,6 +29,7 @@ Out of the box, github-actions includes:
 - **`ghcr-tidy`**: plans and applies GHCR retention from a `.ghcr-tidy.yaml` manifest. See [ghcr-tidy/README.md](./ghcr-tidy/README.md).
 - **`jev-check`**: runs the jev CLI once per input file and writes one result per file. See [jev-check/README.md](./jev-check/README.md).
 - **`agent-docs-check`**: keeps agent-facing docs inside their budgets. See [agent-docs-check/README.md](./agent-docs-check/README.md).
+- **`gate`**: one pass/fail verdict over a workflow's jobs, for a required status check. See [gate/README.md](./gate/README.md).
 
 ## Getting started
 
@@ -56,7 +57,7 @@ Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json);
 ## Documentation
 
 - [build-image.yml](./.github/workflows/build-image.yml), [tidy-repo.yml](./.github/workflows/tidy-repo.yml), [tidy-ghcr.yml](./.github/workflows/tidy-ghcr.yml): header comments own the contract of each reusable workflow.
-- [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md): inputs, behaviour and design of each action.
+- [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [gate](./gate/README.md): inputs, behaviour and design of each action.
 - [registry](./registry/README.md): the shared TypeScript registry core that `ghcr-tidy` bundles.
 - [ghcr-tidy/src/cli.ts](./ghcr-tidy/src/cli.ts): `ghcr-tidy` flags and exit codes.
 - [Taskfile.yml](./Taskfile.yml): the checks every change must pass (`task ci`, which [ci.yml](./.github/workflows/ci.yml) runs), including the committed-bundle check.

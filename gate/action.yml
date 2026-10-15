@@ -1,0 +1,14 @@
+name: gate
+description: >-
+  Aggregate gate for branch protection. Fails when any job in `needs` failed or
+  was cancelled; succeeded and skipped jobs pass. Fails too when `needs` is
+  empty or not valid JSON. Plain Node, no dependencies.
+inputs:
+  needs:
+    description: >-
+      The caller's `needs` context as JSON (the output of toJSON on it). The
+      gate job must list every job it gates under its own `needs:`.
+    required: true
+runs:
+  using: node24
+  main: check.mjs
