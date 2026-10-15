@@ -636,6 +636,108 @@ describe("agent-docs-check", () => {
       ]));
   });
 
+  describe("rule 6: relative links resolve", () => {
+    it("passes for existing targets, ignoring URLs, anchors and code", () =>
+      expectPass("links-pass"));
+    it("fails a broken link in AGENTS.md", () =>
+      expectFail("links-broken-agents-fail", ['AGENTS.md:3: relative-link: "docs/missing.md"']));
+    it("fails a broken link in README.md, with the anchor stripped", () =>
+      expectFail("links-broken-readme-fail", ['README.md:3: relative-link: "gone/README.md#x"']));
+    it("fails a broken link in docs, resolved relative to the file", () =>
+      expectFail("links-broken-docs-fail", ['docs/guide.md:3: relative-link: "../nope.md"']));
+  });
+
+  describe("rule 7: agent files hold no URLs, human files no raw links", () => {
+    it("passes ~/.pyck paths in agent files and blob links in human files (no agent-url in human files)", () =>
+      expectPass("link-form-pass"));
+    it.each([
+      ["link-form-agents-blob-fail", "AGENTS.md:3"],
+      ["link-form-skill-blob-fail", ".claude/skills/demo/SKILL.md:8"],
+      ["link-form-coding-blob-fail", "CODING_STANDARDS.md:3"],
+    ])("fails a blob link in an agent file: %s", (fixture, where) =>
+      expectFail(fixture, [
+        where,
+        "agent-url: agent files contain no URLs; name a local path under ~/.pyck/<repo>/ instead",
+      ]),
+    );
+    it("fails a raw link in an agent file", () =>
+      expectFail("agent-url-raw-fail", ["AGENTS.md:3", "agent-url: agent files contain no URLs"]));
+    it("fails a plain http URL in an agent file", () =>
+      expectFail("agent-url-http-fail", ["AGENTS.md:3", "agent-url: agent files contain no URLs"]));
+    it("passes a URL inside inline code or a fence", () => expectPass("agent-url-code-pass"));
+    it("fails a URL in a non-SKILL.md file of a top-level skills/<name>/ dir", () =>
+      expectFail("skills-top-url-fail", [
+        "skills/demo/guide.md:3: agent-url: agent files contain no URLs",
+      ]));
+    it("passes the same URL inside backticks in a top-level skill dir", () =>
+      expectPass("skills-top-url-code-pass"));
+    it("treats skills/<name>/ without a SKILL.md as a plain directory", () =>
+      expectPass("skills-top-nonskill-pass"));
+    it.each([
+      ["link-form-readme-raw-fail", "README.md:3"],
+      ["link-form-docs-raw-fail", "docs/guide.md:3"],
+      ["link-form-contributing-raw-fail", "CONTRIBUTING.md:3"],
+    ])("fails a raw link in a human file: %s", (fixture, where) =>
+      expectFail(fixture, [
+        where,
+        "link-form: human files",
+        "must not link raw.githubusercontent.com",
+      ]),
+    );
+  });
+
+  describe("rule 9: ~/.pyck paths", () => {
+    const pyckHome = join(fixtures, "pyck-home");
+    it("passes a path into the repo under check that exists", () =>
+      expectPass("pyck-path-self-pass"));
+    it("fails a path into the repo under check that is missing", () =>
+      expectFail("pyck-path-self-fail", [
+        "AGENTS.md:3: pyck-path: ~/.pyck/pyck-path-self-fail/missing does not exist",
+        "1 error(s)",
+      ]));
+    it("names the repo under check after the origin remote when there is one", () => {
+      const { code, out } = withFixture("pyck-path-self-pass", (dir) => {
+        const git = (...a: string[]) =>
+          spawnSync("git", ["-C", dir, ...a], { encoding: "utf8", env: { ...process.env } });
+        git("init", "-q");
+        git("remote", "add", "origin", "git@github.com:acme/renamed-repo.git");
+        writeFileSync(join(dir, "AGENTS.md"), "# Agents\n\nSee `~/.pyck/renamed-repo/existing`.\n");
+        const res = spawnSync("node", [script, dir], {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            GITHUB_ACTIONS: "",
+            GIT_CEILING_DIRECTORIES: tmpBase,
+            PYCK_HOME: join(tmpBase, "no-pyck-home"),
+          },
+        });
+        return { code: res.status, out: `${res.stdout}${res.stderr}` };
+      });
+      expect(out).toContain("0 error(s)");
+      expect(code).toBe(0);
+    });
+    it("warns once per repo that is not installed and checks nothing", () => {
+      const { code, out } = run("pyck-path-other-warn");
+      expect(code).toBe(0);
+      expect(out).toContain("0 error(s), 1 warning(s)");
+      expect(out).toContain(
+        "pyck-path: ~/.pyck/other-repo is not installed here; paths into it were not checked",
+      );
+      expect(out.match(/is not installed here/g)).toHaveLength(1);
+    });
+    it("checks a path into another repo under PYCK_HOME", () =>
+      expectPass("pyck-path-other-warn", [], { PYCK_HOME: pyckHome }));
+    it("fails a missing path into another repo under PYCK_HOME", () =>
+      expectFail(
+        "pyck-path-other-fail",
+        ["AGENTS.md:3: pyck-path: ~/.pyck/other-repo/missing does not exist"],
+        [],
+        { PYCK_HOME: pyckHome },
+      ));
+    it("skips a path with a placeholder", () => expectPass("pyck-path-placeholder-pass"));
+    it("does not treat a ~/ link target as relative", () => expectPass("pyck-path-self-pass"));
+  });
+
   describe("output modes", () => {
     it("prints workflow annotations in GitHub Actions", () => {
       const { code, out } = withFixture("claude-md-fail", (dir) => {

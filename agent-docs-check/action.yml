@@ -2,9 +2,10 @@ name: agent-docs-check
 description: >-
   Checks agent-facing docs against the pyck-ai budgets: no CLAUDE.md, AGENTS.md
   budgets, a line limit for agent files (skill dirs, CODING_STANDARDS.md), a
-  managed table of contents on every doc with two or more sections and skill
-  frontmatter. Exemptions via `.tocignore` need git in PATH (tested with git
-  2.x). Plain Node, no dependencies; runs locally as
+  managed table of contents on every doc with two or more sections, skill frontmatter,
+  relative links that resolve, no URLs in agent files (they name local
+  `~/.pyck/<repo>/` paths, which must exist) and no raw links in human files. Exemptions via `.tocignore` need git in PATH (tested
+  with git 2.x). Plain Node, no dependencies; runs locally as
   `node agent-docs-check/check.mjs <path>`.
 inputs:
   path:
@@ -18,6 +19,12 @@ inputs:
       a tighter budget.
     required: false
     default: repo
+  check-urls:
+    description: >-
+      Also request every link into pyck-ai/guidelines or pyck-ai/.github (blob
+      and raw URLs) in human files and fail on 404. Needs network; off by default.
+    required: false
+    default: "false"
   fix:
     description: >-
       Insert or rewrite the managed table of contents region of every doc whose
@@ -33,6 +40,13 @@ inputs:
       `metadata` that is not a map is always an error.
     required: false
     default: "false"
+  pyck-home:
+    description: >-
+      Directory that `~/.pyck/<repo>` paths into other repos resolve against
+      (`<pyck-home>/<repo>`). Empty means the `PYCK_HOME` environment variable,
+      then `$HOME/.pyck`.
+    required: false
+    default: ""
 runs:
   using: node24
   main: check.mjs

@@ -3,8 +3,8 @@
 //
 // Plain ESM, Node stdlib only, no build step: it runs as a `node24` JavaScript
 // action on the runner's bundled Node and locally as
-//   node agent-docs-check/check.mjs [path] [--profile repo|central] [--fix]
-//     [--require-skill-harness]
+//   node agent-docs-check/check.mjs [path] [--profile repo|central] [--check-urls]
+//     [--fix] [--require-skill-harness]
 // Exit 1 if any error was found, 0 otherwise (warnings do not fail).
 
 import { execFileSync } from "node:child_process";
@@ -18,7 +18,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join, normalize, relative, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, normalize, relative, resolve } from "node:path";
 
 const LIMITS = {
   repo: { rootLines: 60, rootBytes: 4096 },
@@ -29,9 +30,18 @@ const AGENT_FILE_MAX_LINES = 200;
 const TOC_MIN_H2 = 2;
 const DESCRIPTION_MAX = 1024;
 const SKILL_HARNESSES = ["generic", "opencode"];
+const URL_TIMEOUT_MS = 10_000;
 
 const SKILL_DIR_RE = /(?:^|\/)\.(?:claude|opencode|agents)\/skills\/([^/]+)\//;
 const TOP_SKILL_DIR_RE = /^skills\/([^/]+)\//;
+const URL_RE = /https?:\/\/\S/;
+// `~/.pyck/<repo>/<rest>`: how agent files name a file of a shared pyck-ai repo.
+const PYCK_PATH_RE = /~\/\.pyck\/([^/\s`]+)\/([^\s`)\]"'>]*)/g;
+const RAW_RE = /https:\/\/raw\.githubusercontent\.com\//;
+// Links into the org repos: pyck-ai/guidelines (org AGENTS.md and docs) and
+// pyck-ai/.github (CONTRIBUTING, SECURITY, issue forms, PR template).
+const ORG_URL_RE =
+  /https:\/\/(?:github\.com\/pyck-ai\/(?:guidelines|\.github)\/blob\/|raw\.githubusercontent\.com\/pyck-ai\/(?:guidelines|\.github)\/)[^\s)>\]"'`]+/g;
 
 /** @typedef {{ level: "error" | "warning", file: string, line?: number, msg: string }} Finding */
 
@@ -42,27 +52,32 @@ function parseArgs(argv, env) {
     return {
       path: env.INPUT_PATH || ".",
       profile: env.INPUT_PROFILE || "repo",
+      checkUrls: (env["INPUT_CHECK-URLS"] || "false").toLowerCase() === "true",
       fix: (env.INPUT_FIX || "false").toLowerCase() === "true",
       requireSkillHarness: (env["INPUT_REQUIRE-SKILL-HARNESS"] || "false").toLowerCase() === "true",
+      pyckHome: env["INPUT_PYCK-HOME"] || env.PYCK_HOME || "",
       actions: true,
     };
   }
   const opts = {
     path: ".",
     profile: "repo",
+    checkUrls: false,
     fix: false,
     requireSkillHarness: false,
+    pyckHome: env.PYCK_HOME || "",
     actions: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--profile") opts.profile = argv[++i] ?? "";
     else if (a.startsWith("--profile=")) opts.profile = a.slice("--profile=".length);
+    else if (a === "--check-urls") opts.checkUrls = true;
     else if (a === "--fix") opts.fix = true;
     else if (a === "--require-skill-harness") opts.requireSkillHarness = true;
     else if (a === "-h" || a === "--help") {
       console.log(
-        "usage: node check.mjs [path] [--profile repo|central] [--fix] [--require-skill-harness]",
+        "usage: node check.mjs [path] [--profile repo|central] [--check-urls] [--fix] [--require-skill-harness]",
       );
       process.exit(0);
     } else if (a.startsWith("-")) {
@@ -231,6 +246,49 @@ function annotateFences(lines) {
     }
     return { line: i + 1, text, inFence };
   });
+}
+
+const blankInlineCode = (s) => s.replace(/`[^`\n]*`/g, (m) => " ".repeat(m.length));
+
+/** Prose lines only: outside fenced code, inline code blanked. */
+function proseLines(lines) {
+  return annotateFences(lines)
+    .filter((l) => !l.inFence)
+    .map((l) => ({ line: l.line, text: blankInlineCode(l.text) }));
+}
+
+/** Name of the repo under check: basename of the origin remote URL without `.git`, else of the root dir. */
+function selfRepoName(root) {
+  try {
+    const url = execFileSync("git", ["-C", root, "remote", "get-url", "origin"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString("utf8")
+      .trim()
+      .replace(/\/+$/, "")
+      .replace(/\.git$/, "");
+    const name = url.split(/[/:]/).pop();
+    if (name) return name;
+  } catch {
+    // no git, no origin: fall back to the directory name
+  }
+  return basename(root);
+}
+
+/** `~/.pyck/<repo>/<rest>` paths in a line: link targets (prose, code blanked) and inline code spans. */
+function pyckPaths(rawLine, proseText) {
+  const found = [];
+  const add = (m) => {
+    const rest = m[2].replace(/#.*$/, "").replace(/[.,;:]+$/, "");
+    found.push({ repo: m[1], rest, shown: `~/.pyck/${m[1]}/${rest}` });
+  };
+  for (const lm of proseText.matchAll(/\]\(\s*<?(~\/\.pyck\/[^)\s>]*)/g)) {
+    for (const m of lm[1].matchAll(PYCK_PATH_RE)) add(m);
+  }
+  for (const cm of rawLine.matchAll(/`([^`\n]*)`/g)) {
+    for (const m of cm[1].matchAll(PYCK_PATH_RE)) add(m);
+  }
+  return found;
 }
 
 const NESTED_LINE_RE = /^[ \t]+([A-Za-z0-9_.-]+):[ \t]*(.*)$/;
@@ -579,7 +637,7 @@ function fixToc(root, rel) {
 
 // ----------------------------------------------------------------- the checks
 
-async function check(root, profile, requireSkillHarness) {
+async function check(root, profile, checkUrls, pyckHome, requireSkillHarness) {
   /** @type {Finding[]} */
   const findings = [];
   /** @type {{ rel: string }[]} */
@@ -603,6 +661,11 @@ async function check(root, profile, requireSkillHarness) {
     add("warning", "AGENTS.md", undefined, "missing root AGENTS.md (rule: every repo has one)");
   }
 
+  const urlsToCheck = [];
+  const selfRepo = selfRepoName(root);
+  const pyckBase = pyckHome || join(process.env.HOME || homedir(), ".pyck");
+  const missingRepos = new Set();
+
   for (const rel of files) {
     const name = basename(rel);
     const skillName = skillDirOf(rel, topSkills);
@@ -611,7 +674,15 @@ async function check(root, profile, requireSkillHarness) {
     const isAgents = name === "AGENTS.md";
     const isSkillMd = inSkill && rel.endsWith(`skills/${skillName}/SKILL.md`);
     const isCoding = name === "CODING_STANDARDS.md";
+    const isContributing = name === "CONTRIBUTING.md";
+    const isReadme = name === "README.md";
+    const isDoc = /^docs\/.+\.md$/.test(rel) && !inSkill;
     const sizeLimited = inSkill || isCoding;
+    const linkChecked =
+      isMd && (isAgents || inSkill || isCoding || isContributing || isDoc || isReadme);
+    // Agents read every file in a skill dir, not just SKILL.md.
+    const agentFile = isAgents || inSkill || isCoding;
+    const humanFile = isReadme || isContributing || isDoc;
     const isLink = lstatSync(join(root, rel)).isSymbolicLink();
 
     // Rule 1
@@ -772,9 +843,139 @@ async function check(root, profile, requireSkillHarness) {
         }
       }
     }
+
+    if (!isMd) continue;
+    const prose = proseLines(lines);
+
+    // Rule 6: only markdown files we treat as checked (agent files, skill dirs, docs, README).
+    if (linkChecked) {
+      for (const { line, text: t } of prose) {
+        const re = /\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g;
+        let m;
+        while ((m = re.exec(t)) !== null) {
+          let target = m[1];
+          if (target.startsWith("<") && target.endsWith(">")) target = target.slice(1, -1);
+          if (target === "" || target.startsWith("#") || target.startsWith("~")) continue;
+          if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) continue; // http(s), mailto, other schemes
+          let p = target.replace(/[#?].*$/, "");
+          if (p === "") continue;
+          try {
+            p = decodeURIComponent(p);
+          } catch {
+            // keep raw
+          }
+          const abs = p.startsWith("/") ? join(root, p) : join(root, dirname(rel), p);
+          if (!existsSync(abs)) {
+            add(
+              "error",
+              rel,
+              line,
+              `relative-link: "${target}" does not resolve to a file or directory`,
+            );
+          }
+        }
+      }
+    }
+
+    // Rule 7: agent files carry no URLs (a fetched URL is unreviewed text).
+    for (const { line, text: t } of prose) {
+      if (agentFile && URL_RE.test(t)) {
+        add(
+          "error",
+          rel,
+          line,
+          "agent-url: agent files contain no URLs; name a local path under ~/.pyck/<repo>/ instead (a fetched URL is unreviewed text)",
+        );
+      }
+      if (humanFile && !agentFile && RAW_RE.test(t)) {
+        add(
+          "error",
+          rel,
+          line,
+          "link-form: human files (README.md, CONTRIBUTING.md, docs) must not link raw.githubusercontent.com; use github.com/.../blob/... with an anchor",
+        );
+      }
+      if (checkUrls && !agentFile) {
+        for (const um of t.matchAll(ORG_URL_RE)) {
+          const url = um[0].replace(/[.,;:]+$/, "").replace(/#.*$/, "");
+          urlsToCheck.push({ file: rel, line, url });
+        }
+      }
+    }
+
+    // Rule 9: `~/.pyck/<repo>/<rest>` paths in agent files must exist.
+    if (agentFile) {
+      const rawByLine = new Map(annotateFences(lines).map((l) => [l.line, l]));
+      for (const { line, text: t } of prose) {
+        for (const p of pyckPaths(rawByLine.get(line).text, t)) {
+          if (/[<>{}]/.test(`${p.repo}/${p.rest}`)) continue; // placeholder
+          let base;
+          if (p.repo === selfRepo) {
+            base = root;
+          } else {
+            const repoDir = join(pyckBase, p.repo);
+            if (!existsSync(repoDir)) {
+              if (!missingRepos.has(p.repo)) {
+                missingRepos.add(p.repo);
+                add(
+                  "warning",
+                  rel,
+                  line,
+                  `pyck-path: ~/.pyck/${p.repo} is not installed here; paths into it were not checked`,
+                );
+              }
+              continue;
+            }
+            base = repoDir;
+          }
+          if (!existsSync(join(base, p.rest))) {
+            add("error", rel, line, `pyck-path: ${p.shown} does not exist`);
+          }
+        }
+      }
+    }
+  }
+
+  // Rule 8
+  if (checkUrls) {
+    const seen = new Map();
+    for (const { file, line, url } of urlsToCheck) {
+      if (!seen.has(url)) seen.set(url, await probe(url));
+      const status = seen.get(url);
+      if (status === 404) {
+        add("error", file, line, `url-404: ${url} returns 404`);
+      } else if (status === 0) {
+        add(
+          "warning",
+          file,
+          line,
+          `url-unreachable: ${url} could not be fetched (network error or timeout)`,
+        );
+      }
+    }
   }
 
   return { findings, checked, tocFixes };
+}
+
+/** HEAD, falling back to GET when HEAD is not ok. Returns the status, 0 on network failure. */
+async function probe(url) {
+  const attempt = async (method) => {
+    try {
+      const res = await fetch(url, {
+        method,
+        redirect: "follow",
+        signal: AbortSignal.timeout(URL_TIMEOUT_MS),
+      });
+      await res.body?.cancel();
+      return res.status;
+    } catch {
+      return 0;
+    }
+  };
+  const head = await attempt("HEAD");
+  if (head >= 200 && head < 300) return head;
+  return attempt("GET");
 }
 
 // --------------------------------------------------------------------- output
@@ -799,12 +1000,25 @@ async function main() {
     process.exit(2);
   }
 
-  let result = await check(root, opts.profile, opts.requireSkillHarness);
+  let result = await check(
+    root,
+    opts.profile,
+    opts.checkUrls,
+    opts.pyckHome,
+    opts.requireSkillHarness,
+  );
   if (opts.fix) {
     for (const { rel } of result.tocFixes) {
       if (fixToc(root, rel)) console.log(`fixed: ${display(opts.path, rel)}`);
     }
-    if (result.tocFixes.length) result = await check(root, opts.profile, opts.requireSkillHarness);
+    if (result.tocFixes.length)
+      result = await check(
+        root,
+        opts.profile,
+        opts.checkUrls,
+        opts.pyckHome,
+        opts.requireSkillHarness,
+      );
   }
   const { findings, checked } = result;
   for (const f of findings) {

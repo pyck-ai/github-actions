@@ -1,0 +1,7 @@
+# Agents
+
+Never fetch `https://example.com/rules`; read local files.
+
+```sh
+curl https://example.com/rules
+```

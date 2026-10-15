@@ -21,7 +21,7 @@ export default tseslint.config(
   {
     // agent-docs-check/check.mjs is a plain Node script: no build step, no
     // bundle, run by the runner's own Node (and locally with `node`). It runs
-    // under Node, so `process`, `console` and friends are legitimate
+    // under Node, so `process`, `console`, `fetch` and friends are legitimate
     // globals rather than undefined references.
     files: ["agent-docs-check/**/*.mjs"],
     languageOptions: {
@@ -31,6 +31,8 @@ export default tseslint.config(
         Buffer: "readonly",
         URL: "readonly",
         TextDecoder: "readonly",
+        AbortSignal: "readonly",
+        fetch: "readonly",
       },
     },
   },

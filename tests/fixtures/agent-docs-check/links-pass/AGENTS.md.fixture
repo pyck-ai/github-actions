@@ -1,0 +1,9 @@
+# Agents
+
+See [readme](README.md#top), [docs](docs/guide.md), [scheme](custom:thing), [mail](mailto:a@b.c), [anchor](#here).
+
+```md
+[ignored](does-not-exist.md)
+```
+
+Inline `[also ignored](nope.md)` code.
