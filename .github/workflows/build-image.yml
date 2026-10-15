@@ -12,6 +12,23 @@ name: build-image
 # Consumers pin this workflow by commit SHA:
 # pyck-ai/github-actions/.github/workflows/build-image.yml@<sha>
 #
+# Consumer contract: the calling repository's Taskfile.yml has a `build`
+# task, and each `build` leg runs it as
+#   task build TARGET="<bake targets, space-separated>" BUILDER=<builder> -- <overrides>
+# where the overrides are `--pull`, `--metadata-file <path>` and one `--set`
+# per line of `discover`'s bake overrides (build args, per-target push by
+# digest, `*.cache-to=` on PRs). The task must:
+#   - take `TARGET` (one or more bake targets, default all of them) and pass
+#     it to `docker buildx bake` as the targets to build;
+#   - take `BUILDER` (the buildx builder name, default the task's own) and pass
+#     it as `--builder`; the leg creates that builder before running the task;
+#   - pass `{{.CLI_ARGS}}` through to `docker buildx bake` unchanged;
+#   - add no local-only flags when `CI=true` (no host platform override, no
+#     `--load`, no `--push`): plain bake pushes only through the per-target
+#     `output=` overrides above.
+# `task build` with no arguments builds every target locally, so the CI
+# command and the local command are the same task.
+#
 # Triggers stay in the caller (schedule / workflow_dispatch / pull_request);
 # a shared workflow must not own the cron, since the offset encodes a real
 # dependency on when an upstream image publishes.
@@ -164,10 +181,10 @@ jobs:
                 | $nodes | group_by($label[.])
                 | map( sort as $m
                        | { name: ([ $m[] | select(($deps[.] // 0) == 0) ] | sort | .[0] // $m[0]),
-                           # Newline-separated, NOT space-separated: docker/bake-action
-                           # takes `targets` as a multi-value input and splits it on
-                           # newlines. A space-separated list is read as one target name
-                           # and fails with "failed to find target a b c".
+                           # Newline-separated: verify-image splits `targets` on
+                           # newlines, and a space-separated list there is read as
+                           # one target name. The build step turns the newlines into
+                           # the spaces `task build TARGET=` takes.
                            targets: ($m | join("\n")) } )
                 | sort_by(.name)' <<<"$print")"
             fi
@@ -270,7 +287,7 @@ jobs:
       # Optional: only some consumers (e.g. baseimages, whose Dockerfiles
       # reference `alpine`, `debian`, `golang`, `nginxinc/nginx-unprivileged`)
       # pull base images from Docker Hub. Anonymous pulls there are rate
-      # limited per-IP (100/6h), and with `pull: true`, two platforms, and a
+      # limited per-IP (100/6h), and with `--pull`, two platforms, and a
       # many-component fan-out, an unauthenticated shared self-hosted runner
       # IP can exceed that limit; surfacing as an intermittent-looking
       # network flake. A consumer that defines neither secret (e.g.
@@ -283,32 +300,48 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        id: bake
-        uses: docker/bake-action@018cb6412ab401ebaa809aa5f85966b74628600f # v7
+      - name: Set up Task
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
         with:
-          targets: ${{ matrix.component.targets }}
-          # Refresh the base image so a scheduled rebuild actually picks up a new
-          # floating base tag instead of a stale local one.
-          pull: true
-          # Always false: `push: true` maps to `--set *.output=type=registry`,
-          # which would collide with the per-target `<target>.output=type=image,...`
-          # that `discover` always emits (push-by-digest, every trigger, including
-          # scheduled/manual runs). Letting that `set` override be the sole writer
-          # of `output` avoids depending on unclear pattern-vs-exact-key precedence
-          # in buildx.
-          push: false
-          set: ${{ needs.discover.outputs.bakeargs-set }}
+          version: 3.x
+          repo-token: ${{ github.token }}
+
+      # The leg runs the CALLER's `task build`, so the same command builds
+      # locally and in CI (the consumer contract is in the header above).
+      # Everything bake-action used to pass goes after `--` as bake overrides:
+      #   --pull                  refresh the base image so a scheduled rebuild
+      #                           picks up a new floating base tag instead of a
+      #                           stale local one.
+      #   --set <line> ...        one per line of discover's `bakeargs-set`:
+      #                           the buildargs, `*.cache-to=` on PRs, and the
+      #                           per-target `<target>.output=type=image,...,
+      #                           push-by-digest=true` that pushes every build
+      #                           by digest only, on every trigger. Plain bake
+      #                           never pushes by itself, so no `--push` here:
+      #                           it would map to `--set *.output=type=registry`
+      #                           and collide with those per-target outputs.
+      #   --metadata-file <path>  where the digests are read from below.
+      # `task` re-quotes `{{.CLI_ARGS}}` for the shell, so a `--set` value with
+      # spaces or quotes reaches bake as one argument. TARGET is the leg's real
+      # bake targets, space-separated (discover emits them newline-separated).
+      - name: Build and push
         env:
           REGISTRY: ${{ inputs.registry }}
+          TARGETS: ${{ matrix.component.targets }}
+          BUILDER: ${{ inputs.builder-name }}-${{ matrix.component.name }}
+          BAKEARGS_SET: ${{ needs.discover.outputs.bakeargs-set }}
           # Keep provenance out of the METADATA JSON only; the image itself still
           # gets its provenance attestation. Buildx embeds the full SLSA predicate
-          # per target, and a multi-platform target's JSON can be large enough to
-          # blow the step's env var out (Linux caps a single env var at
-          # MAX_ARG_STRLEN = 128KB); the next step reads METADATA through the
-          # environment. See docker/bake-action#239 and #135, and
-          # pyck-ai/baseimages' build-images.yml which hit this for real.
+          # per target, and a multi-platform target's JSON can be large; see
+          # docker/bake-action#239 and #135, and pyck-ai/baseimages'
+          # build-images.yml which hit this for real.
           BUILDX_METADATA_PROVENANCE: disabled
+        run: |
+          overrides=(--pull --metadata-file "$RUNNER_TEMP/bake-meta.json")
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then overrides+=(--set "$line"); fi
+          done <<<"$BAKEARGS_SET"
+          task build TARGET="$(paste -sd' ' <<<"$TARGETS")" BUILDER="$BUILDER" -- "${overrides[@]}"
 
       # Recorded so this leg's own verify step below can pull this exact
       # digest (not whatever a floating tag happens to point at), and so
@@ -323,7 +356,6 @@ jobs:
       # silently corrupt digest tracking if a variant is added.
       - name: Export digest
         env:
-          METADATA: ${{ steps.bake.outputs.metadata }}
           TARGET: ${{ matrix.component.name }}
         run: |
           mkdir -p "$RUNNER_TEMP/digests"
@@ -333,7 +365,7 @@ jobs:
                  | map({key: .key, value: .value["containerimage.digest"]})
                  | from_entries
                  | if length == 0 then error("no digests in bake metadata") else . end' \
-            <<<"$METADATA" > "$RUNNER_TEMP/digests/$TARGET.json"
+            "$RUNNER_TEMP/bake-meta.json" > "$RUNNER_TEMP/digests/$TARGET.json"
 
       - name: Upload digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
