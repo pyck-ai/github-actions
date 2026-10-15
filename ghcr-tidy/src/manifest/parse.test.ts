@@ -36,10 +36,10 @@ describe("parseManifest", () => {
     }
   });
 
-  it("accepts this repository's own dogfood manifest (.ghcr-tidy.yaml at the repo root)", async () => {
+  it("accepts this repository's own dogfood manifest (.github/ghcr-tidy.yml)", async () => {
     const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
-    const content = await readFile(path.join(repoRoot, ".ghcr-tidy.yaml"), "utf8");
-    const m = parseManifest(content, ".ghcr-tidy.yaml");
+    const content = await readFile(path.join(repoRoot, ".github", "ghcr-tidy.yml"), "utf8");
+    const m = parseManifest(content, ".github/ghcr-tidy.yml");
     expect(m).toEqual({ version: 1, owner: "pyck-ai", packages: [] });
   });
 });
