@@ -29,6 +29,18 @@ name: build-image
 # `task build` with no arguments builds every target locally, so the CI
 # command and the local command are the same task.
 #
+# Runners: on a runner that ships `runner-init` (the unprivileged kata pool,
+# which has no Docker daemon), each `build` leg uses the runner's rootless
+# BuildKit through the buildx remote driver (`$BUILDKIT_HOST`) instead of a
+# docker-container builder, skips QEMU setup because BuildKit emulates arm64
+# itself, and verifies through the runner's podman socket (`$DOCKER_HOST`).
+# Everywhere else the legs behave as before. Callers configure nothing; the
+# `Detect rootless BuildKit` step decides. The remote BuildKit is the runner's
+# own, so the bake file must not need daemon-side settings such as
+# `network.host` entitlements, and a bake context outside the working
+# directory needs buildx's `--allow fs.read=<dir>` in the caller's `build`
+# task.
+#
 # Triggers stay in the caller (schedule / workflow_dispatch / pull_request);
 # a shared workflow must not own the cron, since the offset encodes a real
 # dependency on when an upstream image publishes.
@@ -258,10 +270,38 @@ jobs:
       - name: Load build args
         run: grep -v '^#' buildargs.conf | grep -v '^\s*$' >> "$GITHUB_ENV"
 
+      # Pick the builder. The unprivileged kata runner pool has no Docker
+      # daemon and cannot register binfmt handlers; its image instead ships
+      # `runner-init`, which starts a rootless BuildKit (with BuildKit's own
+      # arm64 emulators) and a podman socket for the docker CLI. The presence
+      # of `runner-init` is the only signal used, so every other runner (the
+      # dind pool, GitHub-hosted runners) keeps the docker-container path
+      # below untouched. `remote=true` needs BuildKit to actually be ready
+      # (`--wait` exits 0 only then); a runner-init that never gets there is
+      # a pool fault, so it is flagged with a warning before the docker-
+      # container path below fails for lack of a daemon.
+      - name: Detect rootless BuildKit
+        id: buildkit
+        run: |
+          remote=false
+          if command -v runner-init >/dev/null 2>&1; then
+            if runner-init --wait buildkit 180; then
+              remote=true
+            else
+              echo "::warning::runner-init is present but rootless BuildKit did not become ready within 180s"
+            fi
+          fi
+          echo "remote=$remote" >> "$GITHUB_OUTPUT"
+
+      # QEMU/binfmt registration needs privileges the unprivileged pool does
+      # not have, and is unnecessary there: the runner's BuildKit emulates
+      # arm64 `RUN` steps itself.
       - name: Set up QEMU
+        if: steps.buildkit.outputs.remote != 'true'
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: Set up buildx builder
+        if: steps.buildkit.outputs.remote != 'true'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         with:
           # Per-repo AND per-leg isolation: `builder-name` is workflow-scoped
@@ -275,6 +315,34 @@ jobs:
           name: ${{ inputs.builder-name }}-${{ matrix.component.name }}
           driver-opts: network=host
           buildkitd-flags: --allow-insecure-entitlement=network.host
+
+      # Same builder name as above, so `task build BUILDER=...` and everything
+      # after it is unchanged. A plain `docker buildx create` instead of
+      # setup-buildx-action: the remote driver takes no `network=host` or
+      # buildkitd flags (the daemon is the runner's, already running), and
+      # nothing here needs the action's docker-container bootstrap or its
+      # post-step builder removal; the builder record lives in the pod's
+      # ~/.docker and dies with the pod. `--bootstrap` fails the step early if
+      # the socket is not reachable. Registry credentials need no wiring: the
+      # buildx client sends them to BuildKit from ~/.docker/config.json
+      # (written by the login steps below) for each build.
+      - name: Set up buildx builder (remote rootless BuildKit)
+        if: steps.buildkit.outputs.remote == 'true'
+        env:
+          BUILDER: ${{ inputs.builder-name }}-${{ matrix.component.name }}
+        run: |
+          docker buildx create --name "$BUILDER" --driver remote --use \
+            "${BUILDKIT_HOST:?runner-init is present but BUILDKIT_HOST is not set}"
+          docker buildx inspect "$BUILDER" --bootstrap
+
+      # `verify-image` below uses `docker build` and `docker run`, which on
+      # this pool talk to runner-init's podman socket (DOCKER_HOST), not a
+      # Docker daemon. Wait here, before anything needs it, so a socket that
+      # is slow to come up fails this step instead of the verify step after a
+      # long build.
+      - name: Wait for the podman socket
+        if: steps.buildkit.outputs.remote == 'true'
+        run: runner-init --wait podman 120
 
       # Needed both to pull the base image and to push the result.
       - name: Log in to the Container registry
