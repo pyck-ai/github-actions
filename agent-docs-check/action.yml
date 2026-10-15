@@ -1,9 +1,10 @@
 name: agent-docs-check
 description: >-
   Checks agent-facing docs against the pyck-ai budgets: no CLAUDE.md, AGENTS.md
-  budgets and a line limit for agent files (skill dirs, CODING_STANDARDS.md).
-  Plain Node, no dependencies; runs locally as
-  `node agent-docs-check/check.mjs <path>`.
+  budgets, a line limit for agent files (skill dirs, CODING_STANDARDS.md) and a
+  managed table of contents on every doc with two or more sections. Exemptions
+  via `.tocignore` need git in PATH (tested with git 2.x). Plain Node, no
+  dependencies; runs locally as `node agent-docs-check/check.mjs <path>`.
 inputs:
   path:
     description: Directory to check, relative to the workspace.
@@ -16,6 +17,14 @@ inputs:
       a tighter budget.
     required: false
     default: repo
+  fix:
+    description: >-
+      Insert or rewrite the managed table of contents region of every doc whose
+      TOC is missing or stale, and remove legacy `<!-- Contents: ... -->`
+      comments, then re-check. For local use; CI has no use for changes it does
+      not commit.
+    required: false
+    default: "false"
 runs:
   using: node24
   main: check.mjs

@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   readlinkSync,
   rmSync,
   symlinkSync,
@@ -238,6 +240,304 @@ describe("agent-docs-check", () => {
       expect(out).not.toContain("broken-symlink");
       expect(out).toContain("0 error(s)");
       expect(code).toBe(0);
+    });
+  });
+
+  describe("rule 4: managed table of contents region", () => {
+    it("passes a visible region", () => expectPass("toc-visible-pass"));
+    it("passes a hidden region (frontmatter, inline markdown, fenced ##, ### ignored)", () =>
+      expectPass("toc-hidden-pass"));
+    it("passes GitHub anchors: duplicates get -1, -2, punctuation dropped, unicode kept", () =>
+      expectPass("toc-anchors-pass"));
+    it("passes a doc with a single ## heading", () => expectPass("toc-one-h2-pass"));
+    it("exempts AGENTS.md, SKILL.md, changelogs, generated files, templates, fixtures", () =>
+      expectPass("toc-exempt-pass"));
+    it("fails toc-missing with two ## headings and no region", () =>
+      expectFail("toc-missing-fail", ["docs/guide.md:1: toc-missing:", '2 "##" headings']));
+    it("fails toc-missing for an unclosed hidden region", () =>
+      expectFail("toc-unclosed-fail", ["docs/guide.md:3: toc-missing:", "never closed"]));
+    it("does not accept a region after the first ## heading (its ## Contents is unmanaged)", () =>
+      expectFail("toc-after-h2-fail", ["docs/guide.md:6: toc-unmanaged:"]));
+    it("fails toc-stale naming a missing heading", () =>
+      expectFail("toc-stale-missing-fail", ["toc-stale:", 'missing: "Gamma"']));
+    it("fails toc-stale naming an extra item", () =>
+      expectFail("toc-stale-extra-fail", ["toc-stale:", 'extra: "Zeta"']));
+    it("fails toc-stale naming an order problem", () =>
+      expectFail("toc-stale-order-fail", [
+        "toc-stale:",
+        'out of order: expected "Alpha" at position 1, found "Beta"',
+      ]));
+    it("fails toc-stale naming a wrong anchor", () =>
+      expectFail("toc-stale-anchor-fail", [
+        "toc-stale:",
+        'wrong anchor for "Beta": expected #beta, found #bata',
+      ]));
+    it("fails toc-stale when duplicate headings lack the -1 suffix", () =>
+      expectFail("toc-stale-duplicate-fail", [
+        "toc-stale:",
+        'wrong anchor for "Setup": expected #setup-1, found #setup',
+      ]));
+    it("fails toc-stale when the region lacks the ## Contents heading", () =>
+      expectFail("toc-noheading-fail", [
+        "toc-stale:",
+        'must start with "## Contents" followed by a blank line',
+      ]));
+    it("fails toc-stale when no blank line follows ## Contents", () =>
+      expectFail("toc-noblank-fail", ["toc-stale:", "followed by a blank line"]));
+    it("fails toc-legacy for a leading Contents comment", () =>
+      expectFail("toc-legacy-fail", ["docs/guide.md:1: toc-legacy:", "--fix removes it"]));
+    it("fails toc-unmanaged for a ## Contents outside the region, even next to a valid one", () =>
+      expectFail("toc-unmanaged-with-region-fail", [
+        "toc-unmanaged:",
+        "outside a managed region",
+        "1 error(s)",
+      ]));
+    it("fails toc-unmanaged for a ## Contents heading, not counted as a section", () =>
+      expectFail("toc-unmanaged-fail", [
+        "docs/guide.md:3: toc-unmanaged:",
+        "replace it with the managed region",
+        "1 error(s)",
+      ]));
+  });
+
+  describe(".tocignore (gitignore syntax and semantics, via git's matcher)", () => {
+    const base = tmpBase;
+    const dirs: string[] = [];
+    afterEach(() => {
+      for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    });
+
+    /** Copy the tree to a temp dir, write the given files, optionally git init, return reported docs. */
+    function tocRun(
+      files: Record<string, string>,
+      git = true,
+      forceAdd: string[] = [],
+      extraEnv: NodeJS.ProcessEnv = {},
+    ): { reported: string[]; out: string; code: number | null } {
+      mkdirSync(base, { recursive: true });
+      const tmp = mkdtempSync(join(base, "ignore-"));
+      dirs.push(tmp);
+      copyFixture(join(fixtures, "tocignore-tree"), tmp);
+      for (const [rel, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(tmp, rel)), { recursive: true });
+        writeFileSync(join(tmp, rel), text);
+      }
+      if (git) {
+        spawnSync("git", ["-C", tmp, "init", "-q"]);
+        if (forceAdd.length) spawnSync("git", ["-C", tmp, "add", "-f", ...forceAdd]);
+      }
+      const res = spawnSync("node", [script, tmp], {
+        encoding: "utf8",
+        env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: base, ...extraEnv },
+      });
+      const out = `${res.stdout}${res.stderr}`;
+      const reported = [...out.matchAll(/^(\S+?):\d+: toc-missing:/gm)]
+        .map((m) => m[1].slice(tmp.length + 1))
+        .sort();
+      return { reported, out, code: res.status };
+    }
+    const all = [
+      "#hash.md",
+      "dir/file.md",
+      "dirfile/x.md",
+      "docs/guide.md",
+      "docs/skip-me.md",
+      "docs/top.md",
+      "pkg/inner/y.md",
+      "pkg/inner/z.md",
+      "pkg/top.md",
+      "src/deep/more/x.md",
+      "src/notes.md",
+      "top.md",
+      "vendor/a.md",
+      "vendor/sub/b.md",
+    ];
+
+    it("reports every doc without a .tocignore", () => {
+      expect(tocRun({}).reported).toEqual(all);
+    });
+    it("handles comments, globs, dir/, anchoring, negation and escapes", () => {
+      const { reported } = tocRun({
+        ".tocignore": [
+          "# a comment",
+          "",
+          "src/",
+          "!src/notes.md", // cannot re-include below an excluded directory
+          "vendor/**/b.md",
+          "/top.md", // anchored: not docs/top.md or pkg/top.md
+          "docs/skip-*.md",
+          "dir",
+          "\\#hash.md", // escaped leading #
+          "",
+        ].join("\n"),
+      });
+      expect(reported).toEqual(
+        [
+          "docs/guide.md",
+          "docs/top.md",
+          "dirfile/x.md",
+          "pkg/inner/y.md",
+          "pkg/inner/z.md",
+          "pkg/top.md",
+          "vendor/a.md",
+        ].sort(),
+      );
+    });
+    it("lets a later negation re-include a file whose directory is not excluded", () => {
+      const { reported } = tocRun({ ".tocignore": "vendor/*.md\n!vendor/a.md\n" });
+      expect(reported).toContain("vendor/a.md");
+      expect(reported).toContain("vendor/sub/b.md");
+    });
+    it("applies a trailing / to directories only", () => {
+      // top.md is a file: "top.md/" must not match it, but "dir/" matches the directory.
+      const { reported } = tocRun({ ".tocignore": "top.md/\ndir/\n" });
+      expect(reported).toContain("top.md");
+      expect(reported).not.toContain("dir/file.md");
+      expect(reported).toContain("dirfile/x.md");
+    });
+    it("reads .tocignore files at any depth, relative to their own directory", () => {
+      const { reported } = tocRun({
+        "pkg/.tocignore": "/top.md\ninner/y.md\n",
+        ".tocignore": "",
+      });
+      expect(reported).not.toContain("pkg/top.md");
+      expect(reported).not.toContain("pkg/inner/y.md");
+      expect(reported).toContain("pkg/inner/z.md");
+      expect(reported).toContain("top.md");
+      expect(reported).toContain("docs/top.md");
+    });
+    it("exits 0 when .tocignore covers every doc, and 1 without it", () => {
+      expect(tocRun({}).code).toBe(1);
+      const { reported, out, code } = tocRun({ ".tocignore": "*.md\n" });
+      expect(reported).toEqual([]);
+      expect(out).not.toContain("toc-missing");
+      expect(out).toMatch(/0 error\(s\)/);
+      expect(code).toBe(0);
+    });
+    it("warns with git's first stderr line when git ls-files fails, and ignores the exemptions", () => {
+      // A git wrapper on PATH that fails only the .tocignore listing.
+      mkdirSync(base, { recursive: true });
+      const bin = mkdtempSync(join(base, "fakegit-"));
+      dirs.push(bin);
+      const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+      const wrapper = join(bin, "git");
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh\ncase "$*" in *--exclude-per-directory*) echo "fatal: simulated failure" >&2; echo "second line" >&2; exit 128;; esac\nexec ${realGit} "$@"\n`,
+      );
+      chmodSync(wrapper, 0o755);
+      const { reported, out } = tocRun({ ".tocignore": "*.md\n" }, true, [], {
+        PATH: `${bin}:${process.env.PATH}`,
+      });
+      expect(out).toContain(
+        "warning: could not apply .tocignore (git ls-files failed: fatal: simulated failure); exemptions ignored",
+      );
+      expect(out.match(/could not apply \.tocignore/g)).toHaveLength(1);
+      expect(out).not.toContain("second line");
+      expect(reported).toEqual(all);
+    });
+    it("does not mix in .gitignore", () => {
+      // src/notes.md is tracked although .gitignore lists src/: only .tocignore may hide it.
+      const { reported } = tocRun({ ".gitignore": "src/\n", ".tocignore": "docs/\n" }, true, [
+        "src/notes.md",
+      ]);
+      expect(reported).toContain("src/notes.md");
+      expect(reported).not.toContain("docs/guide.md");
+    });
+    it("ignores .tocignore outside a git work tree and warns once", () => {
+      const { reported, out } = tocRun(
+        { ".tocignore": "src/\n", "pkg/.tocignore": "inner/\n" },
+        false,
+      );
+      expect(reported).toContain("src/notes.md");
+      expect(out.match(/warning: .tocignore needs a git work tree/g)).toHaveLength(1);
+    });
+  });
+
+  describe("--fix", () => {
+    let tmp: string;
+    afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+    const fixed = (rel: string): string => readFileSync(join(tmp, rel), "utf8");
+    function fixCopy(fixture: string): { code: number | null; out: string } {
+      const base = tmpBase;
+      mkdirSync(base, { recursive: true });
+      tmp = mkdtempSync(join(base, "fix-"));
+      copyFixture(join(fixtures, fixture), tmp);
+      const res = spawnSync("node", [script, tmp, "--fix"], {
+        encoding: "utf8",
+        env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: tmpdir() },
+      });
+      return { code: res.status, out: `${res.stdout}${res.stderr}` };
+    }
+    const body = "## Contents\n\n- [Alpha](#alpha)\n- [Beta](#beta)";
+    const hidden = `<!-- toc\n${body}\n-->`;
+
+    it("inserts a hidden region after the H1, or at the top without one", () => {
+      const { code, out } = fixCopy("toc-fix");
+      expect(out).toContain(`fixed: ${join(tmp, "docs/h1.md")}`);
+      expect(out).toMatch(/0 error\(s\)/);
+      expect(code).toBe(0);
+      expect(fixed("docs/h1.md")).toBe(`# Missing\n\n${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`);
+      expect(fixed("docs/frontmatter.md")).toBe(
+        `---\ntitle: x\n---\n\n# Front\n\n${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`,
+      );
+      expect(fixed("docs/tight.md")).toBe(
+        `# Tight\n\n${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`,
+      );
+      expect(fixed("docs/noh1.md")).toBe(
+        `---\ntitle: x\n---\n\n${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`,
+      );
+      expect(fixed("docs/noh1-nofm.md")).toBe(`${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`);
+    });
+
+    it("rewrites only the lines between the markers, keeping the spelling", () => {
+      fixCopy("toc-fix");
+      expect(fixed("docs/visible.md")).toBe(
+        "# Vis\n\n<!-- toc -->\n## Contents\n\n- [Alpha](#alpha)\n- [Beta](#beta)\n- [Alpha](#alpha-1)\n<!-- /toc -->\n\nIntro.\n\n## Alpha\n\n## `Beta`\n\n## Alpha\n",
+      );
+      expect(fixed("docs/hidden.md")).toBe(`# Hid\n\n${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`);
+    });
+
+    it("removes a legacy Contents comment (and one blank line) and adds the region", () => {
+      fixCopy("toc-fix");
+      expect(fixed("docs/legacy.md")).toBe(
+        `# Legacy\n\n${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`,
+      );
+      expect(fixed("docs/legacy-multi.md")).toBe(
+        `# Legacy\n\n${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`,
+      );
+    });
+
+    it("is idempotent: a second --fix run changes nothing", () => {
+      fixCopy("toc-fix");
+      const rels = [
+        "docs/h1.md",
+        "docs/frontmatter.md",
+        "docs/tight.md",
+        "docs/noh1.md",
+        "docs/noh1-nofm.md",
+        "docs/visible.md",
+        "docs/hidden.md",
+        "docs/legacy.md",
+        "docs/legacy-multi.md",
+      ];
+      const first = rels.map(fixed);
+      const res = spawnSync("node", [script, tmp, "--fix"], {
+        encoding: "utf8",
+        env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: tmpdir() },
+      });
+      expect(rels.map(fixed)).toEqual(first);
+      expect(`${res.stdout}${res.stderr}`).not.toContain("fixed:");
+      expect(res.status).toBe(0);
+    });
+
+    it("never edits a ## Contents section and still reports it", () => {
+      const before = readFileSync(join(fixtures, "toc-fix-unmanaged/docs/guide.md"), "utf8");
+      const { code, out } = fixCopy("toc-fix-unmanaged");
+      expect(fixed("docs/guide.md")).toBe(before);
+      expect(out).not.toContain("fixed:");
+      expect(out).toContain("toc-unmanaged:");
+      expect(code).toBe(1);
     });
   });
 
