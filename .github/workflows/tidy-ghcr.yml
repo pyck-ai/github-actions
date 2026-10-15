@@ -65,10 +65,14 @@ on:
         required: false
         default: ""
       manifest:
-        description: Path to the `.ghcr-tidy.yaml` config manifest in the caller's repo.
+        description: >-
+          Path to the ghcr-tidy config manifest in the caller's repo. Leave
+          empty (the default) to let the tool choose: `.github/ghcr-tidy.yml`,
+          else the deprecated `.ghcr-tidy.yaml` with a warning, and an error
+          when both exist.
         type: string
         required: false
-        default: .ghcr-tidy.yaml
+        default: ""
       baseline:
         description: >-
           Trailing baseline for the volume alarm: `apply` refuses to run
@@ -182,7 +186,7 @@ jobs:
         with:
           args: >-
             plan
-            --manifest ${{ inputs.manifest }}
+            ${{ inputs.manifest != '' && format('--manifest {0}', inputs.manifest) || '' }}
             --out ghcr-tidy-plan.json
             --journal ghcr-tidy-journal.ndjson
             ${{ inputs.package != '' && format('--package {0}', inputs.package) || '' }}
@@ -197,7 +201,7 @@ jobs:
           args: >-
             apply --apply
             --budget ${{ steps.effective.outputs.budget }}
-            --manifest ${{ inputs.manifest }}
+            ${{ inputs.manifest != '' && format('--manifest {0}', inputs.manifest) || '' }}
             --out ghcr-tidy-plan.json
             --journal ghcr-tidy-journal.ndjson
             --breaker-repo ${{ github.repository }}

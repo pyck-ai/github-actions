@@ -2,7 +2,7 @@ import { parse as parseYaml, YAMLParseError } from "yaml";
 import { ManifestError, validateManifest, type Manifest } from "./schema.js";
 
 /**
- * Parses `.ghcr-tidy.yaml` from raw YAML text into a validated
+ * Parses `.github/ghcr-tidy.yml` from raw YAML text into a validated
  * {@link Manifest}. `sourcePath` is used only for error messages. A YAML
  * syntax error and a schema violation are both surfaced as the same
  * catchable {@link ManifestError}, naming the manifest file either way.

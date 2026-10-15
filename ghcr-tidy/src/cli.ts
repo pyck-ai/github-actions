@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { packageName, type PackageName } from "../../registry/package-name.js";
 import {
@@ -46,7 +46,7 @@ import type { PackagesClient, RegistryReader } from "./ports.js";
  * (`plan.ts`), the apply path (`apply-capability.ts`, `apply.ts`,
  * `mutator.ts`), and safety machinery (`breaker.ts`, `volume-alarm.ts`,
  * `verify.ts`) into three subcommands driven by one config manifest,
- * `.ghcr-tidy.yaml`: closed-schema config, explicit argv parsing, a
+ * `.github/ghcr-tidy.yml`: closed-schema config, explicit argv parsing, a
  * small, total exit-code mapping, and the `INPUT_ARGS`-vs-argv duality
  * that lets this same bundle serve as both a plain CLI and (later) a JS
  * action.
@@ -83,7 +83,10 @@ const EXIT_CONFIG = 2;
 const EXIT_INFRA = 3;
 const EXIT_SAFETY = 4;
 
-const DEFAULT_MANIFEST_PATH = ".ghcr-tidy.yaml";
+/** Where the manifest lives by default, next to the repo's other tool configs. */
+export const DEFAULT_MANIFEST_PATH = ".github/ghcr-tidy.yml";
+/** The previous default, at the repo root. Still read (with a warning) when it is the only manifest. */
+export const LEGACY_MANIFEST_PATH = ".ghcr-tidy.yaml";
 /**
  * `--jobs`' default: ONE shared bound on real registry HTTP concurrency
  * for the whole run (see `limiter.ts`'s doc on why one shared limiter, not
@@ -255,8 +258,65 @@ export function parseArgv(argv: readonly string[]): { subcommand: Subcommand; ar
   return { subcommand, args };
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Picks the manifest file. An explicit `--manifest` is used as given. With
+ * no flag, `.github/ghcr-tidy.yml` wins; `.ghcr-tidy.yaml` at the root is
+ * the deprecated fallback and yields a `deprecation` message for the
+ * caller to print. Both present is a {@link ManifestError}: two manifests
+ * could disagree, and this tool deletes things, so it refuses to guess.
+ * When neither exists the new path is returned, so the read error names
+ * the path to create.
+ */
+export async function resolveManifestPath(
+  manifestFlag: string | undefined,
+  cwd: string,
+): Promise<{ path: string; deprecation?: string }> {
+  if (manifestFlag !== undefined) {
+    return { path: path.resolve(cwd, manifestFlag) };
+  }
+  const current = path.resolve(cwd, DEFAULT_MANIFEST_PATH);
+  const legacy = path.resolve(cwd, LEGACY_MANIFEST_PATH);
+  const [hasCurrent, hasLegacy] = await Promise.all([pathExists(current), pathExists(legacy)]);
+  if (hasCurrent && hasLegacy) {
+    throw new ManifestError(
+      `found both ${DEFAULT_MANIFEST_PATH} and ${LEGACY_MANIFEST_PATH}; ` +
+        `delete ${LEGACY_MANIFEST_PATH} (or pass --manifest) so only one manifest decides what gets deleted`,
+      current,
+    );
+  }
+  if (hasLegacy) {
+    return {
+      path: legacy,
+      deprecation:
+        `${LEGACY_MANIFEST_PATH} is deprecated; move it to ${DEFAULT_MANIFEST_PATH} ` +
+        "(the old path is still read for now)",
+    };
+  }
+  return { path: current };
+}
+
+/** Formats a warning for the Actions log (`::warning::`) or, elsewhere, a plain stderr line. */
+function formatWarning(message: string, env: NodeJS.ProcessEnv): string {
+  return env.GITHUB_ACTIONS === "true" ? `::warning::${message}\n` : `warning: ${message}\n`;
+}
+
 async function loadManifestFile(manifestFlag: string | undefined): Promise<Manifest> {
-  const manifestPath = path.resolve(manifestFlag ?? DEFAULT_MANIFEST_PATH);
+  const { path: manifestPath, deprecation } = await resolveManifestPath(
+    manifestFlag,
+    process.cwd(),
+  );
+  if (deprecation !== undefined) {
+    process.stderr.write(formatWarning(deprecation, process.env));
+  }
   let content: string;
   try {
     content = await readFile(manifestPath, "utf8");
@@ -1129,7 +1189,7 @@ export function resolveArgv(env: NodeJS.ProcessEnv, argv: readonly string[]): st
   }
   if (inputArgs.trim() === "") {
     throw new UsageError(
-      "the `args` input is empty; pass a subcommand and flags (e.g. `plan --manifest .ghcr-tidy.yaml`)",
+      "the `args` input is empty; pass a subcommand and flags (e.g. `plan --out plan.json`)",
     );
   }
   return tokenizeArgs(inputArgs);

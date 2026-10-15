@@ -9,7 +9,7 @@
 - [Safety](#safety)
 -->
 
-Plans and applies GHCR retention for the packages named in a `.ghcr-tidy.yaml` manifest, and verifies the registry after every deletion.
+Plans and applies GHCR retention for the packages named in a `.github/ghcr-tidy.yml` manifest, and verifies the registry after every deletion.
 
 A bundled `node24` action (`dist/` is committed). Run it directly through the [`tidy-ghcr.yml`](../.github/workflows/tidy-ghcr.yml) reusable workflow, or as a step with `uses: pyck-ai/github-actions/ghcr-tidy@<sha>` and the `args` input (see [`action.yml`](./action.yml)).
 
@@ -27,7 +27,9 @@ Flags: `ghcr-tidy --help`, backed by the argument parsing in [`src/cli.ts`](./sr
 
 ## Config manifest
 
-The `.ghcr-tidy.yaml` schema is closed: an unknown key is a hard error, because in a deletion tool a silently ignored config key produces a green run that did the wrong thing. The keys, their validation and defaults are documented in [`src/manifest/schema.ts`](./src/manifest/schema.ts). Package entries carry full package names; there is no repo-prefix concept to concatenate.
+The manifest is read from `.github/ghcr-tidy.yml` unless `--manifest <path>` names another file. A manifest at the old root path `.ghcr-tidy.yaml` is still read, with a deprecation warning, when it is the only one; move it to `.github/ghcr-tidy.yml`. If both exist the run fails with a config error (exit `2`), because two manifests could disagree and this tool deletes things.
+
+The `.github/ghcr-tidy.yml` schema is closed: an unknown key is a hard error, because in a deletion tool a silently ignored config key produces a green run that did the wrong thing. The keys, their validation and defaults are documented in [`src/manifest/schema.ts`](./src/manifest/schema.ts). Package entries carry full package names; there is no repo-prefix concept to concatenate.
 
 ## Retention
 

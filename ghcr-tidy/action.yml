@@ -7,7 +7,7 @@ inputs:
   args:
     description: >-
       Arguments passed straight through to `ghcr-tidy` (e.g.
-      `plan --manifest .ghcr-tidy.yaml --out plan.json` or
+      `plan --out plan.json` or
       `apply --apply --budget 200 --out plan.json --journal journal.ndjson`).
     required: false
     default: ""

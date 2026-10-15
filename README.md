@@ -26,7 +26,7 @@ Out of the box, github-actions includes:
 - **`tidy-repo.yml`**: deletes old workflow runs, closes stale issues and PRs, and deletes stale branches. See [its header comment](./.github/workflows/tidy-repo.yml).
 - **`tidy-ghcr.yml`**: runs GHCR retention through the `ghcr-tidy` action. See [its header comment](./.github/workflows/tidy-ghcr.yml).
 - **`verify-image`**: runs each pushed image's own `verify.sh` inside that image. See [verify-image/README.md](./verify-image/README.md).
-- **`ghcr-tidy`**: plans and applies GHCR retention from a `.ghcr-tidy.yaml` manifest. See [ghcr-tidy/README.md](./ghcr-tidy/README.md).
+- **`ghcr-tidy`**: plans and applies GHCR retention from a `.github/ghcr-tidy.yml` manifest. See [ghcr-tidy/README.md](./ghcr-tidy/README.md).
 - **`jev-check`**: runs the jev CLI once per input file and writes one result per file. See [jev-check/README.md](./jev-check/README.md).
 - **`agent-docs-check`**: keeps agent-facing docs inside their budgets. See [agent-docs-check/README.md](./agent-docs-check/README.md).
 - **`gate`**: one pass/fail verdict over a workflow's jobs, for a required status check. See [gate/README.md](./gate/README.md).
