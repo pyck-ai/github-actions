@@ -677,7 +677,8 @@ async function check(root, profile, checkUrls, pyckHome, requireSkillHarness) {
     const isContributing = name === "CONTRIBUTING.md";
     const isReadme = name === "README.md";
     const isDoc = /^docs\/.+\.md$/.test(rel) && !inSkill;
-    const sizeLimited = inSkill || isCoding;
+    // Scripts and other non-Markdown files in a skill dir have no line limit.
+    const sizeLimited = isMd && (inSkill || isCoding);
     const linkChecked =
       isMd && (isAgents || inSkill || isCoding || isContributing || isDoc || isReadme);
     // Agents read every file in a skill dir, not just SKILL.md.
@@ -695,7 +696,7 @@ async function check(root, profile, checkUrls, pyckHome, requireSkillHarness) {
       );
     }
 
-    if (!isMd && !sizeLimited) continue;
+    if (!isMd) continue;
 
     const buf = readFileSync(join(root, rel)); // follows symlinks
     if (buf.includes(0)) continue; // binary
@@ -714,7 +715,7 @@ async function check(root, profile, checkUrls, pyckHome, requireSkillHarness) {
         "error",
         rel,
         AGENT_FILE_MAX_LINES + 1,
-        `agent-file-size: ${lines.length} lines${via}, limit is ${AGENT_FILE_MAX_LINES} for agent files (skill dirs, CODING_STANDARDS.md)`,
+        `agent-file-size: ${lines.length} lines${via}, limit is ${AGENT_FILE_MAX_LINES} for Markdown agent files (skill dirs, CODING_STANDARDS.md)`,
       );
     }
 
