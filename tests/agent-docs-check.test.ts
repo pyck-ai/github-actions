@@ -178,10 +178,14 @@ describe("agent-docs-check", () => {
     it.each([
       ["size-skill-fail", ".claude/skills/demo/SKILL.md:201"],
       ["size-coding-fail", "pkg/CODING_STANDARDS.md:201"],
-      ["size-skillfile-fail", ".agents/skills/demo/notes.txt:201"],
     ])("fails over 200 lines: %s", (fixture, where) =>
       expectFail(fixture, [where, "agent-file-size:", "limit is 200"]),
     );
+    it("has no limit for a script in a skill dir (201-line .py next to SKILL.md)", () => {
+      const { code, out } = run("size-script-pass");
+      expect(out).not.toContain("agent-file-size");
+      expect(code).toBe(0);
+    });
     it("follows a skill-dir symlink, reports the link and names the target", () =>
       expectFail("size-symlink-fail", [
         ".claude/skills/demo/std.md:201: agent-file-size:",
