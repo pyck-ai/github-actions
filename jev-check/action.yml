@@ -28,7 +28,8 @@ inputs:
     description: >-
       Directory to write results to; created if missing. For each input
       `X.json`, writes `X.json` (jev's `-o json` stdout) on success, or
-      `X.error` (jev's stderr plus its exit code) on failure, and continues
+      `X.error` (jev's stderr plus its exit code) on failure (with `models`,
+      `X@<suffix>.json` / `X@<suffix>.error` per model), and continues
       with the next file either way. Exit status 0 (success) and 1 (`check`
       only: some proposition needs review) are both successes, because both
       print a complete JSON result; any other status is a failure.
@@ -48,6 +49,46 @@ inputs:
       name only, never as a command-line value, so it never appears in
       `docker inspect` or a process listing on the runner host.
     required: true
+  pyckllm-api-key:
+    description: >-
+      LiteLLM virtual key for the org's LiteLLM proxy (pyck-ai LiteLLM,
+      `https://llm.pyck.dev`). Optional; when empty, jev talks to OpenRouter
+      directly with `openrouter-api-key`, exactly as before. When set, jev
+      goes through the proxy first and, with `route: auto`, falls back to
+      OpenRouter if the proxy is unusable. Passed into the container by name
+      only, like `openrouter-api-key`.
+    required: false
+    default: ""
+  pyckllm-base-url:
+    description: >-
+      Base root of the LiteLLM proxy. Optional; when empty, jev uses its own
+      default (`http://127.0.0.1:53986`). Inside the container `127.0.0.1` is
+      the container itself, so a local proxy URL only works with host
+      networking; in CI use `https://llm.pyck.dev`.
+    required: false
+    default: ""
+  route:
+    description: >-
+      How jev picks its LLM endpoint: `auto` (default; use the proxy when
+      `pyckllm-api-key` is set and reachable, else OpenRouter directly),
+      `proxy` (fail if the proxy is unusable, no fallback) or `direct` (never
+      use the proxy). Any other value fails the step before anything is pulled
+      or written.
+    required: false
+    default: auto
+  models:
+    description: >-
+      Whitespace or newline separated list of model slugs
+      (`typesafe/jev-1.14 liquid/d1-ultra`). Optional; when empty, each input
+      file runs once on jev's default model and its result is `X.json` /
+      `X.error`, exactly as before. When set, each file runs once per model
+      with jev's root flag `--model <slug>`, and the result is
+      `X@<suffix>.json` / `X@<suffix>.error`, where `<suffix>` is the slug
+      with every character outside `[A-Za-z0-9._-]` replaced by `_`
+      (`typesafe/jev-1.14` becomes `typesafe_jev-1.14`). A slug that is not
+      `provider/name` fails the step before anything is pulled or written.
+    required: false
+    default: ""
   image:
     description: >-
       jev container image reference. Defaults to the digest-pinned
@@ -73,6 +114,10 @@ runs:
         INPUT_DIR: ${{ inputs.input-dir }}
         OUTPUT_DIR: ${{ inputs.output-dir }}
         OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        PYCKLLM_API_KEY: ${{ inputs.pyckllm-api-key }}
+        PYCKLLM_BASE_URL: ${{ inputs.pyckllm-base-url }}
+        JEV_CLI_ROUTE: ${{ inputs.route }}
+        JEV_MODELS: ${{ inputs.models }}
         IMAGE: ${{ inputs.image }}
         COMMAND: ${{ inputs.command }}
       run: '"$GITHUB_ACTION_PATH/run.sh" "$INPUT_DIR" "$OUTPUT_DIR" "$OPENROUTER_API_KEY" "$IMAGE" "$COMMAND"'

@@ -26,6 +26,43 @@
 #                         Optional, default `check`; anything else exits 2
 #                         before the image is pulled or any output written.
 #
+# Optional LiteLLM proxy, read from the environment (not positional args, so
+# existing five-argument callers are unaffected):
+#
+#   PYCKLLM_API_KEY       LiteLLM virtual key. Unset or empty: none of the
+#                         three variables below reaches the container and
+#                         jev talks to OpenRouter directly, exactly as
+#                         without this feature.
+#   PYCKLLM_BASE_URL      proxy base root. Optional; jev's own default is
+#                         http://127.0.0.1:53986. Inside the container
+#                         127.0.0.1 is the container itself, so a local
+#                         proxy URL only works with host networking; in CI
+#                         use https://llm.pyck.dev.
+#   JEV_CLI_ROUTE         `auto` (default), `proxy` (no fallback) or
+#                         `direct`. Anything else exits 2 before the image
+#                         is pulled or any output written; `proxy` without
+#                         PYCKLLM_API_KEY exits 2 as well.
+#
+# When PYCKLLM_API_KEY is set, each of the variables above that is non-empty
+# is passed into the container by name only (`-e PYCKLLM_API_KEY`, no
+# `=value`), like the OpenRouter key.
+#
+# Optional model list, also from the environment:
+#
+#   JEV_MODELS            whitespace or newline separated model slugs
+#                         (`typesafe/jev-1.14 liquid/d1-ultra`). Unset or
+#                         empty: one run per file on jev's default model,
+#                         writing <stem>.json / <stem>.error, exactly as
+#                         without this feature. Set: every file runs once per
+#                         slug with the root flag `--model <slug>` before the
+#                         command, writing <stem>@<suffix>.json /
+#                         <stem>@<suffix>.error, where <suffix> is the slug
+#                         with every character outside [A-Za-z0-9._-]
+#                         replaced by `_` (`typesafe/jev-1.14` becomes
+#                         `typesafe_jev-1.14`). A slug that does not match
+#                         ^~?[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$ exits 2 before
+#                         the image is pulled or any output written.
+#
 # Design: jev runs from a prebuilt image (ghcr.io/pyck-ai/jev-cli), a
 # static, shell-less, single-binary image whose ENTRYPOINT is jev itself. It
 # is built, verified, and published by jev-cli's own pipeline, so this
@@ -57,9 +94,9 @@
 # anything else is a failure (X.error is written). Treating 1 as a failure
 # would discard exactly the results consumers care most about.
 #
-# Processes EVERY file rather than stopping at the first failure, so one
+# Processes EVERY file (and, with JEV_MODELS, every model) rather than stopping at the first failure, so one
 # run reports every broken input rather than one failure per rerun (same
-# principle as verify-image's run.sh). Exits 1 if any file failed.
+# principle as verify-image's run.sh). Exits 1 if any run failed.
 set -euo pipefail
 
 input_dir="${1:?input-dir required}"
@@ -73,7 +110,44 @@ if [ "$command" != "check" ] && [ "$command" != "ask" ]; then
   exit 2
 fi
 
+route="${JEV_CLI_ROUTE:-auto}"
+case "$route" in
+  auto | proxy | direct) ;;
+  *)
+    echo "::error::route must be 'auto', 'proxy' or 'direct', got '$route'" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$route" = "proxy" ] && [ -z "${PYCKLLM_API_KEY:-}" ]; then
+  echo "::error::route 'proxy' needs pyckllm-api-key" >&2
+  exit 2
+fi
+
+# Whole-string read: IFS splits on spaces, tabs and newlines; `-d ''` keeps it
+# from stopping at the first line. read returns non-zero at EOF, hence `|| true`.
+models=()
+IFS=$' \t\n' read -r -d '' -a models <<<"${JEV_MODELS:-}" || true
+for model in "${models[@]+"${models[@]}"}"; do
+  if [[ ! "$model" =~ ^~?[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$ ]]; then
+    echo "::error::model '$model' is not a valid slug (expected provider/name)" >&2
+    exit 2
+  fi
+done
+
 export OPENROUTER_API_KEY="$openrouter_key"
+
+# Names only (never `-e NAME=value`): values stay out of `docker inspect` and
+# the process list. The proxy variables are passed only with a proxy key, so
+# without one the docker command line is the one from before this feature.
+env_args=(-e OPENROUTER_API_KEY)
+if [ -n "${PYCKLLM_API_KEY:-}" ]; then
+  export JEV_CLI_ROUTE="$route"
+  env_args+=(-e PYCKLLM_API_KEY -e JEV_CLI_ROUTE)
+  if [ -n "${PYCKLLM_BASE_URL:-}" ]; then
+    env_args+=(-e PYCKLLM_BASE_URL)
+  fi
+fi
 
 if [ ! -d "$input_dir" ]; then
   echo "::error::input-dir '$input_dir' does not exist" >&2
@@ -109,44 +183,64 @@ if ! docker image inspect "$image" >/dev/null 2>&1; then
   fi
 fi
 
+# Without models there is one run per file on jev's default model (empty
+# slug, no --model flag, plain output names).
+runs=("")
+unit="file(s)"
+if [ "${#models[@]}" -gt 0 ]; then
+  runs=("${models[@]}")
+  unit="run(s) (file x model)"
+fi
+
 checked=0
 failed=0
 
 for f in "${input_files[@]}"; do
-  checked=$((checked + 1))
-
   name="$(basename "$f")"
   stem="${name%.json}"
-  out="$output_dir_abs/$stem.json"
-  err="$output_dir_abs/$stem.error"
-  tmp_out="$out.tmp"
-  tmp_err="$err.tmp"
 
-  # Written to .tmp then renamed, so a reader never sees a half-written
-  # result.
-  rc=0
-  docker run --rm -i \
-    --user "$(id -u):$(id -g)" \
-    -e OPENROUTER_API_KEY \
-    "$image" "$command" -j - -o json <"$f" >"$tmp_out" 2>"$tmp_err" || rc=$?
+  for model in "${runs[@]}"; do
+    checked=$((checked + 1))
 
-  # 0 and 1 both carry a complete JSON result (see the header comment).
-  if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
-    mv "$tmp_out" "$out"
-    rm -f "$tmp_err"
-  else
-    failed=$((failed + 1))
-    rm -f "$tmp_out"
-    {
-      cat "$tmp_err"
-      echo "jev exited with status $rc"
-    } >"$err"
-    rm -f "$tmp_err"
-    echo "jev-check: $name failed (exit $rc); see $stem.error" >&2
-  fi
+    model_args=()
+    label="$stem"
+    what="$name"
+    if [ -n "$model" ]; then
+      model_args=(--model "$model")
+      label="$stem@${model//[^A-Za-z0-9._-]/_}"
+      what="$name with $model"
+    fi
+    out="$output_dir_abs/$label.json"
+    err="$output_dir_abs/$label.error"
+    tmp_out="$out.tmp"
+    tmp_err="$err.tmp"
+
+    # Written to .tmp then renamed, so a reader never sees a half-written
+    # result.
+    rc=0
+    docker run --rm -i \
+      --user "$(id -u):$(id -g)" \
+      "${env_args[@]}" \
+      "$image" "${model_args[@]+"${model_args[@]}"}" "$command" -j - -o json <"$f" >"$tmp_out" 2>"$tmp_err" || rc=$?
+
+    # 0 and 1 both carry a complete JSON result (see the header comment).
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
+      mv "$tmp_out" "$out"
+      rm -f "$tmp_err"
+    else
+      failed=$((failed + 1))
+      rm -f "$tmp_out"
+      {
+        cat "$tmp_err"
+        echo "jev exited with status $rc"
+      } >"$err"
+      rm -f "$tmp_err"
+      echo "jev-check: $what failed (exit $rc); see $label.error" >&2
+    fi
+  done
 done
 
-echo "jev-check: checked $checked file(s), $failed failed"
+echo "jev-check: checked $checked $unit, $failed failed"
 if [ "$failed" -gt 0 ]; then
   exit 1
 fi
