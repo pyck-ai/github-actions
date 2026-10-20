@@ -35,6 +35,15 @@ inputs:
       one).
     required: false
     default: buildargs.conf
+  builder:
+    description: >-
+      Optional buildx builder that builds the derived busybox image for a
+      shell-less target, loaded with `--load`. Empty uses plain
+      `docker build`. build-image.yml passes the leg's remote builder on
+      the kata pool, whose podman socket cannot run buildx's default
+      docker-container builder.
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -53,4 +62,5 @@ runs:
         CONTEXTS: ${{ inputs.contexts }}
         DIGESTS: ${{ inputs.digests }}
         BUILDARGS: ${{ inputs.buildargs }}
-      run: '"$GITHUB_ACTION_PATH/run.sh" "$TARGETS" "$CONTEXTS" "$DIGESTS" "$BUILDARGS"'
+        BUILDER: ${{ inputs.builder }}
+      run: '"$GITHUB_ACTION_PATH/run.sh" "$TARGETS" "$CONTEXTS" "$DIGESTS" "$BUILDARGS" "$BUILDER"'

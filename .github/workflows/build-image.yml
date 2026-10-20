@@ -491,6 +491,11 @@ jobs:
           contexts: ${{ needs.discover.outputs.contexts }}
           digests: ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
           buildargs: ${{ inputs.buildargs }}
+          # On the kata pool the podman socket cannot run buildx's default
+          # docker-container builder (podman's pidns=host refuses its init),
+          # so a shell-less target's derived busybox image is built on this
+          # leg's remote builder instead. Empty elsewhere: plain docker build.
+          builder: ${{ steps.buildkit.outputs.remote == 'true' && format('{0}-{1}', inputs.builder-name, matrix.component.name) || '' }}
 
   # Apply the floating/version tags now that every leg of `build` has verified
   # the digest it pushed. Skipped on PRs: PR builds are pushed by digest only

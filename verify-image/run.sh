@@ -4,7 +4,7 @@
 # outside of Actions (see README.md in this directory for the invocation
 # contract).
 #
-# Usage: run.sh <targets> <contexts-json> <digests-file> [buildargs-file]
+# Usage: run.sh <targets> <contexts-json> <digests-file> [buildargs-file] [builder]
 #
 #   targets         newline-separated list of bake target names built by one
 #                   leg (matrix.component.targets in build-image.yml)
@@ -17,6 +17,13 @@
 #                   pushed, not whatever a floating tag happens to point at)
 #   buildargs-file  optional KEY=VALUE file passed to each verify.sh via
 #                   `docker run --env-file`; tolerated if absent
+#   builder         optional buildx builder for the derived busybox image
+#                   (built with `--load`); empty means plain `docker build`.
+#                   The kata pool needs it: its podman socket cannot run
+#                   buildx's default docker-container builder, because
+#                   podman runs with pidns=host there and refuses the
+#                   builder container's init ("PID namespace isn't
+#                   private").
 #
 # Verifies EVERY target in the list rather than stopping at the first
 # failure; a run that reports every broken image beats one failure per push
@@ -30,6 +37,7 @@ targets="${1:?targets required}"
 contexts_json="${2:?contexts JSON required}"
 digests_file="${3:?digests file required}"
 buildargs="${4:-buildargs.conf}"
+builder="${5:-}"
 
 env_file_args=()
 if [ -n "$buildargs" ] && [ -f "$buildargs" ]; then
@@ -83,8 +91,12 @@ verify_one() {
   # function's caller's caller (verify_one) ultimately returns.
   derive_busybox_image() {
     derived_tag="verify-image-derived-$$-$RANDOM-$target"
+    local build=(docker build)
+    if [ -n "$builder" ]; then
+      build=(docker buildx build --builder "$builder" --load)
+    fi
     printf 'FROM %s\nCOPY --from=busybox:musl /bin /bin\n' "$image" \
-      | docker build -q -t "$derived_tag" - >/dev/null
+      | "${build[@]}" -q -t "$derived_tag" - >/dev/null
   }
 
   # shellcheck disable=SC2329 # invoked (possibly twice) below
