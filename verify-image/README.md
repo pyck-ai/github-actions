@@ -15,7 +15,7 @@ A plain-bash composite action, not a CLI. Inputs and defaults live in [`action.y
 
 - `targets`: newline-separated bake target names built by one leg.
 - `contexts`: JSON map of `target -> {context, repo}`.
-- `digests`: path to the JSON `target -> digest` file of this leg, so the exact pushed artifact is verified.
+- `digests`: path to the JSON `target -> digest` file of this leg, so the exact pushed artifact is verified. `build-image.yml` runs one leg per component and platform and calls this action only when the leg's platform is the runner's native one.
 - `buildargs`: path to `buildargs.conf` (default `buildargs.conf`, optional), passed to each `verify.sh` as environment through `docker run --env-file`.
 - `builder`: buildx builder for the derived busybox image below (optional). Empty uses plain `docker build`; set, it runs `docker buildx build --builder <builder> --load`. `build-image.yml` sets it to the leg's remote builder on the kata pool, where the podman socket cannot run buildx's default docker-container builder.
 

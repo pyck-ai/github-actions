@@ -9,6 +9,26 @@ name: build-image
 # add a mode/input that allows tagging before every leg's verify step
 # completes.
 #
+# One leg per component AND platform. `discover` expands each component (the
+# targets connected by `target:` contexts) into one leg per platform its
+# targets list in the bake file, and a leg builds only that platform
+# (`<target>.platform=...`). Every target of a component must list the same
+# platforms, or `discover` fails naming them. A component that lists no
+# platform gets one leg that builds as before. The legs exist because a leg
+# that builds both platforms of a large target cold overran the 20 GiB
+# BuildKit disk of the kata pool. Each leg verifies the digest it pushed only
+# when its platform is the runner's native one (the others log a notice and
+# skip); `publish` then creates every tag from all of a target's per-platform
+# digests in one `imagetools create`, so the index holds exactly the legs'
+# manifests, and still only after every leg succeeded.
+#
+# Build cache: each platform leg reads and writes its own registry cache
+# refs, the target's `cache-from`/`cache-to` refs from the bake file with
+# `-<arch>` appended (`...buildcache:alpine` -> `...buildcache:alpine-arm64`),
+# so two legs never share or overwrite a ref. The first run after a repo
+# adopts this is cold, as the old unsuffixed refs are no longer read. On PRs
+# the export stays off. Components without platforms keep their refs.
+#
 # Consumers pin this workflow by commit SHA:
 # pyck-ai/github-actions/.github/workflows/build-image.yml@<sha>
 #
@@ -17,7 +37,9 @@ name: build-image
 #   task build TARGET="<bake targets, space-separated>" BUILDER=<builder> -- <overrides>
 # where the overrides are `--pull`, `--metadata-file <path>` and one `--set`
 # per line of `discover`'s bake overrides (build args, per-target push by
-# digest, `*.cache-to=` on PRs). The task must:
+# digest, `*.cache-to=` on PRs) plus, on a leg with a platform, the leg's
+# `<target>.platform`, `<target>.cache-from` and `<target>.cache-to`. The
+# task must:
 #   - take `TARGET` (one or more bake targets, default all of them) and pass
 #     it to `docker buildx bake` as the targets to build;
 #   - take `BUILDER` (the buildx builder name, default the task's own) and pass
@@ -34,6 +56,8 @@ name: build-image
 # BuildKit through the buildx remote driver (`$BUILDKIT_HOST`) instead of a
 # docker-container builder, skips QEMU setup because BuildKit emulates arm64
 # itself, and verifies through the runner's podman socket (`$DOCKER_HOST`).
+# A leg whose platform is not the runner's native one (arm64 on the amd64
+# runners) skips verify, since the podman socket cannot run it natively.
 # Everywhere else the legs behave as before. Callers configure nothing; the
 # `Detect rootless BuildKit` step decides. The remote BuildKit is the runner's
 # own, so the bake file must not need daemon-side settings such as
@@ -141,6 +165,7 @@ jobs:
       targets: ${{ steps.targets.outputs.targets }}
       bakeargs-set: ${{ steps.targets.outputs.bakeargs-set }}
       contexts: ${{ steps.targets.outputs.contexts }}
+      caches: ${{ steps.targets.outputs.caches }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -153,53 +178,86 @@ jobs:
         run: |
           set -a && source buildargs.conf && set +a
           print=$(REGISTRY="$REGISTRY" docker buildx bake --print)
+          if [ -n "$BAKE_TARGETS_OVERRIDE" ]; then
+            # No dependency graph is consulted for an override: each named
+            # target becomes its own single-target component.
+            components=$(jq -c '[.[] | {name: ., targets: .}]' <<<"$BAKE_TARGETS_OVERRIDE")
+          else
+            # Derive the build matrix from the dependency graph instead of a
+            # flat per-target list: build an undirected adjacency list from
+            # the `target:` edges in `contexts`, label-propagate to a fixed
+            # point to find connected components, then group targets by
+            # component. A flat matrix rebuilds every dependency once per
+            # dependent (e.g. a shared base target built once per leaf that
+            # references it via `contexts = { x = "target:base" }`), and
+            # worse, each of those redundant jobs still carries the
+            # dependency's own `cache-to`, so concurrent jobs race to write
+            # the same registry cache ref; last writer wins, degrading
+            # every subsequent run in a way invisible in any single run's
+            # logs. `name` is the component's root (the target with no
+            # outgoing edges, i.e. nothing it depends on); chosen purely so
+            # job/builder names read well; it plays no role in the grouping.
+            # Ported from pyck-ai/baseimages'
+            # .github/scripts/build-images/discover.sh.
+            components=$(jq -c '
+              .target as $t
+              | ($t | keys) as $nodes
+              | ( [ $t | to_entries[] | .key as $from
+                    | (.value.contexts // {}) | to_entries[]
+                    | select(.value | startswith("target:"))
+                    | {a:$from, b:(.value | ltrimstr("target:"))} ] ) as $edges
+              | ( reduce $edges[] as $e ({}; .[$e.a] += [$e.b] | .[$e.b] += [$e.a]) ) as $adj
+              | ( reduce $edges[] as $e ({}; .[$e.a] += 1) ) as $deps
+              | ( reduce range(0; ($nodes|length)) as $_
+                    ( ($nodes | map({key:., value:.}) | from_entries);
+                      . as $lab
+                      | reduce $nodes[] as $n ($lab;
+                          .[$n] = ([ $n, .[$n] ] + [ ($adj[$n] // [])[] | $lab[.] ] | min)) )
+                ) as $label
+              | $nodes | group_by($label[.])
+              | map( sort as $m
+                     | { name: ([ $m[] | select(($deps[.] // 0) == 0) ] | sort | .[0] // $m[0]),
+                         # Newline-separated: verify-image splits `targets` on
+                         # newlines, and a space-separated list there is read as
+                         # one target name. The build step turns the newlines into
+                         # the spaces `task build TARGET=` takes.
+                         targets: ($m | join("\n")) } )
+              | sort_by(.name)' <<<"$print")
+          fi
+          # One matrix leg per component and platform: a leg that built both
+          # platforms of a large target cold overran the 20 GiB BuildKit disk
+          # of the unprivileged kata pool, so each leg builds one platform. A
+          # component's platforms are its targets' `platforms` from the bake
+          # file, and every target of a component must list the same ones
+          # (the leg builds all of its targets for one platform). A component
+          # whose targets list no platform gets a single leg with an empty
+          # `platform` and `arch`, which builds as before (no platform
+          # override, unchanged cache refs). `arch` is the platform without
+          # its `linux/` prefix and with `/` as `-` (`linux/arm/v7` ->
+          # `arm-v7`), so it is safe in job, builder and artifact names. This
+          # runs outside the `{ ... } >> "$GITHUB_OUTPUT"` group below
+          # because a failing command substitution inside `echo` would not
+          # fail the step.
+          if ! matrix=$(jq -c --argjson p "$print" '
+                [ .[] | . as $c
+                  | ($c.targets | split("\n") | map(select(. != ""))) as $ts
+                  | ([ $ts[] | ($p.target[.].platforms // []) | sort ] | unique) as $sets
+                  | if ($sets | length) > 1 then
+                      error("targets of component " + $c.name + " list different platforms: "
+                            + ([ $ts[] | . + "=[" + (($p.target[.].platforms // []) | join(",")) + "]" ] | join(" ")))
+                    else . end
+                  | ($sets[0] // []) as $plats
+                  | if ($plats | length) == 0 then
+                      $c + {platform: "", arch: ""}
+                    else
+                      $plats[] | {name: $c.name, targets: $c.targets, platform: .,
+                                  arch: (sub("^linux/"; "") | gsub("/"; "-"))}
+                    end ]' <<<"$components" 2>&1); then
+            echo "::error::$matrix"
+            exit 1
+          fi
           {
-            if [ -n "$BAKE_TARGETS_OVERRIDE" ]; then
-              # No dependency graph is consulted for an override: each named
-              # target becomes its own single-target component.
-              echo "targets=$(jq -c '[.[] | {name: ., targets: .}]' <<<"$BAKE_TARGETS_OVERRIDE")"
-            else
-              # Derive the build matrix from the dependency graph instead of a
-              # flat per-target list: build an undirected adjacency list from
-              # the `target:` edges in `contexts`, label-propagate to a fixed
-              # point to find connected components, then group targets by
-              # component. A flat matrix rebuilds every dependency once per
-              # dependent (e.g. a shared base target built once per leaf that
-              # references it via `contexts = { x = "target:base" }`), and
-              # worse, each of those redundant jobs still carries the
-              # dependency's own `cache-to`, so concurrent jobs race to write
-              # the same registry cache ref; last writer wins, degrading
-              # every subsequent run in a way invisible in any single run's
-              # logs. `name` is the component's root (the target with no
-              # outgoing edges, i.e. nothing it depends on); chosen purely so
-              # job/builder names read well; it plays no role in the grouping.
-              # Ported from pyck-ai/baseimages'
-              # .github/scripts/build-images/discover.sh.
-              echo "targets=$(jq -c '
-                .target as $t
-                | ($t | keys) as $nodes
-                | ( [ $t | to_entries[] | .key as $from
-                      | (.value.contexts // {}) | to_entries[]
-                      | select(.value | startswith("target:"))
-                      | {a:$from, b:(.value | ltrimstr("target:"))} ] ) as $edges
-                | ( reduce $edges[] as $e ({}; .[$e.a] += [$e.b] | .[$e.b] += [$e.a]) ) as $adj
-                | ( reduce $edges[] as $e ({}; .[$e.a] += 1) ) as $deps
-                | ( reduce range(0; ($nodes|length)) as $_
-                      ( ($nodes | map({key:., value:.}) | from_entries);
-                        . as $lab
-                        | reduce $nodes[] as $n ($lab;
-                            .[$n] = ([ $n, .[$n] ] + [ ($adj[$n] // [])[] | $lab[.] ] | min)) )
-                  ) as $label
-                | $nodes | group_by($label[.])
-                | map( sort as $m
-                       | { name: ([ $m[] | select(($deps[.] // 0) == 0) ] | sort | .[0] // $m[0]),
-                           # Newline-separated: verify-image splits `targets` on
-                           # newlines, and a space-separated list there is read as
-                           # one target name. The build step turns the newlines into
-                           # the spaces `task build TARGET=` takes.
-                           targets: ($m | join("\n")) } )
-                | sort_by(.name)' <<<"$print")"
-            fi
+            echo "targets=$matrix"
             # Per-real-target lookup consumed by `build`'s verify step: each
             # bake target's own `context` dir (where its `verify.sh` lives,
             # per the `$/verify-image` contract) and the repo
@@ -214,6 +272,18 @@ jobs:
                 | { key: .key,
                     value: { context: (.value.context // "."),
                              repo: (.value.tags[0] | sub(":[^/]+$"; "")) } } ]
+              | from_entries')"
+            # Per-real-target cache refs as the bake file declares them, for
+            # `build` to suffix with each leg's arch (see the `Build and push`
+            # step). `bake --print` prints them as objects (`{type, ref,
+            # mode}`); a string form (`type=registry,ref=...`) is passed
+            # through and handled by `build` too.
+            echo "caches=$(jq -cn --argjson p "$print" '
+              [ $p.target | to_entries[]
+                | select((.value["cache-from"] // []) + (.value["cache-to"] // []) | length > 0)
+                | { key: .key,
+                    value: { from: (.value["cache-from"] // []),
+                             to: (.value["cache-to"] // []) } } ]
               | from_entries')"
             echo 'bakeargs-set<<EOF'
             grep -v '^#' buildargs.conf | grep -v '^\s*$' | sed 's/^/*.args./'
@@ -242,6 +312,7 @@ jobs:
 
   build:
     needs: [discover]
+    name: build ${{ matrix.component.name }}${{ matrix.component.arch && format(' {0}', matrix.component.arch) || '' }}
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
@@ -253,6 +324,13 @@ jobs:
       # instead. Left unset (empty string) when the caller doesn't define the
       # secret, e.g. github-runner, which never sets Docker Hub credentials.
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      # This leg's buildx builder: per repo, component and platform (see the
+      # `Set up buildx builder` comment). No arch suffix when the component
+      # lists no platforms.
+      BUILDER_NAME: ${{ inputs.builder-name }}-${{ matrix.component.name }}${{ matrix.component.arch && format('-{0}', matrix.component.arch) || '' }}
+      # This leg's identity for its digest file and artifact: the component,
+      # plus the arch when the component lists platforms.
+      LEG: ${{ matrix.component.name }}${{ matrix.component.arch && format('-{0}', matrix.component.arch) || '' }}
     strategy:
       # These jobs push as they go (by digest), so a cancelled sibling can be
       # interrupted after it has already pushed, leaving a half-written
@@ -310,9 +388,9 @@ jobs:
           # on the same runner; creation conflicts, buildkit contention, and
           # setup-buildx-action's post-step `docker buildx rm` potentially
           # tearing the builder out from under a still-running sibling leg.
-          # Suffixing with the component name keeps each leg's builder
-          # independent.
-          name: ${{ inputs.builder-name }}-${{ matrix.component.name }}
+          # Suffixing with the component name and platform keeps each leg's
+          # builder independent.
+          name: ${{ env.BUILDER_NAME }}
           driver-opts: network=host
           buildkitd-flags: --allow-insecure-entitlement=network.host
 
@@ -329,7 +407,7 @@ jobs:
       - name: Set up buildx builder (remote rootless BuildKit)
         if: steps.buildkit.outputs.remote == 'true'
         env:
-          BUILDER: ${{ inputs.builder-name }}-${{ matrix.component.name }}
+          BUILDER: ${{ env.BUILDER_NAME }}
         run: |
           docker buildx create --name "$BUILDER" --driver remote --use \
             "${BUILDKIT_HOST:?runner-init is present but BUILDKIT_HOST is not set}"
@@ -396,8 +474,12 @@ jobs:
         env:
           REGISTRY: ${{ inputs.registry }}
           TARGETS: ${{ matrix.component.targets }}
-          BUILDER: ${{ inputs.builder-name }}-${{ matrix.component.name }}
+          BUILDER: ${{ env.BUILDER_NAME }}
           BAKEARGS_SET: ${{ needs.discover.outputs.bakeargs-set }}
+          PLATFORM: ${{ matrix.component.platform }}
+          ARCH: ${{ matrix.component.arch }}
+          CACHES: ${{ needs.discover.outputs.caches }}
+          EVENT_NAME: ${{ github.event_name }}
           # Keep provenance out of the METADATA JSON only; the image itself still
           # gets its provenance attestation. Buildx embeds the full SLSA predicate
           # per target, and a multi-platform target's JSON can be large; see
@@ -409,22 +491,45 @@ jobs:
           while IFS= read -r line; do
             if [ -n "$line" ]; then overrides+=(--set "$line"); fi
           done <<<"$BAKEARGS_SET"
+          # A leg with a platform builds only that platform of each of its
+          # targets, and reads and writes its own cache refs: the target's
+          # refs from the bake file with `-<arch>` appended, so two platform
+          # legs never share or overwrite a ref. Their first run is cold. On
+          # PRs `*.cache-to=` (above) already disables the export. A leg
+          # without a platform changes nothing.
+          if [ -n "$PLATFORM" ]; then
+            while IFS= read -r t; do
+              [ -n "$t" ] || continue
+              overrides+=(--set "$t.platform=$PLATFORM")
+              while IFS= read -r line; do
+                if [ -n "$line" ]; then overrides+=(--set "$t.$line"); fi
+              done < <(jq -r --arg t "$t" --arg arch "$ARCH" --arg event "$EVENT_NAME" '
+                def sfx:
+                  if type == "string" then sub("ref=(?<r>[^,]+)"; "ref=" + .r + "-" + $arch)
+                  else
+                    (if has("ref") then .ref += "-" + $arch else . end)
+                    | ([ .type // empty | "type=" + . ]
+                       + [ to_entries[] | select(.key != "type") | "\(.key)=\(.value)" ] | join(","))
+                  end;
+                .[$t] // empty
+                | (.from | map(sfx) | map("cache-from=" + .)[]),
+                  (if $event == "pull_request" then empty else .to | map(sfx) | map("cache-to=" + .)[] end)' <<<"$CACHES")
+            done <<<"$TARGETS"
+          fi
           task build TARGET="$(paste -sd' ' <<<"$TARGETS")" BUILDER="$BUILDER" -- "${overrides[@]}"
 
       # Recorded so this leg's own verify step below can pull this exact
       # digest (not whatever a floating tag happens to point at), and so
       # `publish` can apply tags to it once every leg has verified. One JSON
-      # file per matrix component (a component can bake multiple real bake
-      # targets; the metadata dict below is already keyed by each real
-      # target's name, so the component name here is only used to make the
-      # artifact filename unique). Still uploaded as an artifact, not just
+      # file per matrix leg, i.e. per component and platform (a component can
+      # bake multiple real bake targets; the metadata dict below is already
+      # keyed by each real target's name, so the leg name here is only used
+      # to make the artifact filename unique). Still uploaded as an artifact, not just
       # used locally, because `publish` runs in a separate job and needs
       # every leg's digest, merged downstream via an artifact handshake, not
       # job outputs, because matrix outputs are last-writer-wins and would
       # silently corrupt digest tracking if a variant is added.
       - name: Export digest
-        env:
-          TARGET: ${{ matrix.component.name }}
         run: |
           mkdir -p "$RUNNER_TEMP/digests"
           jq -e 'to_entries
@@ -433,13 +538,13 @@ jobs:
                  | map({key: .key, value: .value["containerimage.digest"]})
                  | from_entries
                  | if length == 0 then error("no digests in bake metadata") else . end' \
-            "$RUNNER_TEMP/bake-meta.json" > "$RUNNER_TEMP/digests/$TARGET.json"
+            "$RUNNER_TEMP/bake-meta.json" > "$RUNNER_TEMP/digests/$LEG.json"
 
       - name: Upload digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: digest-${{ matrix.component.name }}
-          path: ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
+          name: digest-${{ env.LEG }}
+          path: ${{ runner.temp }}/digests/${{ env.LEG }}.json
           retention-days: 1
 
       # Verify the EXACT digest(s) this leg just pushed; a real pre-tag gate
@@ -456,14 +561,35 @@ jobs:
       # does fail this `build` job overall, which is what `publish`'s `needs:
       # build` keys off.
       #
-      # Caveat: a multi-arch target's `docker pull` on the recorded digest only
-      # fetches the manifest for the puller's own platform (amd64, since
-      # self-hosted runners here are amd64). So this verifies the amd64 half
-      # only; any arm64 half is published unverified. `--load` cannot load a
-      # multi-arch result at all; pulling the real pushed digest is strictly
-      # better than a fresh single-platform rebuild (it's the actual pushed
-      # artifact) but does not close this platform gap. See the same note in
-      # pyck-ai/baseimages' verify.sh.
+      # Platform: a leg pushes one platform, but the digest it recorded can
+      # still be an index (provenance attestations make it one), and
+      # `docker pull` on an index fetches only the manifest for the puller's
+      # own platform. So a leg verifies its digest only when its platform is
+      # the runner's native one (or the component lists no platform, which
+      # builds as before and verifies the amd64 half of a multi-arch index on
+      # the amd64 runners here). A leg of another platform cannot run its
+      # image without emulation, so it skips verify with a notice and its
+      # image is published unverified, as the arm64 half was before. `--load`
+      # cannot load a multi-arch result at all; pulling the real pushed
+      # digest is strictly better than a fresh single-platform rebuild (it's
+      # the actual pushed artifact). See the same note in pyck-ai/baseimages'
+      # verify.sh.
+      - name: Check the runner can run this leg's platform
+        id: native
+        env:
+          PLATFORM: ${{ matrix.component.platform }}
+        run: |
+          native=
+          case "$(uname -m)" in
+            x86_64) native=linux/amd64 ;;
+            aarch64 | arm64) native=linux/arm64 ;;
+          esac
+          if [ -z "$PLATFORM" ] || [ "$PLATFORM" = "$native" ]; then
+            echo "verify=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "verify=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping verify: this leg built $PLATFORM and the runner is ${native:-$(uname -m)}, which cannot run it without emulation; the image is published unverified"
+          fi
 
       # `$/` is the self-repository reference: it resolves an action stored
       # in THIS repository at the running commit's SHA; the same SHA as
@@ -485,17 +611,18 @@ jobs:
       # repo} map, and this leg's own digest file, and verifies each one,
       # failing if any fail.
       - name: Verify pushed images
+        if: steps.native.outputs.verify == 'true'
         uses: $/verify-image
         with:
           targets: ${{ matrix.component.targets }}
           contexts: ${{ needs.discover.outputs.contexts }}
-          digests: ${{ runner.temp }}/digests/${{ matrix.component.name }}.json
+          digests: ${{ runner.temp }}/digests/${{ env.LEG }}.json
           buildargs: ${{ inputs.buildargs }}
           # On the kata pool the podman socket cannot run buildx's default
           # docker-container builder (podman's pidns=host refuses its init),
           # so a shell-less target's derived busybox image is built on this
           # leg's remote builder instead. Empty elsewhere: plain docker build.
-          builder: ${{ steps.buildkit.outputs.remote == 'true' && format('{0}-{1}', inputs.builder-name, matrix.component.name) || '' }}
+          builder: ${{ steps.buildkit.outputs.remote == 'true' && env.BUILDER_NAME || '' }}
 
   # Apply the floating/version tags now that every leg of `build` has verified
   # the digest it pushed. Skipped on PRs: PR builds are pushed by digest only
@@ -525,8 +652,13 @@ jobs:
           path: digests
           merge-multiple: true
 
+      # Each leg's file maps target -> digest for ONE platform of its component.
+      # Merge them into target -> [digest, ...], one digest per platform leg.
       - name: Merge digests
-        run: jq -s 'add' digests/*.json > digests.json
+        run: |
+          jq -s 'reduce .[] as $leg ({};
+                   reduce ($leg | keys[]) as $t (.; .[$t] += [$leg[$t]]))' \
+            digests/*.json > digests.json
 
       - name: Apply tags
         env:
@@ -536,28 +668,41 @@ jobs:
           print=$(docker buildx bake --print | jq -c '.target')
           rc=0
           while IFS=$'\t' read -r target tags; do
-            d=$(jq -r --arg t "$target" '.[$t] // empty' digests.json)
-            if [ -z "$d" ]; then echo "::error::no digest recorded for $target"; rc=1; continue; fi
+            mapfile -t ds < <(jq -r --arg t "$target" '.[$t] // [] | .[]' digests.json)
+            if [ "${#ds[@]}" -eq 0 ]; then echo "::error::no digest recorded for $target"; rc=1; continue; fi
+            # One digest per platform leg, so the count must equal the
+            # platforms the bake file lists for this target (one leg when it
+            # lists none). A mismatch means a platform was not built, and
+            # tagging would publish an incomplete index.
+            want=$(jq -r --arg t "$target" '.[$t].platforms // [] | length | if . == 0 then 1 else . end' <<<"$print")
+            if [ "${#ds[@]}" -ne "$want" ]; then
+              echo "::error::$target has ${#ds[@]} digest(s) but the bake file lists $want platform(s)"; rc=1; continue
+            fi
             IFS=',' read -ra tl <<<"$tags"
             # Derive the repo the same way discover's jq does
             # (sub(":[^/]+$"; "")) so the two agree on registries with a port.
             # Do not substitute bash ${x%:*} for this reason.
             repo=$(sed 's/:[^/]*$//' <<<"${tl[0]}")
-            # Assert the source is a multi-arch index rather than passing
-            # --prefer-index=false: every target here is assumed to inherit a
-            # shared multi-platform config, so the source IS an index and
-            # `imagetools create` does a cheap carbon copy. If a target ever
-            # became single-platform, --prefer-index=false would silently
-            # publish a bare manifest; failing loudly here is correct instead.
-            if ! docker buildx imagetools inspect --raw "${repo}@${d}" \
-                 | jq -e '.mediaType|test("index|manifest.list")' >/dev/null; then
-              echo "::error::$target digest is not a multi-arch index: ${repo}@${d}"; rc=1; continue
-            fi
+            # Each source is one leg's pushed digest: a bare manifest, or an
+            # index when provenance attestations are attached. Assert it
+            # exists and is one of those, rather than letting
+            # `imagetools create` fail halfway through the tag list.
+            srcs=(); ok=true
+            for d in "${ds[@]}"; do
+              if ! docker buildx imagetools inspect --raw "${repo}@${d}" \
+                   | jq -e '.mediaType|test("index|manifest")' >/dev/null; then
+                echo "::error::$target digest is not an image manifest or index: ${repo}@${d}"; ok=false
+              fi
+              srcs+=("${repo}@${d}")
+            done
+            if ! $ok; then rc=1; continue; fi
             args=(); for t in "${tl[@]}"; do args+=(-t "$t"); done
-            # Accumulate failures rather than aborting on the first error, so a
-            # re-run converges in one pass. imagetools create from a recorded
-            # digest is idempotent.
-            docker buildx imagetools create "${args[@]}" "${repo}@${d}" || rc=1
+            # All platforms' digests go into ONE call, so every tag points at
+            # one index holding exactly the legs' manifests. Accumulate
+            # failures rather than aborting on the first error, so a re-run
+            # converges in one pass. imagetools create from recorded digests
+            # is idempotent.
+            docker buildx imagetools create "${args[@]}" "${srcs[@]}" || rc=1
           done < <(jq -r 'to_entries[] | select((.value.tags//[])|length>0) | "\(.key)\t\(.value.tags|join(","))"' <<<"$print")
           exit $rc
 

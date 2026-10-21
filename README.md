@@ -22,7 +22,7 @@ Consumers call the reusable workflows and actions by commit SHA. The workflows a
 
 Out of the box, github-actions includes:
 
-- **`build-image.yml`**: builds a container image by digest, verifies the pushed digest, and only then applies tags. On runners with `runner-init` (the unprivileged kata pool) it builds on the runner's rootless BuildKit through the buildx remote driver, with arm64 built by BuildKit's own emulation; callers configure nothing. See [its header comment](./.github/workflows/build-image.yml).
+- **`build-image.yml`**: builds a container image by digest, verifies the pushed digest, and only then applies tags. On runners with `runner-init` (the unprivileged kata pool) it builds on the runner's rootless BuildKit through the buildx remote driver, with arm64 built by BuildKit's own emulation; callers configure nothing. Each platform of a component builds in its own matrix leg, with its own build cache refs, and tags are created from all platforms' digests. See [its header comment](./.github/workflows/build-image.yml).
 - **`tidy-repo.yml`**: deletes old workflow runs, closes stale issues and PRs, and deletes stale branches. See [its header comment](./.github/workflows/tidy-repo.yml).
 - **`tidy-ghcr.yml`**: runs GHCR retention through the `ghcr-tidy` action. See [its header comment](./.github/workflows/tidy-ghcr.yml).
 - **`verify-image`**: runs each pushed image's own `verify.sh` inside that image. See [verify-image/README.md](./verify-image/README.md).
