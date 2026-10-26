@@ -65,6 +65,38 @@ name: build-image
 # directory needs buildx's `--allow fs.read=<dir>` in the caller's `build`
 # task.
 #
+# Reproducible builds: with `reproducible: true` the same commit gives the same
+# image index digest on every run, so the digest can be pinned in the caller's
+# deploy files before the image is published. Off (the default) changes
+# nothing. On, the workflow:
+#   - checks out the head commit (`github.event.pull_request.head.sha` on a PR,
+#     not GitHub's test merge commit, whose fresh time would change the digest)
+#     with full history (`fetch-depth: 0`), so the caller's `task build` can
+#     derive SOURCE_DATE_EPOCH from `git log` (the caller owns that logic and
+#     the list of build inputs, so a local `task build` gives the same digest);
+#   - adds `rewrite-timestamp=true,compatibility-version=30` to every
+#     per-target `output=` and `--set *.attest=type=provenance,disabled=true`
+#     to the build overrides: provenance inside the image carries run-specific
+#     times and ids, so it would change the digest;
+#   - fails a leg that has no `runner-init` rootless BuildKit: the fallback
+#     builder uses the floating `moby/buildkit:buildx-stable-1`, and a BuildKit
+#     version change can change the digest. Use the kata pool;
+#   - runs `publish` on pull requests too. Per target it computes the index
+#     digest with `imagetools create --dry-run` from the legs' pushed digests
+#     (sha256 of the printed JSON without its trailing newline, which equals
+#     the digest of the index that is pushed), writes it to the job summary
+#     and a notice, and on a PR stops there: no tag moves. On other events it
+#     creates the tags, then reads the digest of the first tag back and fails
+#     if it differs from the computed one.
+# The `pin-task` input (only valid with `reproducible`) names a task of the
+# caller's Taskfile. For each target `publish` runs `task <pin-task>
+# TARGET=<target>`, which prints the pinned digest (`sha256:...`); a
+# difference fails the job, and on non-PR events it does so BEFORE any tag is
+# created. It fails on a PR as well: the code commit stays red until the commit
+# that records the pin lands, which is the intended order. The task runs from
+# `publish`'s checkout, so `task` must be on the runner's PATH (it is on the
+# kata pool, which `reproducible` requires anyway).
+#
 # Triggers stay in the caller (schedule / workflow_dispatch / pull_request);
 # a shared workflow must not own the cron, since the offset encodes a real
 # dependency on when an upstream image publishes.
@@ -132,6 +164,23 @@ on:
         type: number
         required: false
         default: 60
+      reproducible:
+        description: >-
+          Build so that the same commit gives the same image index digest
+          (see "Reproducible builds" in the header comment). Needs the
+          unprivileged kata pool and a caller `task build` that sets
+          SOURCE_DATE_EPOCH. Off by default: nothing changes.
+        type: boolean
+        required: false
+        default: false
+      pin-task:
+        description: >-
+          Only with `reproducible`. Name of a task in the caller's Taskfile
+          that prints the pinned digest for `TARGET=<target>`; `publish` fails
+          when it differs from the computed digest, before any tag is created.
+        type: string
+        required: false
+        default: ""
 
 # NO top-level `concurrency:` here, deliberately. Do not add one.
 #
@@ -169,13 +218,27 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Reproducible builds: the head commit with full history (see the
+          # header comment). Off: GitHub's defaults, as before.
+          ref: ${{ inputs.reproducible && (github.event.pull_request.head.sha || github.sha) || '' }}
+          # String values: the number 0 is falsy in an expression, so
+          # `&& 0 || 1` would always give 1.
+          fetch-depth: ${{ inputs.reproducible && '0' || '1' }}
 
       - name: Read targets and build args from bake file
         id: targets
         env:
           REGISTRY: ${{ inputs.registry }}
           BAKE_TARGETS_OVERRIDE: ${{ inputs.bake-targets }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPRODUCIBLE: ${{ inputs.reproducible }}
+          PIN_TASK: ${{ inputs.pin-task }}
         run: |
+          if [ -n "$PIN_TASK" ] && [ "$REPRODUCIBLE" != "true" ]; then
+            echo "::error::pin-task is set but reproducible is not true; pin-task only works with reproducible: true"
+            exit 1
+          fi
           set -a && source buildargs.conf && set +a
           print=$(REGISTRY="$REGISTRY" docker buildx bake --print)
           if [ -n "$BAKE_TARGETS_OVERRIDE" ]; then
@@ -286,8 +349,10 @@ jobs:
                              to: (.value["cache-to"] // []) } } ]
               | from_entries')"
             echo 'bakeargs-set<<EOF'
-            grep -v '^#' buildargs.conf | grep -v '^\s*$' | sed 's/^/*.args./'
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # buildargs.conf may hold only comments: grep exits 1 on no match,
+            # which would fail the step under `-eo pipefail`.
+            { grep -v '^#' buildargs.conf | grep -v '^\s*$' || true; } | sed 's/^/*.args./'
+            if [ "$EVENT_NAME" = "pull_request" ]; then
               # On PRs, disable cache export so an unmerged (possibly broken) bump can't
               # poison the registry build cache that scheduled builds rely on.
               echo '*.cache-to='
@@ -299,14 +364,20 @@ jobs:
             # repo to push to is derived from each target's first tag (e.g. .../foo:latest).
             # Guard against targets with no tags (e.g. a future internal-only
             # target) so `.value.tags[0]` doesn't explode.
-            jq -rn --argjson p "$print" '
+            # Reproducible: rewrite-timestamp makes layer file times follow
+            # SOURCE_DATE_EPOCH, and compatibility-version pins how BuildKit
+            # assembles the image so another BuildKit version cannot change
+            # the digest.
+            extra=
+            if [ "$REPRODUCIBLE" = "true" ]; then extra=',rewrite-timestamp=true,compatibility-version=30'; fi
+            jq -rn --argjson p "$print" --arg extra "$extra" '
               $p.target
               | to_entries[]
               | select((.value.tags // []) | length > 0)
               | .key as $k
               | (.value.tags[0] | sub(":[^/]+$"; "")) as $repo
               | ($k + ".tags="),
-                ($k + ".output=type=image,name=" + $repo + ",push-by-digest=true,name-canonical=true,push=true")'
+                ($k + ".output=type=image,name=" + $repo + ",push-by-digest=true,name-canonical=true,push=true" + $extra)'
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
@@ -344,9 +415,19 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Reproducible builds: the head commit with full history (see the
+          # header comment). Off: GitHub's defaults, as before.
+          ref: ${{ inputs.reproducible && (github.event.pull_request.head.sha || github.sha) || '' }}
+          # String values: the number 0 is falsy in an expression, so
+          # `&& 0 || 1` would always give 1.
+          fetch-depth: ${{ inputs.reproducible && '0' || '1' }}
 
       - name: Load build args
-        run: grep -v '^#' buildargs.conf | grep -v '^\s*$' >> "$GITHUB_ENV"
+        # buildargs.conf may hold only comments: grep exits 1 on no match,
+        # which would fail the step under `-eo pipefail`.
+        run: |
+          { grep -v '^#' buildargs.conf | grep -v '^\s*$' || true; } >> "$GITHUB_ENV"
 
       # Pick the builder. The unprivileged kata runner pool has no Docker
       # daemon and cannot register binfmt handlers; its image instead ships
@@ -360,6 +441,8 @@ jobs:
       # container path below fails for lack of a daemon.
       - name: Detect rootless BuildKit
         id: buildkit
+        env:
+          REPRODUCIBLE: ${{ inputs.reproducible }}
         run: |
           remote=false
           if command -v runner-init >/dev/null 2>&1; then
@@ -368,6 +451,14 @@ jobs:
             else
               echo "::warning::runner-init is present but rootless BuildKit did not become ready within 180s"
             fi
+          fi
+          # Reproducible builds need the runner's pinned rootless BuildKit; the
+          # docker-container fallback uses the floating
+          # `moby/buildkit:buildx-stable-1`, which would make the digest
+          # depend on the day.
+          if [ "$REPRODUCIBLE" = "true" ] && [ "$remote" != "true" ]; then
+            echo "::error::reproducible builds need a runner with runner-init (rootless BuildKit, the kata pool); the fallback builder uses a floating BuildKit version"
+            exit 1
           fi
           echo "remote=$remote" >> "$GITHUB_OUTPUT"
 
@@ -480,6 +571,7 @@ jobs:
           ARCH: ${{ matrix.component.arch }}
           CACHES: ${{ needs.discover.outputs.caches }}
           EVENT_NAME: ${{ github.event_name }}
+          REPRODUCIBLE: ${{ inputs.reproducible }}
           # Keep provenance out of the METADATA JSON only; the image itself still
           # gets its provenance attestation. Buildx embeds the full SLSA predicate
           # per target, and a multi-platform target's JSON can be large; see
@@ -488,6 +580,11 @@ jobs:
           BUILDX_METADATA_PROVENANCE: disabled
         run: |
           overrides=(--pull --metadata-file "$RUNNER_TEMP/bake-meta.json")
+          # Reproducible: no provenance attestation in the image; its
+          # run-specific times and ids would change the index digest.
+          if [ "$REPRODUCIBLE" = "true" ]; then
+            overrides+=(--set '*.attest=type=provenance,disabled=true')
+          fi
           while IFS= read -r line; do
             if [ -n "$line" ]; then overrides+=(--set "$line"); fi
           done <<<"$BAKEARGS_SET"
@@ -627,9 +724,11 @@ jobs:
   # Apply the floating/version tags now that every leg of `build` has verified
   # the digest it pushed. Skipped on PRs: PR builds are pushed by digest only
   # for inspection and must never move a tag that scheduled/manual runs own.
+  # With `reproducible` it also runs on PRs, to compute and check the digest
+  # the PR will publish; it still moves no tag there.
   publish:
     needs: [discover, build]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' || inputs.reproducible
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
@@ -638,6 +737,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Reproducible builds: the head commit with full history (see the
+          # header comment). Off: GitHub's defaults, as before.
+          ref: ${{ inputs.reproducible && (github.event.pull_request.head.sha || github.sha) || '' }}
+          # String values: the number 0 is falsy in an expression, so
+          # `&& 0 || 1` would always give 1.
+          fetch-depth: ${{ inputs.reproducible && '0' || '1' }}
 
       - name: Log in to the Container registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -654,15 +760,24 @@ jobs:
 
       # Each leg's file maps target -> digest for ONE platform of its component.
       # Merge them into target -> [digest, ...], one digest per platform leg.
+      #
+      # The ORDER of the leg files is the order of the sources in the index,
+      # and the index digest depends on source order (arm64 first gives another
+      # digest than amd64 first). So the files are listed explicitly in
+      # `LC_ALL=C` sorted order instead of relying on the shell glob.
       - name: Merge digests
         run: |
+          mapfile -t files < <(printf '%s\n' digests/*.json | LC_ALL=C sort)
           jq -s 'reduce .[] as $leg ({};
                    reduce ($leg | keys[]) as $t (.; .[$t] += [$leg[$t]]))' \
-            digests/*.json > digests.json
+            "${files[@]}" > digests.json
 
       - name: Apply tags
         env:
           REGISTRY: ${{ inputs.registry }}
+          REPRODUCIBLE: ${{ inputs.reproducible }}
+          PIN_TASK: ${{ inputs.pin-task }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -a && source buildargs.conf && set +a
           print=$(docker buildx bake --print | jq -c '.target')
@@ -696,13 +811,43 @@ jobs:
               srcs+=("${repo}@${d}")
             done
             if ! $ok; then rc=1; continue; fi
+            if [ "$REPRODUCIBLE" = "true" ]; then
+              # The digest the index will have: the printed JSON of a dry run
+              # over the same sources, hashed WITHOUT its trailing newline
+              # (`$(...)` drops it; checked to equal the pushed index digest).
+              # No tag or index is written here.
+              if ! json=$(docker buildx imagetools create --dry-run "${srcs[@]}"); then
+                echo "::error::$target: imagetools create --dry-run failed"; rc=1; continue
+              fi
+              digest="sha256:$(printf '%s' "$json" | sha256sum | cut -d' ' -f1)"
+              echo "$target: $digest" >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice::$target index digest: $digest"
+              # The pin check comes BEFORE any tag is created.
+              if [ -n "$PIN_TASK" ]; then
+                if ! pinned=$(task "$PIN_TASK" TARGET="$target"); then
+                  echo "::error::$target: task $PIN_TASK failed"; rc=1; continue
+                fi
+                if [ "$pinned" != "$digest" ]; then
+                  echo "::error::$target: pinned digest '$pinned' differs from the built digest '$digest'"; rc=1; continue
+                fi
+              fi
+              if [ "$EVENT_NAME" = "pull_request" ]; then continue; fi
+            fi
             args=(); for t in "${tl[@]}"; do args+=(-t "$t"); done
             # All platforms' digests go into ONE call, so every tag points at
             # one index holding exactly the legs' manifests. Accumulate
             # failures rather than aborting on the first error, so a re-run
             # converges in one pass. imagetools create from recorded digests
             # is idempotent.
-            docker buildx imagetools create "${args[@]}" "${srcs[@]}" || rc=1
+            docker buildx imagetools create "${args[@]}" "${srcs[@]}" || { rc=1; continue; }
+            if [ "$REPRODUCIBLE" = "true" ]; then
+              # Read the pushed digest back: the dry-run digest must be the one
+              # that is now live.
+              pushed=$(docker buildx imagetools inspect "${tl[0]}" --format '{{json .Manifest}}' | jq -r .digest) || pushed=
+              if [ "$pushed" != "$digest" ]; then
+                echo "::error::$target: ${tl[0]} has digest '$pushed' after tagging but the dry run computed '$digest'"; rc=1
+              fi
+            fi
           done < <(jq -r 'to_entries[] | select((.value.tags//[])|length>0) | "\(.key)\t\(.value.tags|join(","))"' <<<"$print")
           exit $rc
 
@@ -734,9 +879,9 @@ jobs:
           for r in $results; do
             [ "$r" = "success" ] || { echo "A job did not succeed: $results"; exit 1; }
           done
-          # `publish` is intentionally skipped on PRs (if: github.event_name !=
-          # 'pull_request'), so it must be accepted as either "success" or
-          # "skipped".
+          # `publish` is intentionally skipped on PRs unless `reproducible` is
+          # set (if: github.event_name != 'pull_request' || inputs.reproducible),
+          # so it must be accepted as either "success" or "skipped".
           case "${{ needs.publish.result }}" in
             success|skipped) ;;
             *) echo "publish did not succeed: ${{ needs.publish.result }}"; exit 1 ;;
