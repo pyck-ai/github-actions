@@ -98,7 +98,7 @@ inputs:
       image.
     required: false
     # renovate: datasource=docker depName=ghcr.io/pyck-ai/jev-cli
-    default: ghcr.io/pyck-ai/jev-cli:latest@sha256:8a0f0162583646ab6ed9a0dab2e5f46111b071fb81af36eb714b7962333ca534
+    default: ghcr.io/pyck-ai/jev-cli:latest@sha256:6676deb04d0682c2fa32beaf14af1cb737ac67afd41b340f666287bd73de70ef
 runs:
   using: composite
   steps:
