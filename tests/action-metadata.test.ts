@@ -8,7 +8,8 @@ import { parse } from "yaml";
 // `runs:` (no `secrets`, for one). An expression there fails every caller at
 // "Set up job" with "Unrecognized named-value", and neither actionlint nor
 // a local run catches it. jev-check shipped exactly that in an input
-// description. Expressions belong under `runs:` only.
+// description. Expressions belong under `runs:` only, except the `value:` of
+// a composite action's `outputs:`, which GitHub requires to be an expression.
 
 const root = join(__dirname, "..");
 
@@ -28,7 +29,8 @@ function actionFiles(): string[] {
 
 function expressionsOutsideRuns(node: unknown, path: string[], out: string[]): string[] {
   if (typeof node === "string") {
-    if (node.includes("${{")) out.push(path.join("."));
+    const isOutputValue = path.length === 3 && path[0] === "outputs" && path[2] === "value";
+    if (node.includes("${{") && !isOutputValue) out.push(path.join("."));
   } else if (Array.isArray(node)) {
     node.forEach((v, i) => expressionsOutsideRuns(v, [...path, String(i)], out));
   } else if (node && typeof node === "object") {
@@ -50,5 +52,19 @@ describe("action metadata", () => {
   it.each(files)("%s has no ${{ }} expression outside runs:", (file) => {
     const doc: unknown = parse(readFileSync(join(root, file), "utf8"));
     expect(expressionsOutsideRuns(doc, [], [])).toEqual([]);
+  });
+
+  it("jev-check exposes run-script and image, set by a step that runs first", () => {
+    const doc = parse(readFileSync(join(root, "jev-check", "action.yml"), "utf8")) as {
+      outputs: Record<string, { value: string }>;
+      runs: { steps: { id?: string; run: string }[] };
+    };
+    expect(Object.keys(doc.outputs).sort()).toEqual(["image", "run-script"]);
+    expect(doc.outputs["run-script"]?.value).toBe("${{ steps.expose.outputs.run-script }}");
+    expect(doc.outputs["image"]?.value).toBe("${{ steps.expose.outputs.image }}");
+    const first = doc.runs.steps[0];
+    expect(first?.id).toBe("expose");
+    expect(first?.run).toContain('run-script=$GITHUB_ACTION_PATH/run.sh" >> "$GITHUB_OUTPUT"');
+    expect(first?.run).toContain('image=$IMAGE" >> "$GITHUB_OUTPUT"');
   });
 });
