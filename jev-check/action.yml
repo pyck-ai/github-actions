@@ -99,9 +99,31 @@ inputs:
     required: false
     # renovate: datasource=docker depName=ghcr.io/pyck-ai/jev-cli
     default: ghcr.io/pyck-ai/jev-cli:latest@sha256:16eb0c829832b844a85b794781d0a11805b95e36bedd62dda34c79ab6ca0a4d1
+outputs:
+  run-script:
+    description: >-
+      Absolute path of this action's `run.sh`, so a caller can run batches
+      itself. Its arguments and environment are a public contract of the
+      action, see README.md.
+    value: ${{ steps.expose.outputs.run-script }}
+  image:
+    description: >-
+      The jev container image reference the action uses (the `image` input
+      after its default), to pass as `run.sh`'s fourth argument.
+    value: ${{ steps.expose.outputs.image }}
 runs:
   using: composite
   steps:
+    # First, so the outputs are set even when input-dir is empty and the run
+    # step below exits 0 before docker.
+    - name: Expose run.sh and the image
+      id: expose
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        echo "run-script=$GITHUB_ACTION_PATH/run.sh" >> "$GITHUB_OUTPUT"
+        echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
     # Pass inputs via `env:`, not interpolated into `run:`'s command text,
     # for the same reason verify-image does: a value substituted directly
     # into the run script's text could break out of the surrounding shell

@@ -4,6 +4,7 @@
 ## Contents
 
 - [Inputs](#inputs)
+- [Outputs](#outputs)
 - [Behavior](#behavior)
 - [Design](#design)
 -->
@@ -25,6 +26,22 @@ A plain-bash composite action, not a CLI. Inputs and defaults live in [`action.y
 - `route` (optional): `auto` (default; proxy when `pyckllm-api-key` is set and usable, else OpenRouter directly), `proxy` (fail if the proxy is unusable, no fallback; needs `pyckllm-api-key`) or `direct` (never use the proxy). Any other value exits 2 before anything is pulled or written. The semantics are jev's, see [jev-cli's configuration](https://github.com/pyck-ai/jev-cli/blob/main/docs/configuration.md).
 
 When calling [`run.sh`](./run.sh) directly, the three proxy inputs are the environment variables `PYCKLLM_API_KEY`, `PYCKLLM_BASE_URL` and `JEV_CLI_ROUTE`, and `models` is `JEV_MODELS`; none is a positional argument, so the five-argument form keeps working. The proxy variables reach the container only when `PYCKLLM_API_KEY` is set.
+
+## Outputs
+
+- `run-script`: the absolute path of [`run.sh`](./run.sh) on the runner.
+- `image`: the jev CLI image reference the action uses (the `image` input after its default).
+
+Both are set on every run, including over an empty `input-dir`, so a caller that must batch its own calls (for example to stop on a cost cap, which one step over a whole directory cannot do) runs the action once over an empty directory to get them, then calls `run-script` itself per batch:
+
+```bash
+JEV_MODELS="$models" PYCKLLM_API_KEY="$key" PYCKLLM_BASE_URL="$url" JEV_CLI_ROUTE="$route" \
+  "$RUN_SCRIPT" "$batch_in" "$batch_out" "$OPENROUTER_API_KEY" "$IMAGE" ask
+```
+
+The arguments are, in order, the input directory, the output directory, the OpenRouter API key, the image (the `image` output) and the command (`check` or `ask`). The environment is `JEV_MODELS`, `PYCKLLM_API_KEY`, `PYCKLLM_BASE_URL` and `JEV_CLI_ROUTE`, as above. The header of [`run.sh`](./run.sh) owns the details.
+
+`run.sh`'s arguments and environment are a public contract of the action: changing them is a breaking change of the action.
 
 ## Behavior
 
