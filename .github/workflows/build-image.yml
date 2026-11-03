@@ -440,7 +440,13 @@ jobs:
       # never gets ready is a pool fault, and the docker-container path below
       # cannot work on that pool (no daemon, no privileged containers), so
       # the step fails here with runner-init's own output above it instead
-      # of failing later in QEMU setup with an unrelated error.
+      # of failing later in QEMU setup with an unrelated error. runner-init's
+      # reason keeps only the last 3 lines of BuildKit's log, which for a
+      # crash is usually a goroutine trace line, so the step also prints the
+      # end of the log itself. The log sits next to the status file in
+      # /run/user/1001/runner-init/ (pyck-ai/github-runner README), but its
+      # file name is not part of runner-init's interface: a missing file only
+      # prints a note and never changes the step's result.
       - name: Detect rootless BuildKit
         id: buildkit
         env:
@@ -449,7 +455,11 @@ jobs:
           remote=false
           if command -v runner-init >/dev/null 2>&1; then
             if ! runner-init --wait buildkit 180; then
-              echo "::error::runner-init could not start rootless BuildKit (it crashed or was not ready within 180s; its output is above). This is a runner pool fault, not a build failure: re-run the job"
+              log=/run/user/1001/runner-init/buildkit.log
+              echo "::group::Last 200 lines of $log"
+              tail -n 200 "$log" 2>/dev/null || echo "($log is missing or unreadable)"
+              echo "::endgroup::"
+              echo "::error::runner-init could not start rootless BuildKit (it crashed or was not ready within 180s; its reason and BuildKit's log are above). This is a runner pool fault, not a build failure: re-run the job"
               exit 1
             fi
             remote=true
