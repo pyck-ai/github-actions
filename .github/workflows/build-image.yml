@@ -436,9 +436,11 @@ jobs:
       # of `runner-init` is the only signal used, so every other runner (the
       # dind pool, GitHub-hosted runners) keeps the docker-container path
       # below untouched. `remote=true` needs BuildKit to actually be ready
-      # (`--wait` exits 0 only then); a runner-init that never gets there is
-      # a pool fault, so it is flagged with a warning before the docker-
-      # container path below fails for lack of a daemon.
+      # (`--wait` exits 0 only then). A runner-init whose BuildKit crashes or
+      # never gets ready is a pool fault, and the docker-container path below
+      # cannot work on that pool (no daemon, no privileged containers), so
+      # the step fails here with runner-init's own output above it instead
+      # of failing later in QEMU setup with an unrelated error.
       - name: Detect rootless BuildKit
         id: buildkit
         env:
@@ -446,11 +448,11 @@ jobs:
         run: |
           remote=false
           if command -v runner-init >/dev/null 2>&1; then
-            if runner-init --wait buildkit 180; then
-              remote=true
-            else
-              echo "::warning::runner-init is present but rootless BuildKit did not become ready within 180s"
+            if ! runner-init --wait buildkit 180; then
+              echo "::error::runner-init could not start rootless BuildKit (it crashed or was not ready within 180s; its output is above). This is a runner pool fault, not a build failure: re-run the job"
+              exit 1
             fi
+            remote=true
           fi
           # Reproducible builds need the runner's pinned rootless BuildKit; the
           # docker-container fallback uses the floating
