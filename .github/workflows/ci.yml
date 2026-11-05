@@ -25,7 +25,8 @@ jobs:
     # so a contributor runs exactly what CI runs with `task ci`.
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    # Lint, tsc and 500+ tests: the standard pool.
+    runs-on: [pyck-ai, firecracker, standard]
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,7 +37,7 @@ jobs:
           node-version: 24
           cache: "npm"
 
-      # ubuntu-latest does not ship go-task (of our pools, only self-hosted-kata does).
+      # Pins the go-task version instead of relying on the runner image's.
       - name: Set up Task
         uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
         with:
@@ -58,7 +59,7 @@ jobs:
     # `uses:` path needs a checkout for.
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: [pyck-ai, firecracker, light]
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
