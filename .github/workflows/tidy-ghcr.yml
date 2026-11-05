@@ -100,7 +100,7 @@ on:
 jobs:
   tidy:
     name: Plan / apply GHCR retention
-    runs-on: self-hosted
+    runs-on: [pyck-ai, firecracker, light]
     timeout-minutes: 180
     # `contents: read` to check out the caller's manifest.
     # `packages: write` to plan AND delete versions via GITHUB_TOKEN. GitHub

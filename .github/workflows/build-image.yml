@@ -51,8 +51,10 @@ name: build-image
 # `task build` with no arguments builds every target locally, so the CI
 # command and the local command are the same task.
 #
-# Runners: on a runner that ships `runner-init` (the unprivileged kata pool,
-# which has no Docker daemon), each `build` leg uses the runner's rootless
+# Runners: the default `runs-on` is the pyck-ai standard Firecracker pool
+# (labels pyck-ai, firecracker, standard, buildkit). On a runner that ships
+# `runner-init` (the unprivileged Firecracker pools, which have no Docker
+# daemon), each `build` leg uses the runner's rootless
 # BuildKit through the buildx remote driver (`$BUILDKIT_HOST`) instead of a
 # docker-container builder, skips QEMU setup because BuildKit emulates arm64
 # itself, and verifies through the runner's podman socket (`$DOCKER_HOST`).
@@ -80,7 +82,7 @@ name: build-image
 #     times and ids, so it would change the digest;
 #   - fails a leg that has no `runner-init` rootless BuildKit: the fallback
 #     builder uses the floating `moby/buildkit:buildx-stable-1`, and a BuildKit
-#     version change can change the digest. Use the kata pool;
+#     version change can change the digest. Use a Firecracker pool;
 #   - runs `publish` on pull requests too. Per target it computes the index
 #     digest with `imagetools create --dry-run` from the legs' pushed digests
 #     (sha256 of the printed JSON without its trailing newline, which equals
@@ -95,7 +97,7 @@ name: build-image
 # created. It fails on a PR as well: the code commit stays red until the commit
 # that records the pin lands, which is the intended order. The task runs from
 # `publish`'s checkout, so `task` must be on the runner's PATH (it is on the
-# kata pool, which `reproducible` requires anyway).
+# Firecracker pools, which `reproducible` requires anyway).
 #
 # Triggers stay in the caller (schedule / workflow_dispatch / pull_request);
 # a shared workflow must not own the cron, since the offset encodes a real
@@ -153,10 +155,15 @@ on:
         default: buildargs.conf
       runs-on:
         description: >-
-          Runner label used for every job in this workflow.
+          Runner for every job in this workflow: either one label, or a JSON
+          array of labels (a string starting with `[`), for example
+          '["pyck-ai","firecracker","heavy","buildkit"]'. The default is the
+          standard pool, which has rootless BuildKit and podman. The pools
+          are light, standard and heavy (labels pyck-ai, firecracker, <size>,
+          docker, buildkit; heavy adds nvme, hicpu).
         type: string
         required: false
-        default: self-hosted
+        default: '["pyck-ai","firecracker","standard","buildkit"]'
       timeout-minutes:
         description: >-
           Per-job timeout in minutes, applied to build (which now includes
@@ -202,7 +209,7 @@ jobs:
   # Read the target list from the bake file (unless overridden) so a new
   # variant is picked up by the build matrix without touching CI.
   discover:
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     # Reads the bake file and computes the matrix; observed well under a
     # minute in practice. Generous headroom over that, and still a small
     # fraction of the 360-minute default, so a hung runner fails fast
@@ -384,7 +391,7 @@ jobs:
   build:
     needs: [discover]
     name: build ${{ matrix.component.name }}${{ matrix.component.arch && format(' {0}', matrix.component.arch) || '' }}
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read # required to checkout the calling repo
@@ -741,7 +748,7 @@ jobs:
   publish:
     needs: [discover, build]
     if: github.event_name != 'pull_request' || inputs.reproducible
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read # required to checkout the calling repo
@@ -878,7 +885,7 @@ jobs:
   gate:
     needs: [discover, build, publish]
     if: always()
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     # Pure `needs.*.result` aggregation, no checkout, no API calls;
     # observed well under a minute. Kept small so a hung runner is
     # reported quickly rather than holding the required check open.

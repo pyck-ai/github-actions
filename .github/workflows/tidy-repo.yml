@@ -78,7 +78,7 @@ jobs:
   # per workflow.
   clean-old-workflow-runs:
     name: Delete old workflow runs
-    runs-on: self-hosted
+    runs-on: [pyck-ai, firecracker, light]
     # Observed 13s-22s on a small steady-state backlog, one clearing a
     # larger one-off backlog took ~8.5 minutes. Generous headroom over
     # that, well under the 360-minute default.
@@ -102,7 +102,7 @@ jobs:
   clean-stale-issues-and-prs:
     name: Close stale issues and PRs
     needs: clean-old-workflow-runs
-    runs-on: self-hosted
+    runs-on: [pyck-ai, firecracker, light]
     # Observed a few seconds per run (operations-per-run: 100 keeps a
     # single run bounded). Generous headroom over that.
     timeout-minutes: 10
@@ -135,7 +135,7 @@ jobs:
   clean-stale-branches:
     name: Delete stale branches
     needs: clean-stale-issues-and-prs
-    runs-on: self-hosted
+    runs-on: [pyck-ai, firecracker, light]
     # Observed under 20s per run. Generous headroom over that.
     timeout-minutes: 10
     permissions:
