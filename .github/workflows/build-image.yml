@@ -51,8 +51,11 @@ name: build-image
 # `task build` with no arguments builds every target locally, so the CI
 # command and the local command are the same task.
 #
-# Runners: the default `runs-on` is the pyck-ai standard Firecracker pool
-# (labels pyck-ai, firecracker, standard, buildkit). On a runner that ships
+# Runners: the `build` legs run on `runs-on`, by default the pyck-ai standard
+# Firecracker pool (labels pyck-ai, firecracker, standard, buildkit); a caller
+# with expensive builds sets the heavy pool there. `discover`, `publish` and
+# `gate` build nothing and run on `light-runs-on`, by default the light pool.
+# On a runner that ships
 # `runner-init` (the unprivileged Firecracker pools, which have no Docker
 # daemon), each `build` leg uses the runner's rootless
 # BuildKit through the buildx remote driver (`$BUILDKIT_HOST`) instead of a
@@ -155,15 +158,25 @@ on:
         default: buildargs.conf
       runs-on:
         description: >-
-          Runner for every job in this workflow: either one label, or a JSON
-          array of labels (a string starting with `[`), for example
-          '["pyck-ai","firecracker","heavy","buildkit"]'. The default is the
-          standard pool, which has rootless BuildKit and podman. The pools
-          are light, standard and heavy (labels pyck-ai, firecracker, <size>,
+          Runner for the `build` legs, the jobs that build the images: either
+          one label, or a JSON array of labels (a string starting with `[`).
+          The default is the standard pool, which has rootless BuildKit and
+          podman. Set the heavy pool for expensive builds (many minutes of
+          compile or emulated arm64, more than 8 cores or 10Gi), for example
+          '["pyck-ai","firecracker","heavy","buildkit"]'. The pools are
+          light, standard and heavy (labels pyck-ai, firecracker, <size>,
           docker, buildkit; heavy adds nvme, hicpu).
         type: string
         required: false
         default: '["pyck-ai","firecracker","standard","buildkit"]'
+      light-runs-on:
+        description: >-
+          Runner for `discover`, `publish` and `gate`, which build nothing:
+          they read the bake file, copy manifests with `imagetools` and check
+          results. Same format as `runs-on`. The default is the light pool.
+        type: string
+        required: false
+        default: '["pyck-ai","firecracker","light"]'
       timeout-minutes:
         description: >-
           Per-job timeout in minutes, applied to build (which now includes
@@ -209,7 +222,7 @@ jobs:
   # Read the target list from the bake file (unless overridden) so a new
   # variant is picked up by the build matrix without touching CI.
   discover:
-    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    runs-on: ${{ startsWith(inputs.light-runs-on, '[') && fromJSON(inputs.light-runs-on) || inputs.light-runs-on }}
     # Reads the bake file and computes the matrix; observed well under a
     # minute in practice. Generous headroom over that, and still a small
     # fraction of the 360-minute default, so a hung runner fails fast
@@ -748,7 +761,7 @@ jobs:
   publish:
     needs: [discover, build]
     if: github.event_name != 'pull_request' || inputs.reproducible
-    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    runs-on: ${{ startsWith(inputs.light-runs-on, '[') && fromJSON(inputs.light-runs-on) || inputs.light-runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read # required to checkout the calling repo
@@ -885,7 +898,7 @@ jobs:
   gate:
     needs: [discover, build, publish]
     if: always()
-    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    runs-on: ${{ startsWith(inputs.light-runs-on, '[') && fromJSON(inputs.light-runs-on) || inputs.light-runs-on }}
     # Pure `needs.*.result` aggregation, no checkout, no API calls;
     # observed well under a minute. Kept small so a hung runner is
     # reported quickly rather than holding the required check open.
