@@ -138,6 +138,9 @@ jobs:
       # volume alarm" for `baseline`; see the `apply-effective` step and
       # the `Apply` step's `--baseline` construction respectively).
       - name: Validate string inputs
+        env:
+          BUDGET: ${{ inputs.budget }}
+          BASELINE: ${{ inputs.baseline }}
         run: |
           validate() {
             name="$1"
@@ -150,8 +153,8 @@ jobs:
                 ;;
             esac
           }
-          validate budget "${{ inputs.budget }}"
-          validate baseline "${{ inputs.baseline }}"
+          validate budget "$BUDGET"
+          validate baseline "$BASELINE"
 
       # On a `schedule` event the `inputs` context is EMPTY (not merely
       # defaulted); GitHub does not evaluate `workflow_call` input
@@ -173,10 +176,12 @@ jobs:
       # unattended destructive mode must never be the cron's default.
       - name: Resolve effective apply/budget/delete-broken-roots
         id: effective
+        env:
+          BUDGET: ${{ (github.event_name == 'schedule' && 200) || inputs.budget }}
         run: |
           {
             echo "apply=${{ github.event_name == 'schedule' || inputs.apply == true }}"
-            echo "budget=${{ (github.event_name == 'schedule' && 200) || inputs.budget }}"
+            echo "budget=$BUDGET"
             echo "delete-broken-roots=${{ github.event_name != 'schedule' && inputs.delete-broken-roots == true }}"
           } >> "$GITHUB_OUTPUT"
 
