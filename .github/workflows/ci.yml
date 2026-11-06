@@ -19,10 +19,10 @@ permissions: {}
 
 jobs:
   ci:
-    # Only needs to read the checked-out source: the Taskfile's `ci` task runs
+    # Only needs to read the checked-out source: the Taskfile's `check` task runs
     # lint, format check, tsc, the tests and the committed-bundle check, and
     # never writes anything back to the repo. The checks live in Taskfile.yml
-    # so a contributor runs exactly what CI runs with `task ci`.
+    # so a contributor runs the same with `task check`, or all of CI with `task ci`.
     permissions:
       contents: read
     # Lint, tsc and 500+ tests: the standard pool.
@@ -46,15 +46,55 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run the CI checks
-        run: task ci
+      - name: Run the checks
+        run: task check
+
+  # Both run the shared actions of this repo (`task zizmor`, `task gitleaks`),
+  # which install the pinned tool binary and then run the task. They are two
+  # jobs, not steps of `ci`, so a finding is attributed to its own check.
+  zizmor:
+    permissions:
+      contents: read
+    runs-on: [pyck-ai, firecracker, light]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Task
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Scan workflows and actions
+        uses: ./zizmor
+
+  gitleaks:
+    permissions:
+      contents: read
+    runs-on: [pyck-ai, firecracker, light]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Task
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Scan history for secrets
+        uses: ./gitleaks
 
   # Aggregate check for branch protection: the one required status, named
   # `ci-success` after its group. It fails if any job it needs failed or was
   # cancelled; a skipped job passes. The logic is this repo's own ./gate action.
   ci-success:
     if: always()
-    needs: [ci]
+    needs: [ci, zizmor, gitleaks]
     # The only content it reads is the ./gate action itself, which the local
     # `uses:` path needs a checkout for.
     permissions:

@@ -1,9 +1,10 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 version: "3"
 
-# Two tasks only: `ci` is exactly what the CI workflow runs, `generate`
-# rebuilds what the repository commits as generated output. Run `npm ci`
-# first on a clean checkout.
+# `ci` runs every check; `generate` rebuilds what the repository commits as
+# generated output. The CI workflow runs `check`, `zizmor` and `gitleaks` as
+# three parallel jobs, which together are `ci`. Run `npm ci` first on a clean
+# checkout.
 tasks:
   generate:
     desc: Rebuild the committed ghcr-tidy/dist and branch-tidy/dist bundles
@@ -11,7 +12,31 @@ tasks:
       - npm run bundle
 
   ci:
-    desc: Run every check CI runs, including the committed-bundle check
+    desc: Run every check CI runs
+    cmds:
+      - task: check
+      - task: zizmor
+      - task: gitleaks
+
+  zizmor:
+    desc: Scan the workflows and composite actions for security problems
+    # Scans `.` and not `.github`: this repo's composite actions sit in
+    # top-level directories, outside `.github`. Findings that exist today are
+    # ignored in .github/zizmor.yml; that file may only shrink. Offline: no
+    # token needed.
+    cmds:
+      - zizmor --offline --no-progress .
+
+  gitleaks:
+    desc: Scan the whole git history for secrets
+    # Needs full history: a shallow clone scans fewer commits. Known findings
+    # are in .gitleaks-baseline.json, which may only shrink. --redact keeps a
+    # secret out of the log.
+    cmds:
+      - gitleaks git --redact --no-banner --baseline-path .gitleaks-baseline.json .
+
+  check:
+    desc: Lint, format, type-check, test and verify the committed bundle
     cmds:
       - npm run lint
       - npm run format:check

@@ -1,0 +1,21 @@
+# zizmor baseline: findings that exist today, ignored by file so an edit that
+# moves a line does not break the entry. Only ever remove entries; a new
+# finding must be fixed, not added here. `task zizmor` runs the check.
+rules:
+  artipacked:
+    ignore:
+      - build-image.yml
+      - ci.yml
+      - release.yml
+      - tidy-ghcr.yml
+      - tidy-repo.yml
+  cache-poisoning:
+    ignore:
+      - release.yml
+  secrets-inherit:
+    ignore:
+      - tidy.yml
+  self-repository:
+    ignore:
+      - ci.yml
+      - tidy.yml
