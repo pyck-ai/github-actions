@@ -1,0 +1,51 @@
+name: gitleaks
+description: >-
+  Runs the caller repository's `task gitleaks`, with a pinned gitleaks
+  release binary on PATH. gitleaks finds secrets (keys, tokens, passwords) in
+  git history. This is the MIT-licensed CLI, not gitleaks-action, whose
+  licence is a proprietary agreement that needs a key for organizations. The
+  action installs the binary, verifies its sha256 and makes no decision: the
+  rules, the baseline and the exit code belong to the caller's task.
+
+  The caller must check out with `fetch-depth: 0`: a shallow checkout would
+  scan one commit and pass, so the action fails on one.
+
+  The version and the checksums below are the only copy; change them
+  together. Renovate bumps the version through the custom regex manager in
+  this repo's .github/renovate.json5, which matches the `# renovate:`
+  annotation directly above it. It cannot compute the checksums, so the
+  bump's CI run fails on the sha256 check until they are updated too.
+runs:
+  using: composite
+  steps:
+    - name: Install gitleaks and run task gitleaks
+      shell: bash
+      env:
+        # renovate: datasource=github-releases depName=gitleaks/gitleaks
+        GITLEAKS_VERSION: v8.30.1
+        # From the release's checksums file:
+        # https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+        GITLEAKS_SHA256_X64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        GITLEAKS_SHA256_ARM64: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+      run: |
+        set -euo pipefail
+        if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+          echo "::error::gitleaks needs the full history: check out with fetch-depth: 0" >&2
+          exit 1
+        fi
+        case "$(uname -m)" in
+          x86_64) arch=x64; sha256="$GITLEAKS_SHA256_X64" ;;
+          aarch64 | arm64) arch=arm64; sha256="$GITLEAKS_SHA256_ARM64" ;;
+          *) echo "::error::gitleaks: unsupported architecture $(uname -m)" >&2; exit 1 ;;
+        esac
+        bin="$RUNNER_TEMP/gitleaks-bin"
+        mkdir -p "$bin"
+        archive="$RUNNER_TEMP/gitleaks.tar.gz"
+        curl -fsSL --retry 3 -o "$archive" \
+          "https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION#v}_linux_${arch}.tar.gz"
+        echo "$sha256  $archive" | sha256sum --check --strict -
+        tar -xzf "$archive" -C "$bin" gitleaks
+        rm -f "$archive"
+        export PATH="$bin:$PATH"
+        gitleaks version
+        task gitleaks

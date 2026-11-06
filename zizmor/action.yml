@@ -1,0 +1,44 @@
+name: zizmor
+description: >-
+  Runs the caller repository's `task zizmor`, with a pinned zizmor release
+  binary on PATH. zizmor is a static security checker for GitHub Actions
+  workflows and composite actions (template injection, unpinned actions,
+  broad permissions). The action installs the binary, verifies its sha256 and
+  makes no decision: which files are scanned and what is ignored belongs to
+  the caller's Taskfile and `.github/zizmor.yml`.
+
+  The version and the checksums below are the only copy; change them
+  together. Renovate bumps the version through the custom regex manager in
+  this repo's .github/renovate.json5, which matches the `# renovate:`
+  annotation directly above it. It cannot compute the checksums, so the
+  bump's CI run fails on the sha256 check until they are updated too.
+runs:
+  using: composite
+  steps:
+    - name: Install zizmor and run task zizmor
+      shell: bash
+      env:
+        # renovate: datasource=github-releases depName=zizmorcore/zizmor
+        ZIZMOR_VERSION: v1.32.0
+        # From the release's per-asset digests:
+        # https://github.com/zizmorcore/zizmor/releases/tag/v1.32.0
+        ZIZMOR_SHA256_X86_64: bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b
+        ZIZMOR_SHA256_AARCH64: cb152b207f815116d7fa1c1ee4614f61578803351395052908095e79adfd9fd0
+      run: |
+        set -euo pipefail
+        case "$(uname -m)" in
+          x86_64) arch=x86_64; sha256="$ZIZMOR_SHA256_X86_64" ;;
+          aarch64 | arm64) arch=aarch64; sha256="$ZIZMOR_SHA256_AARCH64" ;;
+          *) echo "::error::zizmor: unsupported architecture $(uname -m)" >&2; exit 1 ;;
+        esac
+        bin="$RUNNER_TEMP/zizmor-bin"
+        mkdir -p "$bin"
+        archive="$RUNNER_TEMP/zizmor.tar.gz"
+        curl -fsSL --retry 3 -o "$archive" \
+          "https://github.com/zizmorcore/zizmor/releases/download/${ZIZMOR_VERSION}/zizmor-${arch}-unknown-linux-gnu.tar.gz"
+        echo "$sha256  $archive" | sha256sum --check --strict -
+        tar -xzf "$archive" -C "$bin" zizmor
+        rm -f "$archive"
+        export PATH="$bin:$PATH"
+        zizmor --version
+        task zizmor
