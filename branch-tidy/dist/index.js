@@ -1570,8 +1570,117 @@ import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /************************************************************************/
 var __webpack_exports__ = {};
 
+;// CONCATENATED MODULE: ./tidy-core/src/inputs.ts
+/** An invalid input; the message names the input and the value it got. */
+class InputError extends Error {
+}
+/**
+ * The raw value of an input: the runner sets `INPUT_<NAME>` with the name
+ * upper-cased and `-` kept.
+ */
+function rawInput(env, name) {
+    return env[`INPUT_${name.toUpperCase()}`];
+}
+/** A non-empty input, trimmed. Throws {@link InputError} when it is missing or blank. */
+function requiredString(env, name) {
+    const value = (rawInput(env, name) ?? "").trim();
+    if (value === "") {
+        throw new InputError(`${name} is required, got an empty value`);
+    }
+    return value;
+}
+/** The input as it was set (not trimmed), or `fallback` when the runner did not set it. */
+function optionalString(env, name, fallback) {
+    return rawInput(env, name) ?? fallback;
+}
+/**
+ * `true` or `false` and nothing else (surrounding whitespace is ignored);
+ * `fallback` when the input is not set. Throws {@link InputError} on any
+ * other value.
+ */
+function parseBoolean(env, name, fallback) {
+    const raw = rawInput(env, name);
+    if (raw === undefined)
+        return fallback;
+    const value = raw.trim();
+    if (value === "true")
+        return true;
+    if (value === "false")
+        return false;
+    throw new InputError(`${name} must be "true" or "false", got ${JSON.stringify(raw)}`);
+}
+/**
+ * A whole number of at least `min` (digits only, surrounding whitespace is
+ * ignored). Throws {@link InputError} when the input is missing, not a whole
+ * number or below `min`.
+ */
+function parseWholeNumber(env, name, min) {
+    const raw = rawInput(env, name);
+    const value = (raw ?? "").trim();
+    const number = /^[0-9]+$/.test(value) ? Number(value) : NaN;
+    if (!Number.isSafeInteger(number) || number < min) {
+        throw new InputError(`${name} must be a whole number >= ${String(min)}, got ${JSON.stringify(raw ?? "")}`);
+    }
+    return number;
+}
+
+;// CONCATENATED MODULE: ./tidy-core/src/output.ts
+/** The default sink: one line on stdout. */
+const stdoutSink = (line) => {
+    process.stdout.write(`${line}\n`);
+};
+/** Escapes the message of a workflow command (`::name::message`). */
+function escapeCommandData(text) {
+    return text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+}
+/** Plain lines and `::notice::`, `::warning::` and `::error::` commands, all through `sink` (default stdout). */
+function createOutput(sink = stdoutSink) {
+    return {
+        log: sink,
+        notice: (message) => sink(`::notice::${escapeCommandData(message)}`),
+        warning: (message) => sink(`::warning::${escapeCommandData(message)}`),
+        error: (message) => sink(`::error::${escapeCommandData(message)}`),
+    };
+}
+
+;// CONCATENATED MODULE: ./tidy-core/src/errors.ts
+/** The HTTP status of an Octokit error, or `undefined` for any other error. */
+function statusOf(err) {
+    if (typeof err === "object" && err !== null && "status" in err) {
+        const status = err.status;
+        if (typeof status === "number")
+            return status;
+    }
+    return undefined;
+}
+/** The error's message, prefixed with `HTTP <status>: ` when it carries a status. */
+function describeError(err) {
+    const status = statusOf(err);
+    const message = err instanceof Error ? err.message : String(err);
+    return status !== undefined ? `HTTP ${String(status)}: ${message}` : message;
+}
+
 ;// CONCATENATED MODULE: external "node:fs/promises"
 const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
+;// CONCATENATED MODULE: ./tidy-core/src/summary.ts
+
+
+/**
+ * Appends `markdown` and a newline to the file `GITHUB_STEP_SUMMARY` names.
+ * Does nothing when `path` is unset or empty. A write failure never fails
+ * the run: it is reported through `warning` only.
+ */
+async function appendStepSummary(path, markdown, warning) {
+    if (!path)
+        return;
+    try {
+        await (0,promises_namespaceObject.appendFile)(path, `${markdown}\n`, "utf8");
+    }
+    catch (err) {
+        warning(`Could not write the step summary: ${describeError(err)}`);
+    }
+}
+
 ;// CONCATENATED MODULE: ./registry/manifest.ts
 
 
@@ -4583,7 +4692,47 @@ async function deletePackage(octokit, org, name) {
 
 
 
+;// CONCATENATED MODULE: ./tidy-core/src/github.ts
+
+
+const DEFAULT_API_URL = "https://api.github.com";
+/** The Octokit client of `registry/` with the base URL taken from the environment. */
+function createTidyOctokit(token, options) {
+    const baseUrl = (options.env["GITHUB_API_URL"] ?? "") || DEFAULT_API_URL;
+    return createOctokit(token, {
+        baseUrl,
+        fetch: options.fetch,
+        ...(options.retries !== undefined
+            ? { retries: options.retries, throttle: options.retries !== 0 }
+            : {}),
+    });
+}
+/** Reads `GITHUB_REPOSITORY` (`owner/repo`). Throws {@link InputError} for anything else. */
+function parseRepository(raw) {
+    const [owner, repo, ...rest] = (raw ?? "").split("/");
+    if (!owner || !repo || rest.length > 0) {
+        throw new InputError(`GITHUB_REPOSITORY must be "owner/repo", got ${JSON.stringify(raw ?? "")}`);
+    }
+    return { owner, repo };
+}
+/**
+ * A path below a fixed prefix (a branch or cache key): slashes stay literal,
+ * every segment is percent-encoded on its own. Encoding the whole path would
+ * turn the slashes into `%2F`, which GitHub does not route as a ref path.
+ */
+function encodePathSegments(path) {
+    return path.split("/").map(encodeURIComponent).join("/");
+}
+
+;// CONCATENATED MODULE: ./tidy-core/src/index.ts
+
+
+
+
+
+
 ;// CONCATENATED MODULE: ./branch-tidy/src/github.ts
+
 const REFS_QUERY = `query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     refs(refPrefix: "refs/heads/", first: 100, after: $cursor) {
@@ -4599,14 +4748,6 @@ const REFS_QUERY = `query($owner: String!, $name: String!, $cursor: String) {
     }
   }
 }`;
-/**
- * Path of a branch below `heads/`: slashes stay literal, every segment is
- * percent-encoded on its own. Encoding the whole name would turn the slashes
- * into `%2F`, which GitHub does not route as a ref path.
- */
-function encodeBranchPath(name) {
-    return name.split("/").map(encodeURIComponent).join("/");
-}
 async function getRepo(octokit, repository) {
     const { data } = await octokit.request("GET /repos/{owner}/{repo}", repository);
     const repo = data;
@@ -4694,7 +4835,7 @@ async function listHeads(octokit, repository) {
 /** The SHA the branch points at now, or `undefined` when GitHub answers 404. */
 async function getBranchRef(octokit, repository, name) {
     try {
-        const { data } = await octokit.request(`GET /repos/{owner}/{repo}/git/ref/heads/${encodeBranchPath(name)}`, repository);
+        const { data } = await octokit.request(`GET /repos/{owner}/{repo}/git/ref/heads/${encodePathSegments(name)}`, repository);
         const sha = data.object?.sha;
         if (typeof sha !== "string")
             throw new Error("the ref answer has no object.sha");
@@ -4707,57 +4848,25 @@ async function getBranchRef(octokit, repository, name) {
     }
 }
 async function deleteBranchRef(octokit, repository, name) {
-    await octokit.request(`DELETE /repos/{owner}/{repo}/git/refs/heads/${encodeBranchPath(name)}`, repository);
-}
-/** The HTTP status of an Octokit error, or `undefined` for any other error. */
-function statusOf(err) {
-    if (typeof err === "object" && err !== null && "status" in err) {
-        const status = err.status;
-        if (typeof status === "number")
-            return status;
-    }
-    return undefined;
+    await octokit.request(`DELETE /repos/{owner}/{repo}/git/refs/heads/${encodePathSegments(name)}`, repository);
 }
 
 ;// CONCATENATED MODULE: ./branch-tidy/src/inputs.ts
-/** An invalid input; the message names the input and the value it got. */
-class InputError extends Error {
-}
+
+
 const DEFAULT_KEEP_BRANCHES = "main,master";
-function parseBoolean(name, raw, fallback) {
-    if (raw === undefined)
-        return fallback;
-    const value = raw.trim();
-    if (value === "true")
-        return true;
-    if (value === "false")
-        return false;
-    throw new InputError(`${name} must be "true" or "false", got ${JSON.stringify(raw)}`);
-}
-function parseRetainDays(raw) {
-    const value = (raw ?? "").trim();
-    const days = /^[0-9]+$/.test(value) ? Number(value) : NaN;
-    if (!Number.isSafeInteger(days) || days < 1) {
-        throw new InputError(`retain-days must be a whole number >= 1, got ${JSON.stringify(raw ?? "")}`);
-    }
-    return days;
-}
 /**
  * Reads the inputs from the `INPUT_<NAME>` environment variables the runner
  * sets (upper-cased, `-` kept). Throws {@link InputError} on the first
  * invalid value; nothing is read from the network here.
  */
 function parseInputs(env) {
-    const token = (env["INPUT_TOKEN"] ?? "").trim();
-    if (token === "") {
-        throw new InputError("token is required, got an empty value");
-    }
     return {
-        token,
-        retainDays: parseRetainDays(env["INPUT_RETAIN-DAYS"]),
-        dryRun: parseBoolean("dry-run", env["INPUT_DRY-RUN"], true),
-        excludeOpenPrBranches: parseBoolean("exclude-open-pr-branches", env["INPUT_EXCLUDE-OPEN-PR-BRANCHES"], true),
-        keepBranches: new Set((env["INPUT_KEEP-BRANCHES"] ?? DEFAULT_KEEP_BRANCHES)
+        token: requiredString(env, "token"),
+        retainDays: parseWholeNumber(env, "retain-days", 1),
+        dryRun: parseBoolean(env, "dry-run", true),
+        excludeOpenPrBranches: parseBoolean(env, "exclude-open-pr-branches", true),
+        keepBranches: new Set(optionalString(env, "keep-branches", DEFAULT_KEEP_BRANCHES)
             .split(",")
             .map((name) => name.trim())
             .filter((name) => name !== "")),
@@ -4865,21 +4974,10 @@ function renderSummary(report) {
 
 
 
-
-const DEFAULT_API_URL = "https://api.github.com";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-/** Escapes the message of a workflow command (`::name::message`). */
-function escapeCommandData(text) {
-    return text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
-}
 /** Plain code-unit order, the same on every machine and locale. */
 function byName(a, b) {
     return a < b ? -1 : a > b ? 1 : 0;
-}
-function describeError(err) {
-    const status = statusOf(err);
-    const message = err instanceof Error ? err.message : String(err);
-    return status !== undefined ? `HTTP ${String(status)}: ${message}` : message;
 }
 /**
  * Runs the action. Returns the exit code (0 on success, 1 on any failure) and
@@ -4887,10 +4985,7 @@ function describeError(err) {
  * succeeded: a listing failure fails the run before the first deletion.
  */
 async function main(opts) {
-    const out = opts.log ?? ((line) => process.stdout.write(`${line}\n`));
-    const notice = (msg) => out(`::notice::${escapeCommandData(msg)}`);
-    const warning = (msg) => out(`::warning::${escapeCommandData(msg)}`);
-    const error = (msg) => out(`::error::${escapeCommandData(msg)}`);
+    const { log: out, notice, warning, error } = createOutput(opts.log);
     const start = opts.now ?? new Date();
     const env = opts.env;
     let inputs;
@@ -4906,11 +5001,10 @@ async function main(opts) {
         return 1;
     }
     const cutoff = new Date(start.getTime() - inputs.retainDays * MS_PER_DAY);
-    const apiUrl = (env["GITHUB_API_URL"] ?? "") || DEFAULT_API_URL;
-    const octokit = createOctokit(inputs.token, {
-        baseUrl: apiUrl,
+    const octokit = createTidyOctokit(inputs.token, {
+        env,
         fetch: opts.fetch,
-        ...(opts.retries !== undefined ? { retries: opts.retries, throttle: opts.retries !== 0 } : {}),
+        ...(opts.retries !== undefined ? { retries: opts.retries } : {}),
     });
     const report = {
         dryRun: inputs.dryRun,
@@ -5006,7 +5100,7 @@ async function main(opts) {
             }
         }
     }
-    await writeSummary(env["GITHUB_STEP_SUMMARY"], renderSummary(report), warning);
+    await appendStepSummary(env["GITHUB_STEP_SUMMARY"], renderSummary(report), warning);
     if (authFailure) {
         error(`Stopped after an authorization failure on ${report.failed.join(", ")}. Not attempted: ${report.skipped.length > 0 ? report.skipped.join(", ") : "none"}.`);
         return 1;
@@ -5016,13 +5110,6 @@ async function main(opts) {
         return 1;
     }
     return 0;
-}
-function parseRepository(raw) {
-    const [owner, repo, ...rest] = (raw ?? "").split("/");
-    if (!owner || !repo || rest.length > 0) {
-        throw new InputError(`GITHUB_REPOSITORY must be "owner/repo", got ${JSON.stringify(raw ?? "")}`);
-    }
-    return { owner, repo };
 }
 function keepText(reason) {
     switch (reason) {
@@ -5038,16 +5125,6 @@ function keepText(reason) {
             return "it is the head of an open pull request";
         case "open-pr-base":
             return "it is the base of an open pull request";
-    }
-}
-async function writeSummary(path, markdown, warning) {
-    if (!path)
-        return;
-    try {
-        await (0,promises_namespaceObject.appendFile)(path, `${markdown}\n`, "utf8");
-    }
-    catch (err) {
-        warning(`Could not write the step summary: ${describeError(err)}`);
     }
 }
 

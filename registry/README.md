@@ -2,7 +2,7 @@
 
 Typed core for talking to an OCI registry and the GitHub Packages API: package names, HTTP with retry, tag listing, manifest resolution and package-version listing and deletion.
 
-Only [ghcr-tidy](../ghcr-tidy/README.md) uses it (through [`index.ts`](./index.ts) and direct module imports); it is source shared inside this repository, not a published package, and ncc inlines it into the `ghcr-tidy` bundle.
+[ghcr-tidy](../ghcr-tidy/README.md) uses it, and [tidy-core](../tidy-core/README.md) wraps its `createOctokit` (through [`index.ts`](./index.ts) and direct module imports); it is source shared inside this repository, not a published package, and ncc inlines it into the `ghcr-tidy` bundle.
 
 | Module                                 | Owns                                                                |
 | -------------------------------------- | ------------------------------------------------------------------- |
