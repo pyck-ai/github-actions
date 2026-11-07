@@ -92,7 +92,7 @@ jobs:
       - name: Rebuild bundles and check dist/ is up to date
         run: |
           npm run bundle
-          known_dists="ghcr-tidy/dist branch-tidy/dist"
+          known_dists="ghcr-tidy/dist branch-tidy/dist run-tidy/dist"
           for dist in $known_dists; do
             if [ ! -d "$dist" ]; then
               echo "::error::$dist/ does not exist; update this check (it no longer matches the repo's bundled actions)" >&2

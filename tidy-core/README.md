@@ -2,7 +2,7 @@
 
 The plumbing the tidy actions share: reading action inputs, writing workflow commands and the step summary, the API-client factory and API URL, and test helpers (a fake GitHub API and the input defaults of an `action.yml`).
 
-This is not an action: it has no `action.yml` and no `dist/`. It is source shared inside this repository, not a published package. [branch-tidy](../branch-tidy/README.md) imports it, and the planned `run-tidy` and `cache-tidy` will; ncc inlines it into each action's bundle. It builds on [registry](../registry/README.md) for the Octokit class.
+This is not an action: it has no `action.yml` and no `dist/`. It is source shared inside this repository, not a published package. [branch-tidy](../branch-tidy/README.md) and [run-tidy](../run-tidy/README.md) import it, and the planned `cache-tidy` will; ncc inlines it into each action's bundle. It builds on [registry](../registry/README.md) for the Octokit class.
 
 | Module                                   | Owns                                                                                                                                               |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |

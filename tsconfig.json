@@ -23,8 +23,16 @@
   "include": [
     "ghcr-tidy/src/**/*.ts",
     "branch-tidy/src/**/*.ts",
+    "run-tidy/src/**/*.ts",
     "registry/**/*.ts",
     "tidy-core/**/*.ts"
   ],
-  "exclude": ["lib", "node_modules", "ghcr-tidy/dist", "branch-tidy/dist", "**/*.test.ts"]
+  "exclude": [
+    "lib",
+    "node_modules",
+    "ghcr-tidy/dist",
+    "branch-tidy/dist",
+    "run-tidy/dist",
+    "**/*.test.ts"
+  ]
 }

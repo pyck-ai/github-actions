@@ -11,6 +11,7 @@ export default tseslint.config(
     ignores: [
       "ghcr-tidy/dist/**",
       "branch-tidy/dist/**",
+      "run-tidy/dist/**",
       "lib/**",
       "node_modules/**",
       "coverage/**",

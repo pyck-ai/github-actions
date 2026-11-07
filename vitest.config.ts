@@ -6,6 +6,7 @@ export default defineConfig({
     include: [
       "ghcr-tidy/src/**/*.test.ts",
       "branch-tidy/src/**/*.test.ts",
+      "run-tidy/src/**/*.test.ts",
       "registry/**/*.test.ts",
       "tidy-core/**/*.test.ts",
       "tests/**/*.test.ts",
@@ -16,12 +17,14 @@ export default defineConfig({
       include: [
         "ghcr-tidy/src/**/*.ts",
         "branch-tidy/src/**/*.ts",
+        "run-tidy/src/**/*.ts",
         "registry/**/*.ts",
         "tidy-core/**/*.ts",
       ],
       exclude: [
         "ghcr-tidy/src/**/*.test.ts",
         "branch-tidy/src/**/*.test.ts",
+        "run-tidy/src/**/*.test.ts",
         "registry/**/*.test.ts",
         "tidy-core/**/*.test.ts",
       ],

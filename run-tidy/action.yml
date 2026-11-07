@@ -1,0 +1,37 @@
+name: run-tidy
+description: >-
+  Deletes the old workflow runs of the repository the workflow runs in, using
+  this action's own `dist/` bundle on the runner's bundled Node; no checkout,
+  no git binary, no Docker.
+inputs:
+  token:
+    description: >-
+      Token for all API calls. Needs `actions: write` (listing needs
+      `actions: read`).
+    required: true
+  retain-days:
+    description: >-
+      A run is old when it was created more than this many days ago. A whole
+      number, from 1 to 36500.
+    required: true
+  keep-per-workflow:
+    description: >-
+      The newest this many completed runs of each workflow are kept whatever
+      their age. A whole number, from 0 to 1000.
+    required: false
+    default: "1"
+  max-deletions:
+    description: >-
+      Stop deleting after this many runs in one invocation; the rest follows
+      on later runs. A whole number, from 1 to 100000.
+    required: false
+    default: "300"
+  dry-run:
+    description: >-
+      `true` or `false`. When true, the action makes no write call and only
+      reports the runs it would delete.
+    required: false
+    default: "true"
+runs:
+  using: node24
+  main: dist/index.js

@@ -22,7 +22,8 @@ on:
       workflows-retain-days:
         description: >-
           How many days of workflow run history to keep. Runs older than this
-          are deleted (at least 1 run per workflow is always kept).
+          are deleted (the newest completed run of each workflow is always
+          kept).
         type: number
         required: false
         default: 30
@@ -75,8 +76,10 @@ on:
 # cleanup is worse than none. Callers should therefore set
 # `cancel-in-progress: false` on whatever group they declare.
 jobs:
-  # Delete workflow runs older than workflows-retain-days, keeping at least 1
-  # per workflow.
+  # Delete workflow runs older than workflows-retain-days with this
+  # repository's own run-tidy action (no Docker, no checkout). The newest
+  # completed run of each workflow is always kept; runs still in progress
+  # are never deleted; at most 300 runs go per invocation.
   clean-old-workflow-runs:
     name: Delete old workflow runs
     runs-on: [pyck-ai, firecracker, light]
@@ -87,15 +90,12 @@ jobs:
     permissions:
       actions: write # required to delete workflow runs
     steps:
-      - uses: Mattraks/delete-workflow-runs@b3018382ca039b53d238908238bd35d1fb14f8ee # v2.1.0
+      - uses: $/run-tidy
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
-          retain_days: ${{ inputs.workflows-retain-days }}
-          keep_minimum_runs: 1
-          dry_run: ${{ inputs.dry_run }}
-          check_branch_existence: false
-          check_pullrequest_exist: false
+          retain-days: ${{ inputs.workflows-retain-days }}
+          keep-per-workflow: 1
+          dry-run: ${{ inputs.dry_run }}
 
   # Mark issues and PRs stale after retain-days of inactivity and close them
   # close-days later. Draft PRs are exempt. Runs after workflow cleanup to
