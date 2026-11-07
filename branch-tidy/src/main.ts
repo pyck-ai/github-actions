@@ -1,5 +1,5 @@
 import { appendFile } from "node:fs/promises";
-import { createOctokit } from "../../registry/index.js";
+import type { RegistryOctokit } from "../../registry/index.js";
 import {
   deleteBranchRef,
   getBranchRef,
@@ -18,18 +18,12 @@ import { renderSummary, type Report } from "./report.js";
 export interface MainOptions {
   /** The action inputs (`INPUT_*`), `GITHUB_REPOSITORY`, `GITHUB_STEP_SUMMARY` and `GITHUB_API_URL`. */
   env: Record<string, string | undefined>;
-  /** Every HTTP request goes through this. */
-  fetch: typeof fetch;
+  /** Builds the API client from the token input and the API URL. */
+  octokit: (token: string, baseUrl: string) => RegistryOctokit;
   /** The start time the cutoff is computed from. Defaults to the current time. */
   now?: Date;
   /** Receives every stdout line, workflow commands included. Defaults to stdout. */
   log?: (line: string) => void;
-  /**
-   * Retries of the retry plugin for 5xx and network errors. Defaults to the
-   * plugin's own. `0` also switches the throttling plugin's request pacing
-   * off, so a test run with a fake `fetch` is not slowed down by it.
-   */
-  retries?: number;
 }
 
 const DEFAULT_API_URL = "https://api.github.com";
@@ -77,11 +71,7 @@ export async function main(opts: MainOptions): Promise<number> {
 
   const cutoff = new Date(start.getTime() - inputs.retainDays * MS_PER_DAY);
   const apiUrl = (env["GITHUB_API_URL"] ?? "") || DEFAULT_API_URL;
-  const octokit = createOctokit(inputs.token, {
-    baseUrl: apiUrl,
-    fetch: opts.fetch,
-    ...(opts.retries !== undefined ? { retries: opts.retries, throttle: opts.retries !== 0 } : {}),
-  });
+  const octokit = opts.octokit(inputs.token, apiUrl);
 
   const report: Report = {
     dryRun: inputs.dryRun,

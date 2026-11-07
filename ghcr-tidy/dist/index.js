@@ -13158,10 +13158,7 @@ function createOctokit(auth, options = {}) {
     return new packages_Octokit({
         auth,
         ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
-        ...(options.fetch !== undefined ? { request: { fetch: options.fetch } } : {}),
-        ...(options.retries !== undefined ? { retry: { retries: options.retries } } : {}),
         throttle: {
-            enabled: options.throttle ?? true,
             onRateLimit: (_retryAfter, requestOptions, octokit, retryCount) => {
                 octokit.log.warn(`rate limit hit for ${String(requestOptions.method)} ${String(requestOptions.url)}`);
                 return retryCount < maxRetries;

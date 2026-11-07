@@ -1570,8 +1570,6 @@ import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /************************************************************************/
 var __webpack_exports__ = {};
 
-;// CONCATENATED MODULE: external "node:fs/promises"
-const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
 ;// CONCATENATED MODULE: ./registry/manifest.ts
 
 
@@ -4448,10 +4446,7 @@ function createOctokit(auth, options = {}) {
     return new packages_Octokit({
         auth,
         ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
-        ...(options.fetch !== undefined ? { request: { fetch: options.fetch } } : {}),
-        ...(options.retries !== undefined ? { retry: { retries: options.retries } } : {}),
         throttle: {
-            enabled: options.throttle ?? true,
             onRateLimit: (_retryAfter, requestOptions, octokit, retryCount) => {
                 octokit.log.warn(`rate limit hit for ${String(requestOptions.method)} ${String(requestOptions.url)}`);
                 return retryCount < maxRetries;
@@ -4583,6 +4578,8 @@ async function deletePackage(octokit, org, name) {
 
 
 
+;// CONCATENATED MODULE: external "node:fs/promises"
+const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
 ;// CONCATENATED MODULE: ./branch-tidy/src/github.ts
 const REFS_QUERY = `query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -4867,7 +4864,6 @@ function renderSummary(report) {
 
 
 
-
 const DEFAULT_API_URL = "https://api.github.com";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 /** Escapes the message of a workflow command (`::name::message`). */
@@ -4909,11 +4905,7 @@ async function main(opts) {
     }
     const cutoff = new Date(start.getTime() - inputs.retainDays * MS_PER_DAY);
     const apiUrl = (env["GITHUB_API_URL"] ?? "") || DEFAULT_API_URL;
-    const octokit = createOctokit(inputs.token, {
-        baseUrl: apiUrl,
-        fetch: opts.fetch,
-        ...(opts.retries !== undefined ? { retries: opts.retries, throttle: opts.retries !== 0 } : {}),
-    });
+    const octokit = opts.octokit(inputs.token, apiUrl);
     const report = {
         dryRun: inputs.dryRun,
         cutoff,
@@ -5055,7 +5047,11 @@ async function writeSummary(path, markdown, warning) {
 
 ;// CONCATENATED MODULE: ./branch-tidy/src/index.ts
 
-main({ env: process.env, fetch: globalThis.fetch }).then((code) => {
+
+main({
+    env: process.env,
+    octokit: (token, baseUrl) => createOctokit(token, { baseUrl }),
+}).then((code) => {
     process.exitCode = code;
 }, (err) => {
     process.stdout.write(`::error::${err instanceof Error ? err.message : String(err)}\n`);

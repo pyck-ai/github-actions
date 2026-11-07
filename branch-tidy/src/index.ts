@@ -1,6 +1,10 @@
+import { createOctokit } from "../../registry/index.js";
 import { main } from "./main.js";
 
-main({ env: process.env, fetch: globalThis.fetch }).then(
+main({
+  env: process.env,
+  octokit: (token, baseUrl) => createOctokit(token, { baseUrl }),
+}).then(
   (code) => {
     process.exitCode = code;
   },

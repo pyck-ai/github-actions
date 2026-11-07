@@ -10,7 +10,8 @@ import {
   type FakeBranch,
   type FakeOptions,
 } from "./fake-github.js";
-import { main } from "./main.js";
+import { Octokit } from "../../registry/index.js";
+import { main, type MainOptions } from "./main.js";
 
 const NOW = new Date("2026-11-07T12:00:00Z");
 // retain-days 10: the cutoff is 2026-10-28T12:00:00Z.
@@ -20,6 +21,18 @@ const AFTER = "2026-10-28T12:00:01Z";
 
 function branch(name: string, date: string, extra: Partial<FakeBranch> = {}): FakeBranch {
   return { name, sha: sha(name.charAt(0) || "x"), date, protected: false, ...extra };
+}
+
+/** Builds the API client on a fake `fetch`, with the retry and throttling plugins off so a run is neither paced nor retried. */
+function octokitOn(fetch: typeof globalThis.fetch): MainOptions["octokit"] {
+  return (token, baseUrl) =>
+    new Octokit({
+      auth: token,
+      baseUrl,
+      request: { fetch },
+      retry: { enabled: false },
+      throttle: { enabled: false },
+    });
 }
 
 interface RunResult {
@@ -51,10 +64,9 @@ async function run(
   for (const [name, value] of Object.entries(inputs)) env[`INPUT_${name.toUpperCase()}`] = value;
   const code = await main({
     env,
-    fetch: fake.fetch,
+    octokit: octokitOn(fake.fetch),
     now: NOW,
     log: (l) => log.push(l),
-    retries: 0,
   });
   return { code, log, requests: fake.requests, summary: readFileSync(summaryFile, "utf8") };
 }
@@ -197,10 +209,9 @@ describe("dry run", () => {
         GITHUB_REPOSITORY: OWNER_REPO,
         GITHUB_API_URL: API,
       },
-      fetch: fake.fetch,
+      octokit: octokitOn(fake.fetch),
       now: NOW,
       log: () => undefined,
-      retries: 0,
     });
     expect(code).toBe(0);
     expect(fake.requests.some((q) => q.method === "DELETE")).toBe(false);
@@ -462,7 +473,7 @@ describe("invalid inputs fail before any API call", () => {
     const log: string[] = [];
     const code = await main({
       env: { INPUT_TOKEN: "t", GITHUB_REPOSITORY: OWNER_REPO },
-      fetch: fake.fetch,
+      octokit: octokitOn(fake.fetch),
       log: (l) => log.push(l),
     });
     expect(code).toBe(1);
@@ -489,12 +500,11 @@ describe("report", () => {
     const urls: string[] = [];
     const code = await main({
       env: { INPUT_TOKEN: "t", "INPUT_RETAIN-DAYS": "1", GITHUB_REPOSITORY: OWNER_REPO },
-      fetch: ((input: string | URL | Request) => {
+      octokit: octokitOn(((input: string | URL | Request) => {
         urls.push(String(input instanceof Request ? input.url : input));
         return Promise.resolve(new Response("{}", { status: 500 }));
-      }) as typeof fetch,
+      }) as typeof fetch),
       log: () => undefined,
-      retries: 0,
     });
     expect(code).toBe(1);
     expect(urls[0]?.startsWith("https://api.github.com/")).toBe(true);
