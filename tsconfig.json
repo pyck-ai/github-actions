@@ -20,6 +20,11 @@
     "resolveJsonModule": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["ghcr-tidy/src/**/*.ts", "branch-tidy/src/**/*.ts", "registry/**/*.ts"],
+  "include": [
+    "ghcr-tidy/src/**/*.ts",
+    "branch-tidy/src/**/*.ts",
+    "registry/**/*.ts",
+    "tidy-core/**/*.ts"
+  ],
   "exclude": ["lib", "node_modules", "ghcr-tidy/dist", "branch-tidy/dist", "**/*.test.ts"]
 }

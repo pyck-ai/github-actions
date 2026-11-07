@@ -1,16 +1,23 @@
-import { appendFile } from "node:fs/promises";
-import type { RegistryOctokit } from "../../registry/index.js";
+import {
+  InputError,
+  apiUrl,
+  appendStepSummary,
+  createOutput,
+  describeError,
+  parseRepository,
+  statusOf,
+  type OctokitFactory,
+  type Repository,
+} from "../../tidy-core/src/index.js";
 import {
   deleteBranchRef,
   getBranchRef,
   getRepo,
   listBranches,
   listOpenPullRequests,
-  statusOf,
   type BranchInfo,
-  type Repository,
 } from "./github.js";
-import { InputError, parseInputs, type Inputs } from "./inputs.js";
+import { parseInputs, type Inputs } from "./inputs.js";
 import { judgeBranches, type KeepReason } from "./judge.js";
 import { renderSummary, type Report } from "./report.js";
 
@@ -19,30 +26,18 @@ export interface MainOptions {
   /** The action inputs (`INPUT_*`), `GITHUB_REPOSITORY`, `GITHUB_STEP_SUMMARY` and `GITHUB_API_URL`. */
   env: Record<string, string | undefined>;
   /** Builds the API client from the token input and the API URL. */
-  octokit: (token: string, baseUrl: string) => RegistryOctokit;
+  octokit: OctokitFactory;
   /** The start time the cutoff is computed from. Defaults to the current time. */
   now?: Date;
   /** Receives every stdout line, workflow commands included. Defaults to stdout. */
   log?: (line: string) => void;
 }
 
-const DEFAULT_API_URL = "https://api.github.com";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-/** Escapes the message of a workflow command (`::name::message`). */
-function escapeCommandData(text: string): string {
-  return text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
-}
 
 /** Plain code-unit order, the same on every machine and locale. */
 function byName(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function describeError(err: unknown): string {
-  const status = statusOf(err);
-  const message = err instanceof Error ? err.message : String(err);
-  return status !== undefined ? `HTTP ${String(status)}: ${message}` : message;
 }
 
 /**
@@ -51,10 +46,7 @@ function describeError(err: unknown): string {
  * succeeded: a listing failure fails the run before the first deletion.
  */
 export async function main(opts: MainOptions): Promise<number> {
-  const out = opts.log ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const notice = (msg: string) => out(`::notice::${escapeCommandData(msg)}`);
-  const warning = (msg: string) => out(`::warning::${escapeCommandData(msg)}`);
-  const error = (msg: string) => out(`::error::${escapeCommandData(msg)}`);
+  const { log: out, notice, warning, error } = createOutput(opts.log);
   const start = opts.now ?? new Date();
   const env = opts.env;
 
@@ -70,8 +62,7 @@ export async function main(opts: MainOptions): Promise<number> {
   }
 
   const cutoff = new Date(start.getTime() - inputs.retainDays * MS_PER_DAY);
-  const apiUrl = (env["GITHUB_API_URL"] ?? "") || DEFAULT_API_URL;
-  const octokit = opts.octokit(inputs.token, apiUrl);
+  const octokit = opts.octokit(inputs.token, apiUrl(env));
 
   const report: Report = {
     dryRun: inputs.dryRun,
@@ -175,7 +166,7 @@ export async function main(opts: MainOptions): Promise<number> {
     }
   }
 
-  await writeSummary(env["GITHUB_STEP_SUMMARY"], renderSummary(report), warning);
+  await appendStepSummary(env["GITHUB_STEP_SUMMARY"], renderSummary(report), warning);
 
   if (authFailure) {
     error(
@@ -192,16 +183,6 @@ export async function main(opts: MainOptions): Promise<number> {
   return 0;
 }
 
-function parseRepository(raw: string | undefined): Repository {
-  const [owner, repo, ...rest] = (raw ?? "").split("/");
-  if (!owner || !repo || rest.length > 0) {
-    throw new InputError(
-      `GITHUB_REPOSITORY must be "owner/repo", got ${JSON.stringify(raw ?? "")}`,
-    );
-  }
-  return { owner, repo };
-}
-
 function keepText(reason: KeepReason): string {
   switch (reason) {
     case "keep-branches":
@@ -216,18 +197,5 @@ function keepText(reason: KeepReason): string {
       return "it is the head of an open pull request";
     case "open-pr-base":
       return "it is the base of an open pull request";
-  }
-}
-
-async function writeSummary(
-  path: string | undefined,
-  markdown: string,
-  warning: (msg: string) => void,
-): Promise<void> {
-  if (!path) return;
-  try {
-    await appendFile(path, `${markdown}\n`, "utf8");
-  } catch (err) {
-    warning(`Could not write the step summary: ${describeError(err)}`);
   }
 }

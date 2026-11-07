@@ -1,4 +1,9 @@
-import type { RegistryOctokit } from "../../registry/index.js";
+import {
+  encodePathSegments,
+  statusOf,
+  type RegistryOctokit,
+  type Repository,
+} from "../../tidy-core/src/index.js";
 
 /** What the listing calls report about one branch. */
 export interface BranchInfo {
@@ -74,15 +79,6 @@ const REFS_QUERY = `query($owner: String!, $name: String!, $cursor: String) {
   }
 }`;
 
-/**
- * Path of a branch below `heads/`: slashes stay literal, every segment is
- * percent-encoded on its own. Encoding the whole name would turn the slashes
- * into `%2F`, which GitHub does not route as a ref path.
- */
-export function encodeBranchPath(name: string): string {
-  return name.split("/").map(encodeURIComponent).join("/");
-}
-
 export async function getRepo(octokit: RegistryOctokit, repository: Repository): Promise<RepoInfo> {
   const { data } = await octokit.request("GET /repos/{owner}/{repo}", repository);
   const repo = data as { id?: unknown; default_branch?: unknown };
@@ -91,8 +87,6 @@ export async function getRepo(octokit: RegistryOctokit, repository: Repository):
   }
   return { id: repo.id, defaultBranch: repo.default_branch };
 }
-
-export type Repository = { owner: string; repo: string };
 
 export async function listOpenPullRequests(
   octokit: RegistryOctokit,
@@ -195,7 +189,7 @@ export async function getBranchRef(
 ): Promise<RemoteRef | undefined> {
   try {
     const { data } = await octokit.request(
-      `GET /repos/{owner}/{repo}/git/ref/heads/${encodeBranchPath(name)}`,
+      `GET /repos/{owner}/{repo}/git/ref/heads/${encodePathSegments(name)}`,
       repository,
     );
     const sha = (data as { object?: { sha?: unknown } }).object?.sha;
@@ -213,16 +207,7 @@ export async function deleteBranchRef(
   name: string,
 ): Promise<void> {
   await octokit.request(
-    `DELETE /repos/{owner}/{repo}/git/refs/heads/${encodeBranchPath(name)}`,
+    `DELETE /repos/{owner}/{repo}/git/refs/heads/${encodePathSegments(name)}`,
     repository,
   );
-}
-
-/** The HTTP status of an Octokit error, or `undefined` for any other error. */
-export function statusOf(err: unknown): number | undefined {
-  if (typeof err === "object" && err !== null && "status" in err) {
-    const status = (err as { status: unknown }).status;
-    if (typeof status === "number") return status;
-  }
-  return undefined;
 }

@@ -1,9 +1,9 @@
-import { createOctokit } from "../../registry/index.js";
+import { productionOctokit } from "../../tidy-core/src/index.js";
 import { main } from "./main.js";
 
 main({
   env: process.env,
-  octokit: (token, baseUrl) => createOctokit(token, { baseUrl }),
+  octokit: productionOctokit,
 }).then(
   (code) => {
     process.exitCode = code;
