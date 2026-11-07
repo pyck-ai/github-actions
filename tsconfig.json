@@ -24,6 +24,7 @@
     "ghcr-tidy/src/**/*.ts",
     "branch-tidy/src/**/*.ts",
     "run-tidy/src/**/*.ts",
+    "cache-tidy/src/**/*.ts",
     "registry/**/*.ts",
     "tidy-core/**/*.ts"
   ],
@@ -33,6 +34,7 @@
     "ghcr-tidy/dist",
     "branch-tidy/dist",
     "run-tidy/dist",
+    "cache-tidy/dist",
     "**/*.test.ts"
   ]
 }

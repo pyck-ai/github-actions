@@ -118,7 +118,12 @@
       matchManagers: ["npm"],
       postUpgradeTasks: {
         commands: ["./.github/renovate-post-upgrade.sh"],
-        fileFilters: ["ghcr-tidy/dist/**", "branch-tidy/dist/**", "run-tidy/dist/**"],
+        fileFilters: [
+          "ghcr-tidy/dist/**",
+          "branch-tidy/dist/**",
+          "run-tidy/dist/**",
+          "cache-tidy/dist/**",
+        ],
         executionMode: "branch",
         // Renovate provisions the toolchain; the hook never installs anything
         // itself. This makes Renovate prepend a containerbase install for node,

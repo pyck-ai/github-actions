@@ -1,0 +1,21 @@
+name: cache-tidy
+description: >-
+  Deletes the GitHub Actions caches of the repository the workflow runs in
+  that no run can read any more (closed pull requests, deleted branches and
+  tags), using this action's own `dist/` bundle on the runner's bundled Node;
+  no checkout, no git binary, no Docker.
+inputs:
+  token:
+    description: >-
+      Token for all API calls. Needs `actions: write`, `contents: read` and
+      `pull-requests: read`.
+    required: true
+  dry-run:
+    description: >-
+      `true` or `false`. When true, the action makes no write call and only
+      reports the caches it would delete.
+    required: false
+    default: "true"
+runs:
+  using: node24
+  main: dist/index.js

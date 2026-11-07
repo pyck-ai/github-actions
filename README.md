@@ -18,17 +18,18 @@ Shared CI workflows and actions for the pyck-ai repositories.
 
 Every pyck-ai repository that builds images, tidies its GitHub history or cleans up GHCR needs the same pipeline steps. Kept in one place, a fix reaches every repository by bumping one pinned reference instead of by editing copies.
 
-Consumers call the reusable workflows and actions by commit SHA. The workflows are YAML; `ghcr-tidy`, `branch-tidy` and `run-tidy` are bundled TypeScript actions, and the other actions are plain bash or JavaScript.
+Consumers call the reusable workflows and actions by commit SHA. The workflows are YAML; `ghcr-tidy`, `branch-tidy`, `run-tidy` and `cache-tidy` are bundled TypeScript actions, and the other actions are plain bash or JavaScript.
 
 Out of the box, github-actions includes:
 
 - **`build-image.yml`**: builds a container image by digest, verifies the pushed digest, and only then applies tags. On runners with `runner-init` (the unprivileged kata pool) it builds on the runner's rootless BuildKit through the buildx remote driver, with arm64 built by BuildKit's own emulation; callers configure nothing. Each platform of a component builds in its own matrix leg, with its own build cache refs, and tags are created from all platforms' digests. With `reproducible: true` (kata pool only) the same commit gives the same index digest, which the job computes before any tag is created and can compare with a digest pinned in the caller's repository (`pin-task`). Off by default. See [its header comment](./.github/workflows/build-image.yml).
-- **`tidy-repo.yml`**: deletes old workflow runs, closes stale issues and PRs, and deletes stale branches. See [its header comment](./.github/workflows/tidy-repo.yml).
+- **`tidy-repo.yml`**: deletes old workflow runs, closes stale issues and PRs, deletes stale branches and deletes caches nobody can read. See [its header comment](./.github/workflows/tidy-repo.yml).
 - **`tidy-ghcr.yml`**: runs GHCR retention through the `ghcr-tidy` action. See [its header comment](./.github/workflows/tidy-ghcr.yml).
 - **`verify-image`**: runs each pushed image's own `verify.sh` inside that image. See [verify-image/README.md](./verify-image/README.md).
 - **`ghcr-tidy`**: plans and applies GHCR retention from a `.github/tidy-ghcr.yml` manifest. See [ghcr-tidy/README.md](./ghcr-tidy/README.md).
 - **`branch-tidy`**: deletes the stale branches of a repository, keeping protected, default and open-pull-request branches. See [branch-tidy/README.md](./branch-tidy/README.md).
 - **`run-tidy`**: deletes the old workflow runs of a repository, keeping unfinished runs and the newest completed run of each workflow. See [run-tidy/README.md](./run-tidy/README.md).
+- **`cache-tidy`**: deletes the Actions caches of closed pull requests and deleted branches and tags, by id, never the default branch's. See [cache-tidy/README.md](./cache-tidy/README.md).
 - **`jev-check`**: runs the jev CLI once per input file and writes one result per file. See [jev-check/README.md](./jev-check/README.md).
 - **`agent-docs-check`**: keeps agent-facing docs inside their budgets. See [agent-docs-check/README.md](./agent-docs-check/README.md).
 - **`gate`**: one pass/fail verdict over a workflow's jobs, for a required status check. See [gate/README.md](./gate/README.md).
@@ -53,17 +54,17 @@ Work on this repository:
 ```sh
 npm ci             # install dependencies
 task ci            # run every check CI runs (also needs zizmor and gitleaks on PATH)
-task generate      # rebuild ghcr-tidy/dist/, branch-tidy/dist/ and run-tidy/dist/ (committed) after changing their src/
+task generate      # rebuild ghcr-tidy/dist/, branch-tidy/dist/, run-tidy/dist/ and cache-tidy/dist/ (committed) after changing their src/
 ```
 
-Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json); CI runs 24), npm, [go-task](https://taskfile.dev), [zizmor](https://docs.zizmor.sh) and [gitleaks](https://github.com/gitleaks/gitleaks) (versions in [zizmor/action.yml](./zizmor/action.yml) and [gitleaks/action.yml](./gitleaks/action.yml)). `task check` runs the Node checks alone. Run `task --list` for every other command. For the inputs and behaviour of one action, see the README in its directory: [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [branch-tidy](./branch-tidy/README.md), [run-tidy](./run-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [zizmor](./zizmor/README.md), [gitleaks](./gitleaks/README.md).
+Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json); CI runs 24), npm, [go-task](https://taskfile.dev), [zizmor](https://docs.zizmor.sh) and [gitleaks](https://github.com/gitleaks/gitleaks) (versions in [zizmor/action.yml](./zizmor/action.yml) and [gitleaks/action.yml](./gitleaks/action.yml)). `task check` runs the Node checks alone. Run `task --list` for every other command. For the inputs and behaviour of one action, see the README in its directory: [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [branch-tidy](./branch-tidy/README.md), [run-tidy](./run-tidy/README.md), [cache-tidy](./cache-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [zizmor](./zizmor/README.md), [gitleaks](./gitleaks/README.md).
 
 ## Documentation
 
 - [build-image.yml](./.github/workflows/build-image.yml), [tidy-repo.yml](./.github/workflows/tidy-repo.yml), [tidy-ghcr.yml](./.github/workflows/tidy-ghcr.yml): header comments own the contract of each reusable workflow.
-- [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [branch-tidy](./branch-tidy/README.md), [run-tidy](./run-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [gate](./gate/README.md), [zizmor](./zizmor/README.md), [gitleaks](./gitleaks/README.md): inputs, behaviour and design of each action.
+- [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [branch-tidy](./branch-tidy/README.md), [run-tidy](./run-tidy/README.md), [cache-tidy](./cache-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [gate](./gate/README.md), [zizmor](./zizmor/README.md), [gitleaks](./gitleaks/README.md): inputs, behaviour and design of each action.
 - [registry](./registry/README.md): the shared TypeScript registry core that `ghcr-tidy` and `branch-tidy` bundle.
-- [tidy-core](./tidy-core/README.md): the shared TypeScript plumbing (inputs, output, step summary, API-client factory, test fake) that `branch-tidy` and `run-tidy` bundle and the planned `cache-tidy` will.
+- [tidy-core](./tidy-core/README.md): the shared TypeScript plumbing (inputs, output, step summary, API-client factory, test fake) that `branch-tidy`, `run-tidy` and `cache-tidy` bundle.
 - [ghcr-tidy/src/cli.ts](./ghcr-tidy/src/cli.ts): `ghcr-tidy` flags and exit codes.
 - [Taskfile.yml](./Taskfile.yml): the checks every change must pass (`task ci`; [ci.yml](./.github/workflows/ci.yml) runs its parts as parallel jobs), including the committed-bundle check.
 - [renovate.json5](./.github/renovate.json5): how dependency and image digests are kept current.

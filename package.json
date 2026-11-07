@@ -12,16 +12,17 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "bundle": "npm run bundle:ghcr-tidy && npm run bundle:branch-tidy && npm run bundle:run-tidy && npm run bundle:prune",
+    "bundle": "npm run bundle:ghcr-tidy && npm run bundle:branch-tidy && npm run bundle:run-tidy && npm run bundle:cache-tidy && npm run bundle:prune",
     "bundle:ghcr-tidy": "ncc build ghcr-tidy/src/cli.ts -o ghcr-tidy/dist",
     "bundle:branch-tidy": "ncc build branch-tidy/src/index.ts -o branch-tidy/dist",
     "bundle:run-tidy": "ncc build run-tidy/src/index.ts -o run-tidy/dist",
+    "bundle:cache-tidy": "ncc build cache-tidy/src/index.ts -o cache-tidy/dist",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "bundle:prune": "find ghcr-tidy/dist branch-tidy/dist run-tidy/dist \\( -name '*.d.ts' -o -name '*.d.ts.map' \\) -delete"
+    "bundle:prune": "find ghcr-tidy/dist branch-tidy/dist run-tidy/dist cache-tidy/dist \\( -name '*.d.ts' -o -name '*.d.ts.map' \\) -delete"
   },
   "dependencies": {
     "@octokit/core": "^7.0.0",

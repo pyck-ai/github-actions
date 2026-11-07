@@ -11,7 +11,7 @@ Org-wide rules: `~/.pyck/guidelines/AGENTS.md`. They apply here; this file adds 
 ## Gotchas
 
 - Prettier also formats workflow YAML and moves trailing comments to the surrounding indentation: `task ci` checks YAML too.
-- `ghcr-tidy/dist/`, `branch-tidy/dist/` and `run-tidy/dist/` go stale on any change to their `src/` (or to `registry/` or `tidy-core/`) or on a dependency bump (ncc inlines the dependencies): run `task generate` and commit `dist/`. Renovate does this through `.github/renovate-post-upgrade.sh`; `task ci` fails on a stale bundle.
+- `ghcr-tidy/dist/`, `branch-tidy/dist/`, `run-tidy/dist/` and `cache-tidy/dist/` go stale on any change to their `src/` (or to `registry/` or `tidy-core/`) or on a dependency bump (ncc inlines the dependencies): run `task generate` and commit `dist/`. Renovate does this through `.github/renovate-post-upgrade.sh`; `task ci` fails on a stale bundle.
 - actionlint 1.7.12 flags `$/` as a malformed action ref. That is a known false positive: dismiss it.
 - On a `schedule` trigger the `inputs` context is empty and dispatch defaults do not apply: branch on `github.event_name` (see the `tidy-ghcr.yml` header).
 - Keep the `# renovate:` annotation directly above the `jev-check` image default in `jev-check/action.yml`, and `"custom.regex"` in this repo's own `enabledManagers` in `.github/renovate.json5` (presets cannot supply it). Without either, the image digest silently stops updating.

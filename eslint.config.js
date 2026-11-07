@@ -12,6 +12,7 @@ export default tseslint.config(
       "ghcr-tidy/dist/**",
       "branch-tidy/dist/**",
       "run-tidy/dist/**",
+      "cache-tidy/dist/**",
       "lib/**",
       "node_modules/**",
       "coverage/**",
