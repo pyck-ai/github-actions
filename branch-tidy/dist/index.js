@@ -4724,6 +4724,8 @@ function statusOf(err) {
 class InputError extends Error {
 }
 const DEFAULT_KEEP_BRANCHES = "main,master";
+/** Largest `retain-days` (100 years); a far larger value overflows the cutoff Date. */
+const MAX_RETAIN_DAYS = 36500;
 function parseBoolean(name, raw, fallback) {
     if (raw === undefined)
         return fallback;
@@ -4737,8 +4739,8 @@ function parseBoolean(name, raw, fallback) {
 function parseRetainDays(raw) {
     const value = (raw ?? "").trim();
     const days = /^[0-9]+$/.test(value) ? Number(value) : NaN;
-    if (!Number.isSafeInteger(days) || days < 1) {
-        throw new InputError(`retain-days must be a whole number >= 1, got ${JSON.stringify(raw ?? "")}`);
+    if (!Number.isSafeInteger(days) || days < 1 || days > MAX_RETAIN_DAYS) {
+        throw new InputError(`retain-days must be a whole number from 1 to ${MAX_RETAIN_DAYS}, got ${JSON.stringify(raw ?? "")}`);
     }
     return days;
 }

@@ -12,7 +12,7 @@ inputs:
   retain-days:
     description: >-
       A branch is stale when its head commit is older than this many days.
-      A whole number, at least 1.
+      A whole number from 1 to 36500.
     required: true
   dry-run:
     description: >-

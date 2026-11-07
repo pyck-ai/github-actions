@@ -409,12 +409,26 @@ describe("a ref that is not a commit (spec 10.11)", () => {
 
 describe("invalid inputs fail before any API call (spec 10.12)", () => {
   const cases: [string, Record<string, string>, string][] = [
-    ["retain-days 0", { "retain-days": "0" }, 'retain-days must be a whole number >= 1, got "0"'],
+    [
+      "retain-days 0",
+      { "retain-days": "0" },
+      'retain-days must be a whole number from 1 to 36500, got "0"',
+    ],
     ["retain-days -1", { "retain-days": "-1" }, 'got "-1"'],
     [
       "retain-days 1.5",
       { "retain-days": "1.5" },
-      'retain-days must be a whole number >= 1, got "1.5"',
+      'retain-days must be a whole number from 1 to 36500, got "1.5"',
+    ],
+    [
+      "retain-days 36501",
+      { "retain-days": "36501" },
+      'retain-days must be a whole number from 1 to 36500, got "36501"',
+    ],
+    [
+      "retain-days 999999999",
+      { "retain-days": "999999999" },
+      'retain-days must be a whole number from 1 to 36500, got "999999999"',
     ],
     ["retain-days abc", { "retain-days": "abc" }, 'got "abc"'],
     ["retain-days empty", { "retain-days": "" }, 'got ""'],
@@ -432,6 +446,15 @@ describe("invalid inputs fail before any API call (spec 10.12)", () => {
     expect(r.code).toBe(1);
     expect(r.requests).toEqual([]);
     expect(r.log.join("\n")).toContain(message);
+  });
+
+  it("retain-days 36500 is accepted and keeps a fresh branch", async () => {
+    const r = await run(
+      { branches: [branch("old", "2020-01-01T00:00:00Z")] },
+      { "retain-days": "36500" },
+    );
+    expect(r.code).toBe(0);
+    expect(deleted(r)).toEqual([]);
   });
 
   it("a missing retain-days fails too", async () => {
