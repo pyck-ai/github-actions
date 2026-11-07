@@ -2,6 +2,7 @@ import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import {
   API,
   OWNER_REPO,
@@ -35,6 +36,18 @@ function octokitOn(fetch: typeof globalThis.fetch): MainOptions["octokit"] {
     });
 }
 
+/** The `inputs.*.default` values of `action.yml` as the `INPUT_<NAME>` entries the runner sets for them. */
+function actionDefaults(): Record<string, string> {
+  const action = parse(readFileSync(path.join(__dirname, "..", "action.yml"), "utf8")) as {
+    inputs: Record<string, { default?: string }>;
+  };
+  const env: Record<string, string> = {};
+  for (const [name, input] of Object.entries(action.inputs)) {
+    if (input.default !== undefined) env[`INPUT_${name.toUpperCase()}`] = input.default;
+  }
+  return env;
+}
+
 interface RunResult {
   code: number;
   log: string[];
@@ -53,6 +66,7 @@ async function run(
   appendFileSync(summaryFile, "");
   const log: string[] = [];
   const env: Record<string, string> = {
+    ...actionDefaults(),
     INPUT_TOKEN: "t0ken",
     "INPUT_RETAIN-DAYS": "10",
     "INPUT_DRY-RUN": "false",
@@ -204,6 +218,7 @@ describe("dry run", () => {
     const fake = createFakeGithub({ branches: [branch("old", "2020-01-01T00:00:00Z")] });
     const code = await main({
       env: {
+        ...actionDefaults(),
         INPUT_TOKEN: "t",
         "INPUT_RETAIN-DAYS": "1",
         GITHUB_REPOSITORY: OWNER_REPO,
@@ -468,11 +483,34 @@ describe("invalid inputs fail before any API call", () => {
     expect(deleted(r)).toEqual([]);
   });
 
+  it.each(["dry-run", "exclude-open-pr-branches", "keep-branches"])(
+    "a missing %s fails, naming the input",
+    async (name) => {
+      const fake = createFakeGithub({ branches: [] });
+      const log: string[] = [];
+      const env: Record<string, string> = {
+        ...actionDefaults(),
+        INPUT_TOKEN: "t",
+        "INPUT_RETAIN-DAYS": "1",
+        GITHUB_REPOSITORY: OWNER_REPO,
+      };
+      delete env[`INPUT_${name.toUpperCase()}`];
+      const code = await main({
+        env,
+        octokit: octokitOn(fake.fetch),
+        log: (l) => log.push(l),
+      });
+      expect(code).toBe(1);
+      expect(fake.requests).toEqual([]);
+      expect(log.join("\n")).toContain(`${name} is required, got no value`);
+    },
+  );
+
   it("a missing retain-days fails too", async () => {
     const fake = createFakeGithub({ branches: [] });
     const log: string[] = [];
     const code = await main({
-      env: { INPUT_TOKEN: "t", GITHUB_REPOSITORY: OWNER_REPO },
+      env: { ...actionDefaults(), INPUT_TOKEN: "t", GITHUB_REPOSITORY: OWNER_REPO },
       octokit: octokitOn(fake.fetch),
       log: (l) => log.push(l),
     });
@@ -499,7 +537,12 @@ describe("report", () => {
   it("uses https://api.github.com when GITHUB_API_URL is unset", async () => {
     const urls: string[] = [];
     const code = await main({
-      env: { INPUT_TOKEN: "t", "INPUT_RETAIN-DAYS": "1", GITHUB_REPOSITORY: OWNER_REPO },
+      env: {
+        ...actionDefaults(),
+        INPUT_TOKEN: "t",
+        "INPUT_RETAIN-DAYS": "1",
+        GITHUB_REPOSITORY: OWNER_REPO,
+      },
       octokit: octokitOn(((input: string | URL | Request) => {
         urls.push(String(input instanceof Request ? input.url : input));
         return Promise.resolve(new Response("{}", { status: 500 }));

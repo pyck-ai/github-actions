@@ -10,14 +10,17 @@ export interface Inputs {
 /** An invalid input; the message names the input and the value it got. */
 export class InputError extends Error {}
 
-const DEFAULT_KEEP_BRANCHES = "main,master";
-
 /** Largest `retain-days` (100 years); a far larger value overflows the cutoff Date. */
 const MAX_RETAIN_DAYS = 36500;
 
-function parseBoolean(name: string, raw: string | undefined, fallback: boolean): boolean {
-  if (raw === undefined) return fallback;
-  const value = raw.trim();
+/** The runner sets every declared input, defaults included; a missing one is a caller bug. */
+function required(name: string, raw: string | undefined): string {
+  if (raw === undefined) throw new InputError(`${name} is required, got no value`);
+  return raw;
+}
+
+function parseBoolean(name: string, raw: string | undefined): boolean {
+  const value = required(name, raw).trim();
   if (value === "true") return true;
   if (value === "false") return false;
   throw new InputError(`${name} must be "true" or "false", got ${JSON.stringify(raw)}`);
@@ -47,14 +50,13 @@ export function parseInputs(env: Record<string, string | undefined>): Inputs {
   return {
     token,
     retainDays: parseRetainDays(env["INPUT_RETAIN-DAYS"]),
-    dryRun: parseBoolean("dry-run", env["INPUT_DRY-RUN"], true),
+    dryRun: parseBoolean("dry-run", env["INPUT_DRY-RUN"]),
     excludeOpenPrBranches: parseBoolean(
       "exclude-open-pr-branches",
       env["INPUT_EXCLUDE-OPEN-PR-BRANCHES"],
-      true,
     ),
     keepBranches: new Set(
-      (env["INPUT_KEEP-BRANCHES"] ?? DEFAULT_KEEP_BRANCHES)
+      required("keep-branches", env["INPUT_KEEP-BRANCHES"])
         .split(",")
         .map((name) => name.trim())
         .filter((name) => name !== ""),

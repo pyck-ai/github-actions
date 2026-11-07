@@ -4720,13 +4720,16 @@ function statusOf(err) {
 /** An invalid input; the message names the input and the value it got. */
 class InputError extends Error {
 }
-const DEFAULT_KEEP_BRANCHES = "main,master";
 /** Largest `retain-days` (100 years); a far larger value overflows the cutoff Date. */
 const MAX_RETAIN_DAYS = 36500;
-function parseBoolean(name, raw, fallback) {
+/** The runner sets every declared input, defaults included; a missing one is a caller bug. */
+function required(name, raw) {
     if (raw === undefined)
-        return fallback;
-    const value = raw.trim();
+        throw new InputError(`${name} is required, got no value`);
+    return raw;
+}
+function parseBoolean(name, raw) {
+    const value = required(name, raw).trim();
     if (value === "true")
         return true;
     if (value === "false")
@@ -4754,9 +4757,9 @@ function parseInputs(env) {
     return {
         token,
         retainDays: parseRetainDays(env["INPUT_RETAIN-DAYS"]),
-        dryRun: parseBoolean("dry-run", env["INPUT_DRY-RUN"], true),
-        excludeOpenPrBranches: parseBoolean("exclude-open-pr-branches", env["INPUT_EXCLUDE-OPEN-PR-BRANCHES"], true),
-        keepBranches: new Set((env["INPUT_KEEP-BRANCHES"] ?? DEFAULT_KEEP_BRANCHES)
+        dryRun: parseBoolean("dry-run", env["INPUT_DRY-RUN"]),
+        excludeOpenPrBranches: parseBoolean("exclude-open-pr-branches", env["INPUT_EXCLUDE-OPEN-PR-BRANCHES"]),
+        keepBranches: new Set(required("keep-branches", env["INPUT_KEEP-BRANCHES"])
             .split(",")
             .map((name) => name.trim())
             .filter((name) => name !== "")),

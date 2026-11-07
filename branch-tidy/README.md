@@ -16,13 +16,13 @@ A bundled `node24` action (`dist/` is committed). It needs no checkout, no git b
 
 ## Inputs
 
-| Input                      | Default       | Meaning                                                                                 |
-| -------------------------- | ------------- | --------------------------------------------------------------------------------------- |
-| `token`                    | required      | Token for all API calls; pass `${{ github.token }}`.                                    |
-| `retain-days`              | required      | Whole number of days, from 1 to 36500.                                                  |
-| `dry-run`                  | `true`        | `true` or `false`. When true, the action makes no write call at all.                    |
-| `exclude-open-pr-branches` | `true`        | `true` or `false`. When true, keep branches an open pull request uses.                  |
-| `keep-branches`            | `main,master` | Comma-separated branch names never to delete. Whitespace and empty entries are ignored. |
+| Input                      | Meaning                                                                                 |
+| -------------------------- | --------------------------------------------------------------------------------------- |
+| `token`                    | Token for all API calls; pass `${{ github.token }}`.                                    |
+| `retain-days`              | Whole number of days, from 1 to 36500.                                                  |
+| `dry-run`                  | `true` or `false`. When true, the action makes no write call at all.                    |
+| `exclude-open-pr-branches` | `true` or `false`. When true, keep branches an open pull request uses.                  |
+| `keep-branches`            | Comma-separated branch names never to delete. Whitespace and empty entries are ignored. |
 
 Any other value for `retain-days`, `dry-run` or `exclude-open-pr-branches` fails the step before any API call, and the error names the input and the value. The repository is always the one the workflow runs in. There is no input for another repository, for tags or for name patterns.
 
