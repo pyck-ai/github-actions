@@ -1,0 +1,37 @@
+name: branch-tidy
+description: >-
+  Deletes the stale branches of the repository the workflow runs in, using
+  this action's own `dist/` bundle on the runner's bundled Node; no checkout,
+  no git binary, no Docker.
+inputs:
+  token:
+    description: >-
+      Token for all API calls. Needs `contents: write` and
+      `pull-requests: read`.
+    required: true
+  retain-days:
+    description: >-
+      A branch is stale when its head commit is older than this many days.
+      A whole number, at least 1.
+    required: true
+  dry-run:
+    description: >-
+      `true` or `false`. When true, the action makes no write call and only
+      reports the branches it would delete.
+    required: false
+    default: "true"
+  exclude-open-pr-branches:
+    description: >-
+      `true` or `false`. When true, keep every branch an open pull request
+      uses as its head (in this repository) or as its base.
+    required: false
+    default: "true"
+  keep-branches:
+    description: >-
+      Comma-separated branch names never to delete. The default branch is
+      always kept as well.
+    required: false
+    default: main,master
+runs:
+  using: node24
+  main: dist/index.js

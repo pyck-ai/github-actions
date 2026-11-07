@@ -18,7 +18,7 @@ Shared CI workflows and actions for the pyck-ai repositories.
 
 Every pyck-ai repository that builds images, tidies its GitHub history or cleans up GHCR needs the same pipeline steps. Kept in one place, a fix reaches every repository by bumping one pinned reference instead of by editing copies.
 
-Consumers call the reusable workflows and actions by commit SHA. The workflows are YAML; `ghcr-tidy` is a bundled TypeScript action, and the other actions are plain bash or JavaScript.
+Consumers call the reusable workflows and actions by commit SHA. The workflows are YAML; `ghcr-tidy` and `branch-tidy` are bundled TypeScript actions, and the other actions are plain bash or JavaScript.
 
 Out of the box, github-actions includes:
 
@@ -27,6 +27,7 @@ Out of the box, github-actions includes:
 - **`tidy-ghcr.yml`**: runs GHCR retention through the `ghcr-tidy` action. See [its header comment](./.github/workflows/tidy-ghcr.yml).
 - **`verify-image`**: runs each pushed image's own `verify.sh` inside that image. See [verify-image/README.md](./verify-image/README.md).
 - **`ghcr-tidy`**: plans and applies GHCR retention from a `.github/tidy-ghcr.yml` manifest. See [ghcr-tidy/README.md](./ghcr-tidy/README.md).
+- **`branch-tidy`**: deletes the stale branches of a repository, keeping protected, default and open-pull-request branches. See [branch-tidy/README.md](./branch-tidy/README.md).
 - **`jev-check`**: runs the jev CLI once per input file and writes one result per file. See [jev-check/README.md](./jev-check/README.md).
 - **`agent-docs-check`**: keeps agent-facing docs inside their budgets. See [agent-docs-check/README.md](./agent-docs-check/README.md).
 - **`gate`**: one pass/fail verdict over a workflow's jobs, for a required status check. See [gate/README.md](./gate/README.md).
@@ -49,15 +50,15 @@ Work on this repository:
 ```sh
 npm ci             # install dependencies
 task ci            # run every check CI runs
-task generate      # rebuild ghcr-tidy/dist/ (committed) after changing ghcr-tidy/src/
+task generate      # rebuild ghcr-tidy/dist/ and branch-tidy/dist/ (committed) after changing their src/
 ```
 
-Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json); CI runs 24), npm and [go-task](https://taskfile.dev). Run `task --list` for every other command. For the inputs and behaviour of one action, see the README in its directory: [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md).
+Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json); CI runs 24), npm and [go-task](https://taskfile.dev). Run `task --list` for every other command. For the inputs and behaviour of one action, see the README in its directory: [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [branch-tidy](./branch-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md).
 
 ## Documentation
 
 - [build-image.yml](./.github/workflows/build-image.yml), [tidy-repo.yml](./.github/workflows/tidy-repo.yml), [tidy-ghcr.yml](./.github/workflows/tidy-ghcr.yml): header comments own the contract of each reusable workflow.
-- [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [gate](./gate/README.md): inputs, behaviour and design of each action.
+- [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [branch-tidy](./branch-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [gate](./gate/README.md): inputs, behaviour and design of each action.
 - [registry](./registry/README.md): the shared TypeScript registry core that `ghcr-tidy` bundles.
 - [ghcr-tidy/src/cli.ts](./ghcr-tidy/src/cli.ts): `ghcr-tidy` flags and exit codes.
 - [Taskfile.yml](./Taskfile.yml): the checks every change must pass (`task ci`, which [ci.yml](./.github/workflows/ci.yml) runs), including the committed-bundle check.

@@ -55,8 +55,9 @@ on:
         default: 7
       branches-retain-days:
         description: >-
-          Delete branches with no commit activity in this many days (closed
-          PR branches included). Branches with an open PR are excluded.
+          Delete branches whose head commit is older than this many days
+          (closed PR branches included). Branches an open PR uses as head or
+          base, protected branches and the default branch are kept.
         type: number
         required: false
         default: 90
@@ -129,7 +130,8 @@ jobs:
           operations-per-run: 100
           debug-only: ${{ inputs.dry_run }}
 
-  # Delete branches with no commits in the last branches-retain-days days.
+  # Delete branches whose head commit is older than branches-retain-days days,
+  # with this repository's own branch-tidy action (no Docker, no checkout).
   # Runs after stale PR closure so recently-closed PR branches are eligible
   # immediately.
   clean-stale-branches:
@@ -140,15 +142,12 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write # required to delete branches
-      pull-requests: read # required to list open PRs for exclude_open_pr_branches
+      pull-requests: read # required to list open PRs for exclude-open-pr-branches
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: $/branch-tidy
         with:
-          fetch-tags: true
-      - uses: beatlabs/delete-old-branches-action@4eeeb8740ff8b3cb310296ddd6b43c3387734588 # v0.0.11
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          date: "${{ inputs.branches-retain-days }} days ago"
-          dry_run: "${{ inputs.dry_run }}"
-          delete_tags: false
-          exclude_open_pr_branches: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          retain-days: ${{ inputs.branches-retain-days }}
+          dry-run: ${{ inputs.dry_run }}
+          exclude-open-pr-branches: true
+          keep-branches: main,master

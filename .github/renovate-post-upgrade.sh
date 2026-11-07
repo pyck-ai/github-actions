@@ -38,7 +38,7 @@ cd "$(git rev-parse --show-toplevel)"
 echo "renovate-post-upgrade: installing dependencies"
 npm ci
 
-echo "renovate-post-upgrade: rebuilding ghcr-tidy/dist"
+echo "renovate-post-upgrade: rebuilding ghcr-tidy/dist and branch-tidy/dist"
 npm run bundle
 
 echo "renovate-post-upgrade: done"

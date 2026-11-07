@@ -1,4 +1,5 @@
 ghcr-tidy/dist
+branch-tidy/dist
 lib
 node_modules
 coverage

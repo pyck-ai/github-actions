@@ -18,13 +18,25 @@ export type RegistryOctokit = InstanceType<typeof Octokit>;
 export interface CreateOctokitOptions {
   /** Max additional retries the throttling plugin performs on a rate limit before giving up. Default 3. */
   maxRateLimitRetries?: number;
+  /** API base URL, for GitHub Enterprise Server or a test double. Defaults to Octokit's own (api.github.com). */
+  baseUrl?: string;
+  /** `fetch` implementation every request goes through. Defaults to the global `fetch`. */
+  fetch?: typeof fetch;
+  /** Max retries of the retry plugin for 5xx and network errors. Defaults to the plugin's own (3). */
+  retries?: number;
+  /** Set false to switch the throttling plugin off (no pacing, no rate-limit retry). For tests only. Default true. */
+  throttle?: boolean;
 }
 
 export function createOctokit(auth: string, options: CreateOctokitOptions = {}): RegistryOctokit {
   const maxRetries = options.maxRateLimitRetries ?? 3;
   return new Octokit({
     auth,
+    ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
+    ...(options.fetch !== undefined ? { request: { fetch: options.fetch } } : {}),
+    ...(options.retries !== undefined ? { retry: { retries: options.retries } } : {}),
     throttle: {
+      enabled: options.throttle ?? true,
       onRateLimit: (_retryAfter, requestOptions, octokit, retryCount) => {
         octokit.log.warn(
           `rate limit hit for ${String(requestOptions.method)} ${String(requestOptions.url)}`,

@@ -8,7 +8,13 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   prettier,
   {
-    ignores: ["ghcr-tidy/dist/**", "lib/**", "node_modules/**", "coverage/**"],
+    ignores: [
+      "ghcr-tidy/dist/**",
+      "branch-tidy/dist/**",
+      "lib/**",
+      "node_modules/**",
+      "coverage/**",
+    ],
   },
   {
     rules: {

@@ -6,7 +6,7 @@ version: "3"
 # first on a clean checkout.
 tasks:
   generate:
-    desc: Rebuild the committed ghcr-tidy/dist bundle
+    desc: Rebuild the committed ghcr-tidy/dist and branch-tidy/dist bundles
     cmds:
       - npm run bundle
 
@@ -31,7 +31,7 @@ tasks:
       # go blind exactly when a bundled action's dist/ is deleted.
       - silent: true
         cmd: |
-          known_dists="ghcr-tidy/dist"
+          known_dists="ghcr-tidy/dist branch-tidy/dist"
           for dist in $known_dists; do
             if [ ! -d "$dist" ]; then
               echo "$dist/ does not exist: update this check, it no longer matches the repo's bundled actions" >&2
