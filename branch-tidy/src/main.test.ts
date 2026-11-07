@@ -64,7 +64,7 @@ const deleted = (r: RunResult): string[] =>
     .filter((q) => q.method === "DELETE")
     .map((q) => decodeURIComponent(q.path.split("/git/refs/heads/")[1] ?? ""));
 
-describe("cutoff (spec 10.1)", () => {
+describe("cutoff", () => {
   it("deletes a branch one second before the cutoff and keeps one at it or after it", async () => {
     const r = await run({
       branches: [
@@ -79,7 +79,7 @@ describe("cutoff (spec 10.1)", () => {
   });
 });
 
-describe("keep-branches (spec 10.2)", () => {
+describe("keep-branches", () => {
   const old = "2020-01-01T00:00:00Z";
   const all = [branch("main", old), branch("master", old), branch("dev", old), branch("x", old)];
 
@@ -105,7 +105,7 @@ describe("keep-branches (spec 10.2)", () => {
   });
 });
 
-describe("default branch (spec 10.3)", () => {
+describe("default branch", () => {
   it("is kept although keep-branches does not list it", async () => {
     const old = "2020-01-01T00:00:00Z";
     const r = await run(
@@ -117,7 +117,7 @@ describe("default branch (spec 10.3)", () => {
   });
 });
 
-describe("protection (spec 10.4)", () => {
+describe("protection", () => {
   const old = "2020-01-01T00:00:00Z";
   it("keeps a protected stale branch", async () => {
     const r = await run({ branches: [branch("rel", old, { protected: true })] });
@@ -134,7 +134,7 @@ describe("protection (spec 10.4)", () => {
   });
 });
 
-describe("open pull requests (spec 10.5)", () => {
+describe("open pull requests", () => {
   const old = "2020-01-01T00:00:00Z";
   const branches = [branch("head-b", old), branch("base-b", old), branch("free", old)];
   const pulls = [
@@ -172,7 +172,7 @@ describe("open pull requests (spec 10.5)", () => {
   });
 });
 
-describe("dry run (spec 10.6)", () => {
+describe("dry run", () => {
   it("lists and judges but makes no write request", async () => {
     const r = await run(
       {
@@ -207,7 +207,7 @@ describe("dry run (spec 10.6)", () => {
   });
 });
 
-describe("encoding (spec 10.7)", () => {
+describe("encoding", () => {
   it("deletes a name with slashes at a path ending /git/refs/heads/feature/a/b", async () => {
     const r = await run({ branches: [branch("feature/a/b", "2020-01-01T00:00:00Z")] });
     const del = r.requests.find((q) => q.method === "DELETE");
@@ -224,7 +224,7 @@ describe("encoding (spec 10.7)", () => {
   });
 });
 
-describe("pagination (spec 10.8)", () => {
+describe("pagination", () => {
   it("reads branches, commit dates and pull requests over several pages", async () => {
     const names = Array.from({ length: 7 }, (_, i) => `b${String(i)}`);
     const r = await run({
@@ -263,7 +263,7 @@ describe("pagination (spec 10.8)", () => {
   });
 });
 
-describe("deletion outcomes (spec 10.9)", () => {
+describe("deletion outcomes", () => {
   const old = "2020-01-01T00:00:00Z";
 
   it("a 404 from the pre-delete GET does not fail the step", async () => {
@@ -335,7 +335,7 @@ describe("deletion outcomes (spec 10.9)", () => {
   });
 });
 
-describe("listing failures delete nothing (spec 10.10)", () => {
+describe("listing failures delete nothing", () => {
   const old = "2020-01-01T00:00:00Z";
   const base = { branches: [branch("a", old)], pulls: [] };
 
@@ -372,7 +372,7 @@ describe("listing failures delete nothing (spec 10.10)", () => {
   });
 });
 
-describe("a ref that is not a commit (spec 10.11)", () => {
+describe("a ref that is not a commit", () => {
   it("is kept with a warning naming it", async () => {
     const r = await run({
       branches: [
@@ -407,7 +407,7 @@ describe("a ref that is not a commit (spec 10.11)", () => {
   });
 });
 
-describe("invalid inputs fail before any API call (spec 10.12)", () => {
+describe("invalid inputs fail before any API call", () => {
   const cases: [string, Record<string, string>, string][] = [
     [
       "retain-days 0",

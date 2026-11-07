@@ -53,7 +53,7 @@ The step summary shows the mode, the cutoff, the counts (seen, stale, kept per r
 
 ## Permissions
 
-`contents: write` to delete branches (listing needs `contents: read`) and `pull-requests: read` to list open pull requests. Rate limits are handled by the retry and throttling plugins, as in [ghcr-tidy](../ghcr-tidy/README.md); the read side uses paginated list calls, never one call per branch.
+`contents: write` to delete branches (listing needs `contents: read`) and `pull-requests: read` to list open pull requests. Rate limits are handled by the retry and throttling plugins of the shared Octokit client in [`registry/packages.ts`](../registry/packages.ts); the read side uses paginated list calls, never one call per branch.
 
 ## Limitations
 

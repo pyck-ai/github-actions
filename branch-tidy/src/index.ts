@@ -1,6 +1,5 @@
 import { main } from "./main.js";
 
-// No top-level await: ncc bundles to CommonJS.
 main({ env: process.env, fetch: globalThis.fetch }).then(
   (code) => {
     process.exitCode = code;
