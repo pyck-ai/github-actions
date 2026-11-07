@@ -1,0 +1,3 @@
+# The ncc bundles that `task generate` writes. GitHub collapses their diffs,
+# and pyck-review leaves them out of pull request size and spread.
+*/dist/** linguist-generated
