@@ -62,6 +62,7 @@ Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json);
 - [build-image.yml](./.github/workflows/build-image.yml), [tidy-repo.yml](./.github/workflows/tidy-repo.yml), [tidy-ghcr.yml](./.github/workflows/tidy-ghcr.yml): header comments own the contract of each reusable workflow.
 - [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [branch-tidy](./branch-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [gate](./gate/README.md), [zizmor](./zizmor/README.md), [gitleaks](./gitleaks/README.md): inputs, behaviour and design of each action.
 - [registry](./registry/README.md): the shared TypeScript registry core that `ghcr-tidy` bundles.
+- [tidy-core](./tidy-core/README.md): the shared TypeScript plumbing (inputs, output, step summary, Octokit options, test fake) that `branch-tidy` bundles and the planned `run-tidy` and `cache-tidy` will.
 - [ghcr-tidy/src/cli.ts](./ghcr-tidy/src/cli.ts): `ghcr-tidy` flags and exit codes.
 - [Taskfile.yml](./Taskfile.yml): the checks every change must pass (`task ci`; [ci.yml](./.github/workflows/ci.yml) runs its parts as parallel jobs), including the committed-bundle check.
 - [renovate.json5](./.github/renovate.json5): how dependency and image digests are kept current.

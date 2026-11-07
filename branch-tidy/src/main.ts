@@ -1,16 +1,22 @@
-import { appendFile } from "node:fs/promises";
-import { createOctokit } from "../../registry/index.js";
+import {
+  InputError,
+  appendStepSummary,
+  createOutput,
+  createTidyOctokit,
+  describeError,
+  parseRepository,
+  statusOf,
+  type Repository,
+} from "../../tidy-core/src/index.js";
 import {
   deleteBranchRef,
   getBranchRef,
   getRepo,
   listBranches,
   listOpenPullRequests,
-  statusOf,
   type BranchInfo,
-  type Repository,
 } from "./github.js";
-import { InputError, parseInputs, type Inputs } from "./inputs.js";
+import { parseInputs, type Inputs } from "./inputs.js";
 import { judgeBranches, type KeepReason } from "./judge.js";
 import { renderSummary, type Report } from "./report.js";
 
@@ -32,23 +38,11 @@ export interface MainOptions {
   retries?: number;
 }
 
-const DEFAULT_API_URL = "https://api.github.com";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-/** Escapes the message of a workflow command (`::name::message`). */
-function escapeCommandData(text: string): string {
-  return text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
-}
 
 /** Plain code-unit order, the same on every machine and locale. */
 function byName(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function describeError(err: unknown): string {
-  const status = statusOf(err);
-  const message = err instanceof Error ? err.message : String(err);
-  return status !== undefined ? `HTTP ${String(status)}: ${message}` : message;
 }
 
 /**
@@ -57,10 +51,7 @@ function describeError(err: unknown): string {
  * succeeded: a listing failure fails the run before the first deletion.
  */
 export async function main(opts: MainOptions): Promise<number> {
-  const out = opts.log ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const notice = (msg: string) => out(`::notice::${escapeCommandData(msg)}`);
-  const warning = (msg: string) => out(`::warning::${escapeCommandData(msg)}`);
-  const error = (msg: string) => out(`::error::${escapeCommandData(msg)}`);
+  const { log: out, notice, warning, error } = createOutput(opts.log);
   const start = opts.now ?? new Date();
   const env = opts.env;
 
@@ -76,11 +67,10 @@ export async function main(opts: MainOptions): Promise<number> {
   }
 
   const cutoff = new Date(start.getTime() - inputs.retainDays * MS_PER_DAY);
-  const apiUrl = (env["GITHUB_API_URL"] ?? "") || DEFAULT_API_URL;
-  const octokit = createOctokit(inputs.token, {
-    baseUrl: apiUrl,
+  const octokit = createTidyOctokit(inputs.token, {
+    env,
     fetch: opts.fetch,
-    ...(opts.retries !== undefined ? { retries: opts.retries, throttle: opts.retries !== 0 } : {}),
+    ...(opts.retries !== undefined ? { retries: opts.retries } : {}),
   });
 
   const report: Report = {
@@ -185,7 +175,7 @@ export async function main(opts: MainOptions): Promise<number> {
     }
   }
 
-  await writeSummary(env["GITHUB_STEP_SUMMARY"], renderSummary(report), warning);
+  await appendStepSummary(env["GITHUB_STEP_SUMMARY"], renderSummary(report), warning);
 
   if (authFailure) {
     error(
@@ -202,16 +192,6 @@ export async function main(opts: MainOptions): Promise<number> {
   return 0;
 }
 
-function parseRepository(raw: string | undefined): Repository {
-  const [owner, repo, ...rest] = (raw ?? "").split("/");
-  if (!owner || !repo || rest.length > 0) {
-    throw new InputError(
-      `GITHUB_REPOSITORY must be "owner/repo", got ${JSON.stringify(raw ?? "")}`,
-    );
-  }
-  return { owner, repo };
-}
-
 function keepText(reason: KeepReason): string {
   switch (reason) {
     case "keep-branches":
@@ -226,18 +206,5 @@ function keepText(reason: KeepReason): string {
       return "it is the head of an open pull request";
     case "open-pr-base":
       return "it is the base of an open pull request";
-  }
-}
-
-async function writeSummary(
-  path: string | undefined,
-  markdown: string,
-  warning: (msg: string) => void,
-): Promise<void> {
-  if (!path) return;
-  try {
-    await appendFile(path, `${markdown}\n`, "utf8");
-  } catch (err) {
-    warning(`Could not write the step summary: ${describeError(err)}`);
   }
 }
