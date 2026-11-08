@@ -37,12 +37,7 @@ jobs:
           node-version: 24
           cache: "npm"
 
-      # Pins the go-task version instead of relying on the runner image's.
-      - name: Set up Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-        with:
-          repo-token: ${{ github.token }}
-
+      # `task` comes from the runner image (baseimages pins its version).
       - name: Install dependencies
         run: npm ci
 
@@ -62,11 +57,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-        with:
-          repo-token: ${{ github.token }}
-
       - name: Scan workflows and actions
         uses: ./zizmor
 
@@ -80,11 +70,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-        with:
-          repo-token: ${{ github.token }}
 
       - name: Scan history for secrets
         uses: ./gitleaks

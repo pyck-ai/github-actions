@@ -99,8 +99,10 @@ name: build-image
 # difference fails the job, and on non-PR events it does so BEFORE any tag is
 # created. It fails on a PR as well: the code commit stays red until the commit
 # that records the pin lands, which is the intended order. The task runs from
-# `publish`'s checkout, so `task` must be on the runner's PATH (it is on the
-# Firecracker pools, which `reproducible` requires anyway).
+# `publish`'s checkout.
+#
+# Every job takes `task` from the runner image (ghcr.io/pyck-ai/github-runner,
+# which has it from pyck-ai/baseimages); nothing downloads it per job.
 #
 # Triggers stay in the caller (schedule / workflow_dispatch / pull_request);
 # a shared workflow must not own the cron, since the offset encodes a real
@@ -568,12 +570,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-        with:
-          version: 3.x
-          repo-token: ${{ github.token }}
 
       # The leg runs the CALLER's `task build`, so the same command builds
       # locally and in CI (the consumer contract is in the header above).

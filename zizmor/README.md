@@ -24,7 +24,6 @@ jobs:
       - uses: actions/checkout@<sha>
         with:
           persist-credentials: false
-      - uses: go-task/setup-task@<sha>
       - uses: pyck-ai/github-actions/zizmor@<sha>
 ```
 
@@ -32,7 +31,7 @@ Add the job to the `needs` of the repository's `ci-success` gate.
 
 ## What the caller provides
 
-- `task` on `PATH` (the example uses `go-task/setup-task`).
+- `task` on `PATH`. The pyck-ai runner image has it; elsewhere install it first.
 - A `zizmor` task in the Taskfile that runs the scan, and the same task in `task ci`:
 
   ```yaml
