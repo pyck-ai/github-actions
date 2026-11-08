@@ -25,7 +25,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: go-task/setup-task@<sha>
       - uses: pyck-ai/github-actions/gitleaks@<sha>
 ```
 
@@ -33,7 +32,7 @@ jobs:
 
 ## What the caller provides
 
-- `task` on `PATH` (the example uses `go-task/setup-task`).
+- `task` on `PATH`. The pyck-ai runner image has it; elsewhere install it first.
 - A `gitleaks` task in the Taskfile that runs the scan, and the same task in `task ci`:
 
   ```yaml
