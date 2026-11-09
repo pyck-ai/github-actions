@@ -118,12 +118,23 @@ function skillDirOf(rel, topSkills) {
 const isAgentSized = (rel, topSkills) =>
   skillDirOf(rel, topSkills) !== null || basename(rel) === "CODING_STANDARDS.md";
 
-function listFiles(root) {
+/**
+ * Runs git with the given arguments and returns its stdout as text; throws
+ * like execFileSync when git is missing or exits non-zero. `options` are
+ * execFileSync's (stdio, maxBuffer). The repository is selected by `-C` in `args`.
+ *
+ * @param {string[]} args
+ * @param {import("node:child_process").ExecFileSyncOptions} [options]
+ * @returns {string}
+ */
+const defaultGit = (args, options) => execFileSync("git", args, { ...options, encoding: "utf8" });
+
+function listFiles(root, git) {
   /** @type {string[]} */
   let rels;
   let gitTree = false;
   try {
-    execFileSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], {
+    git(["-C", root, "rev-parse", "--is-inside-work-tree"], {
       stdio: ["ignore", "pipe", "ignore"],
     });
     gitTree = true;
@@ -133,11 +144,9 @@ function listFiles(root) {
   if (gitTree) {
     // Tracked plus untracked-but-not-ignored, so a new file is checked before
     // it is committed. Deleted-but-tracked files are dropped below.
-    const out = execFileSync(
-      "git",
-      ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-      { maxBuffer: 256 * 1024 * 1024 },
-    ).toString("utf8");
+    const out = git(["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+      maxBuffer: 256 * 1024 * 1024,
+    });
     rels = [...new Set(out.split("\0").filter(Boolean))];
   } else {
     rels = [];
@@ -194,7 +203,7 @@ function listFiles(root) {
  * there is no matcher: `.tocignore` files are ignored, with one warning.
  * Returns `warning`: the message to report, or null.
  */
-function tocIgnoredFiles(root, gitTree, files) {
+function tocIgnoredFiles(root, gitTree, files, git) {
   const hasTocIgnore = files.some((f) => basename(f) === ".tocignore");
   if (!gitTree) {
     return {
@@ -205,11 +214,10 @@ function tocIgnoredFiles(root, gitTree, files) {
     };
   }
   try {
-    const out = execFileSync(
-      "git",
+    const out = git(
       ["-C", root, "ls-files", "-z", "-c", "-o", "-i", "--exclude-per-directory=.tocignore"],
       { maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] },
-    ).toString("utf8");
+    );
     return { ignored: new Set(out.split("\0").filter(Boolean)), warning: null };
   } catch (err) {
     // git found the work tree but could not list the matches: same outcome
@@ -263,12 +271,11 @@ function proseLines(lines) {
 }
 
 /** Name of the repo under check: basename of the origin remote URL without `.git`, else of the root dir. */
-function selfRepoName(root) {
+function selfRepoName(root, git) {
   try {
-    const url = execFileSync("git", ["-C", root, "remote", "get-url", "origin"], {
+    const url = git(["-C", root, "remote", "get-url", "origin"], {
       stdio: ["ignore", "pipe", "ignore"],
     })
-      .toString("utf8")
       .trim()
       .replace(/\/+$/, "")
       .replace(/\.git$/, "");
@@ -642,15 +649,15 @@ function fixToc(root, rel) {
 
 // ----------------------------------------------------------------- the checks
 
-async function check(root, profile, checkUrls, pyckBase, requireSkillHarness, fetch) {
+async function check(root, profile, checkUrls, pyckBase, requireSkillHarness, fetch, git) {
   /** @type {Finding[]} */
   const findings = [];
   /** @type {{ rel: string }[]} */
   const tocFixes = [];
   const add = (level, file, line, msg) => findings.push({ level, file, line, msg });
   const limits = LIMITS[profile];
-  const { files, gitTree, broken, topSkills } = listFiles(root);
-  const tocIgnore = tocIgnoredFiles(root, gitTree, files);
+  const { files, gitTree, broken, topSkills } = listFiles(root, git);
+  const tocIgnore = tocIgnoredFiles(root, gitTree, files, git);
   if (tocIgnore.warning) add("warning", ".tocignore", undefined, tocIgnore.warning);
   for (const { rel, target } of broken) {
     add(
@@ -667,7 +674,7 @@ async function check(root, profile, checkUrls, pyckBase, requireSkillHarness, fe
   }
 
   const urlsToCheck = [];
-  const selfRepo = selfRepoName(root);
+  const selfRepo = selfRepoName(root, git);
   const missingRepos = new Set();
 
   for (const rel of files) {
@@ -1001,6 +1008,7 @@ function display(inputPath, rel) {
  * @property {(line: string) => void} [log] Receives every stdout line. Defaults to console.log.
  * @property {(line: string) => void} [error] Receives every stderr line. Defaults to console.error.
  * @property {typeof globalThis.fetch} [fetch] Probes the org URLs under --check-urls. Defaults to the global fetch.
+ * @property {(args: string[], options?: import("node:child_process").ExecFileSyncOptions) => string} [git] Runs git and returns stdout, throwing on failure like execFileSync. Defaults to the installed git.
  */
 
 /**
@@ -1017,16 +1025,17 @@ export async function main({
   log = console.log,
   error = console.error,
   fetch = globalThis.fetch,
+  git = defaultGit,
 } = {}) {
   try {
-    return await run(argv, env, cwd, log, error, fetch);
+    return await run(argv, env, cwd, log, error, fetch, git);
   } catch (err) {
     error(err instanceof Error ? (err.stack ?? String(err)) : String(err));
     return 1;
   }
 }
 
-async function run(argv, env, cwd, log, error, fetch) {
+async function run(argv, env, cwd, log, error, fetch, git) {
   const opts = parseArgs(argv, env, log, error);
   if ("exit" in opts) return opts.exit;
   if (!(opts.profile in LIMITS)) {
@@ -1047,6 +1056,7 @@ async function run(argv, env, cwd, log, error, fetch) {
     pyckBase,
     opts.requireSkillHarness,
     fetch,
+    git,
   );
   if (opts.fix) {
     for (const { rel } of result.tocFixes) {
@@ -1060,6 +1070,7 @@ async function run(argv, env, cwd, log, error, fetch) {
         pyckBase,
         opts.requireSkillHarness,
         fetch,
+        git,
       );
   }
   const { findings, checked } = result;

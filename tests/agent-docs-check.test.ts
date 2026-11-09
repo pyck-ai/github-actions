@@ -1,6 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptions, spawnSync } from "node:child_process";
 import {
-  chmodSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -14,14 +13,19 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { main } from "../agent-docs-check/check.mjs";
 
-// Runs agent-docs-check/check.mjs as a child process against the fixture trees
-// in tests/fixtures/agent-docs-check/<case>/. Agent tools treat a real
-// AGENTS.md, CLAUDE.md or .claude/ directory as live instructions, so the
-// fixtures store them with a `.fixture` suffix. Each run first copies the
+// Runs agent-docs-check's main() in-process against the fixture trees in
+// tests/fixtures/agent-docs-check/<case>/, and starts the real script as a
+// child process in the "entry point" block, which also covers the PATH lookup
+// of the real git. Agent tools treat a real AGENTS.md, CLAUDE.md or .claude/
+// directory as live instructions, so the fixtures store them with a `.fixture`
+// suffix. Each run first copies the
 // fixture into a temp dir outside any git work tree, stripping the suffix,
-// and git is told to ignore everything above it via GIT_CEILING_DIRECTORIES:
-// the check then takes its directory-walk branch.
+// and the check gets a `git` that fails as it does outside a work tree, so it
+// takes its directory-walk branch without starting a git process. Tests whose
+// subject is git itself (.tocignore, the origin remote) pass a real git, with
+// GIT_CEILING_DIRECTORIES set so it never finds a repository above the temp dir.
 
 const root = join(__dirname, "..");
 const script = join(root, "agent-docs-check", "check.mjs");
@@ -48,51 +52,102 @@ function copyFixture(src: string, dest: string): void {
  * repo under check after the root's basename, so a fixture can refer to itself
  * as `~/.pyck/<fixture>/...` deterministically.
  */
-function withFixture<T>(fixture: string, fn: (dir: string) => T): T {
+async function withFixture<T>(fixture: string, fn: (dir: string) => T | Promise<T>): Promise<T> {
   mkdirSync(tmpBase, { recursive: true });
   const tmp = mkdtempSync(join(tmpBase, "fixture-"));
   try {
     const dir = join(tmp, fixture);
     copyFixture(join(fixtures, fixture), dir);
-    return fn(dir);
+    return await fn(dir);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 }
 
-function run(
+type Git = (args: string[], options?: ExecFileSyncOptions) => string;
+
+interface RunResult {
+  status: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** What git does in a directory that is not a work tree: rev-parse exits 128. */
+const notARepo: Git = () => {
+  throw new Error("fatal: not a git repository (or any of the parent directories): .git");
+};
+
+/** The installed git, kept from finding a repository above the temp dir. */
+const realGit: Git = (args, options) =>
+  execFileSync("git", args, {
+    ...options,
+    encoding: "utf8",
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: tmpBase },
+  });
+
+/** Only the variables the check reads: the real environment never reaches it. */
+const baseEnv = {
+  GITHUB_ACTIONS: "",
+  HOME: join(tmpBase, "no-home"),
+  PYCK_HOME: join(tmpBase, "no-pyck-home"),
+};
+
+/** Calls main() in-process; stdout and stderr are the logged lines joined with newlines. */
+async function runMain(
+  argv: string[],
+  env: Record<string, string | undefined> = {},
+  git: Git = notARepo,
+): Promise<RunResult> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const status = await main({
+    argv,
+    env: { ...baseEnv, ...env },
+    cwd: tmpBase,
+    git,
+    log: (line: string) => out.push(`${line}\n`),
+    error: (line: string) => err.push(`${line}\n`),
+  });
+  return { status, stdout: out.join(""), stderr: err.join("") };
+}
+
+/** Starts the real script as a child process. */
+function spawnScript(args: string[], env: NodeJS.ProcessEnv = {}): RunResult {
+  const res = spawnSync("node", [script, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: tmpBase, ...env },
+  });
+  return { status: res.status as number, stdout: res.stdout, stderr: res.stderr };
+}
+
+async function run(
   fixture: string,
   args: string[] = [],
   env: NodeJS.ProcessEnv = {},
-): { code: number | null; out: string } {
-  return withFixture(fixture, (dir) => {
-    const res = spawnSync("node", [script, dir, ...args], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GITHUB_ACTIONS: "",
-        GIT_CEILING_DIRECTORIES: tmpBase,
-        PYCK_HOME: join(tmpBase, "no-pyck-home"),
-        ...env,
-      },
-    });
+): Promise<{ code: number | null; out: string }> {
+  return withFixture(fixture, async (dir) => {
+    const res = await runMain([dir, ...args], env);
     return { code: res.status, out: `${res.stdout}${res.stderr}` };
   });
 }
 
-function expectPass(fixture: string, args: string[] = [], env: NodeJS.ProcessEnv = {}): void {
-  const { code, out } = run(fixture, args, env);
+async function expectPass(
+  fixture: string,
+  args: string[] = [],
+  env: NodeJS.ProcessEnv = {},
+): Promise<void> {
+  const { code, out } = await run(fixture, args, env);
   expect(out).toMatch(/0 error\(s\)/);
   expect(code).toBe(0);
 }
 
-function expectFail(
+async function expectFail(
   fixture: string,
   messages: (string | RegExp)[],
   args: string[] = [],
   env: NodeJS.ProcessEnv = {},
-): void {
-  const { code, out } = run(fixture, args, env);
+): Promise<void> {
+  const { code, out } = await run(fixture, args, env);
   expect(code).toBe(1);
   for (const m of messages) {
     if (typeof m === "string") expect(out).toContain(m);
@@ -103,14 +158,14 @@ function expectFail(
 describe("agent-docs-check", () => {
   describe("rule 1: no CLAUDE.md", () => {
     it("passes without CLAUDE.md", () => expectPass("claude-md-pass"));
-    it("fails on every CLAUDE.md, at any depth", () => {
-      expectFail("claude-md-fail", [
+    it("fails on every CLAUDE.md, at any depth", async () => {
+      await expectFail("claude-md-fail", [
         /CLAUDE\.md:1: no-claude-md: CLAUDE\.md must not exist; delete it/,
         /sub\/CLAUDE\.md:1: no-claude-md/,
         "2 error(s)",
       ]);
     });
-    it("skips a CLAUDE.md under a fixtures/ or testdata/ segment", () => {
+    it("skips a CLAUDE.md under a fixtures/ or testdata/ segment", async () => {
       const base = tmpBase;
       mkdirSync(base, { recursive: true });
       const tmp = mkdtempSync(join(base, "claude-"));
@@ -121,10 +176,7 @@ describe("agent-docs-check", () => {
           writeFileSync(join(tmp, d, "CLAUDE.md"), "# fixture\n");
         }
         writeFileSync(join(tmp, "CLAUDE.md"), "# real\n");
-        const res = spawnSync("node", [script, tmp], {
-          encoding: "utf8",
-          env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: base },
-        });
+        const res = await runMain([tmp]);
         const out = `${res.stdout}${res.stderr}`;
         expect(out).toContain("1 error(s)");
         expect(out).toMatch(/\/CLAUDE\.md:1: no-claude-md/);
@@ -164,8 +216,8 @@ describe("agent-docs-check", () => {
       ));
     it("accepts the same central-failing file under the repo profile", () =>
       expectPass("agents-budget-central-fail"));
-    it("warns, without failing, when the root AGENTS.md is missing", () => {
-      const { code, out } = run("agents-missing-root");
+    it("warns, without failing, when the root AGENTS.md is missing", async () => {
+      const { code, out } = await run("agents-missing-root");
       expect(out).toContain("warning: missing root AGENTS.md");
       expect(out).toContain("0 error(s), 1 warning(s)");
       expect(code).toBe(0);
@@ -181,8 +233,8 @@ describe("agent-docs-check", () => {
     ])("fails over 200 lines: %s", (fixture, where) =>
       expectFail(fixture, [where, "agent-file-size:", "limit is 200"]),
     );
-    it("has no limit for a script in a skill dir (201-line .py next to SKILL.md)", () => {
-      const { code, out } = run("size-script-pass");
+    it("has no limit for a script in a skill dir (201-line .py next to SKILL.md)", async () => {
+      const { code, out } = await run("size-script-pass");
       expect(out).not.toContain("agent-file-size");
       expect(code).toBe(0);
     });
@@ -201,7 +253,9 @@ describe("agent-docs-check", () => {
     });
 
     /** Temp tree (no git) with AGENTS.md, a docs/std.md and the given symlinks (path -> target). */
-    function linkRun(links: Record<string, string>): { code: number | null; out: string } {
+    async function linkRun(
+      links: Record<string, string>,
+    ): Promise<{ code: number | null; out: string }> {
       mkdirSync(base, { recursive: true });
       const tmp = mkdtempSync(join(base, "link-"));
       dirs.push(tmp);
@@ -212,15 +266,12 @@ describe("agent-docs-check", () => {
         mkdirSync(dirname(join(tmp, rel)), { recursive: true });
         symlinkSync(target, join(tmp, rel));
       }
-      const res = spawnSync("node", [script, tmp], {
-        encoding: "utf8",
-        env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: base },
-      });
+      const res = await runMain([tmp]);
       return { code: res.status, out: `${res.stdout}${res.stderr}` };
     }
 
-    it("errors on a dangling symlink in a skill dir, naming the link and its target", () => {
-      const { code, out } = linkRun({
+    it("errors on a dangling symlink in a skill dir, naming the link and its target", async () => {
+      const { code, out } = await linkRun({
         ".claude/skills/demo/std.md": "../../../docs/renamed.md",
       });
       expect(out).toContain(
@@ -229,18 +280,18 @@ describe("agent-docs-check", () => {
       expect(out).toContain("1 error(s)");
       expect(code).toBe(1);
     });
-    it("errors on a dangling CODING_STANDARDS.md symlink", () => {
-      const { code, out } = linkRun({ "pkg/CODING_STANDARDS.md": "../docs/gone.md" });
+    it("errors on a dangling CODING_STANDARDS.md symlink", async () => {
+      const { code, out } = await linkRun({ "pkg/CODING_STANDARDS.md": "../docs/gone.md" });
       expect(out).toMatch(/pkg\/CODING_STANDARDS\.md:1: broken-symlink:.*\.\.\/docs\/gone\.md/);
       expect(code).toBe(1);
     });
-    it("passes a resolving symlink in a skill dir", () => {
-      const { code, out } = linkRun({ ".claude/skills/demo/std.md": "../../../docs/std.md" });
+    it("passes a resolving symlink in a skill dir", async () => {
+      const { code, out } = await linkRun({ ".claude/skills/demo/std.md": "../../../docs/std.md" });
       expect(out).not.toContain("broken-symlink");
       expect(code).toBe(0);
     });
-    it("skips a dangling symlink outside skill dirs", () => {
-      const { code, out } = linkRun({ "docs/dangling.md": "nowhere.md" });
+    it("skips a dangling symlink outside skill dirs", async () => {
+      const { code, out } = await linkRun({ "docs/dangling.md": "nowhere.md" });
       expect(out).not.toContain("broken-symlink");
       expect(out).toContain("0 error(s)");
       expect(code).toBe(0);
@@ -311,13 +362,16 @@ describe("agent-docs-check", () => {
       for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
     });
 
-    /** Copy the tree to a temp dir, write the given files, optionally git init, return reported docs. */
-    function tocRun(
+    /**
+     * Copy the tree to a temp dir, write the given files, optionally git init, return reported docs.
+     * With git the check runs against checkGit, the real git by default.
+     */
+    async function tocRun(
       files: Record<string, string>,
       git = true,
       forceAdd: string[] = [],
-      extraEnv: NodeJS.ProcessEnv = {},
-    ): { reported: string[]; out: string; code: number | null } {
+      checkGit: Git = realGit,
+    ): Promise<{ reported: string[]; out: string; code: number | null }> {
       mkdirSync(base, { recursive: true });
       const tmp = mkdtempSync(join(base, "ignore-"));
       dirs.push(tmp);
@@ -330,10 +384,7 @@ describe("agent-docs-check", () => {
         spawnSync("git", ["-C", tmp, "init", "-q"]);
         if (forceAdd.length) spawnSync("git", ["-C", tmp, "add", "-f", ...forceAdd]);
       }
-      const res = spawnSync("node", [script, tmp], {
-        encoding: "utf8",
-        env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: base, ...extraEnv },
-      });
+      const res = await runMain([tmp], {}, git ? checkGit : notARepo);
       const out = `${res.stdout}${res.stderr}`;
       const reported = [...out.matchAll(/^(\S+?):\d+: toc-missing:/gm)]
         .map((m) => m[1].slice(tmp.length + 1))
@@ -357,11 +408,11 @@ describe("agent-docs-check", () => {
       "vendor/sub/b.md",
     ];
 
-    it("reports every doc without a .tocignore", () => {
-      expect(tocRun({}).reported).toEqual(all);
+    it("reports every doc without a .tocignore", async () => {
+      expect((await tocRun({})).reported).toEqual(all);
     });
-    it("handles comments, globs, dir/, anchoring, negation and escapes", () => {
-      const { reported } = tocRun({
+    it("handles comments, globs, dir/, anchoring, negation and escapes", async () => {
+      const { reported } = await tocRun({
         ".tocignore": [
           "# a comment",
           "",
@@ -387,20 +438,20 @@ describe("agent-docs-check", () => {
         ].sort(),
       );
     });
-    it("lets a later negation re-include a file whose directory is not excluded", () => {
-      const { reported } = tocRun({ ".tocignore": "vendor/*.md\n!vendor/a.md\n" });
+    it("lets a later negation re-include a file whose directory is not excluded", async () => {
+      const { reported } = await tocRun({ ".tocignore": "vendor/*.md\n!vendor/a.md\n" });
       expect(reported).toContain("vendor/a.md");
       expect(reported).toContain("vendor/sub/b.md");
     });
-    it("applies a trailing / to directories only", () => {
+    it("applies a trailing / to directories only", async () => {
       // top.md is a file: "top.md/" must not match it, but "dir/" matches the directory.
-      const { reported } = tocRun({ ".tocignore": "top.md/\ndir/\n" });
+      const { reported } = await tocRun({ ".tocignore": "top.md/\ndir/\n" });
       expect(reported).toContain("top.md");
       expect(reported).not.toContain("dir/file.md");
       expect(reported).toContain("dirfile/x.md");
     });
-    it("reads .tocignore files at any depth, relative to their own directory", () => {
-      const { reported } = tocRun({
+    it("reads .tocignore files at any depth, relative to their own directory", async () => {
+      const { reported } = await tocRun({
         "pkg/.tocignore": "/top.md\ninner/y.md\n",
         ".tocignore": "",
       });
@@ -410,29 +461,24 @@ describe("agent-docs-check", () => {
       expect(reported).toContain("top.md");
       expect(reported).toContain("docs/top.md");
     });
-    it("exits 0 when .tocignore covers every doc, and 1 without it", () => {
-      expect(tocRun({}).code).toBe(1);
-      const { reported, out, code } = tocRun({ ".tocignore": "*.md\n" });
+    it("exits 0 when .tocignore covers every doc, and 1 without it", async () => {
+      expect((await tocRun({})).code).toBe(1);
+      const { reported, out, code } = await tocRun({ ".tocignore": "*.md\n" });
       expect(reported).toEqual([]);
       expect(out).not.toContain("toc-missing");
       expect(out).toMatch(/0 error\(s\)/);
       expect(code).toBe(0);
     });
-    it("warns with git's first stderr line when git ls-files fails, and ignores the exemptions", () => {
-      // A git wrapper on PATH that fails only the .tocignore listing.
-      mkdirSync(base, { recursive: true });
-      const bin = mkdtempSync(join(base, "fakegit-"));
-      dirs.push(bin);
-      const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
-      const wrapper = join(bin, "git");
-      writeFileSync(
-        wrapper,
-        `#!/bin/sh\ncase "$*" in *--exclude-per-directory*) echo "fatal: simulated failure" >&2; echo "second line" >&2; exit 128;; esac\nexec ${realGit} "$@"\n`,
-      );
-      chmodSync(wrapper, 0o755);
-      const { reported, out } = tocRun({ ".tocignore": "*.md\n" }, true, [], {
-        PATH: `${bin}:${process.env.PATH}`,
-      });
+    it("warns with git's first stderr line when git ls-files fails, and ignores the exemptions", async () => {
+      // A git that fails only the .tocignore listing, as execFileSync reports it.
+      const failingGit: Git = (args, options) => {
+        if (!args.includes("--exclude-per-directory=.tocignore")) return realGit(args, options);
+        throw Object.assign(new Error("Command failed: git ls-files"), {
+          status: 128,
+          stderr: Buffer.from("fatal: simulated failure\nsecond line\n"),
+        });
+      };
+      const { reported, out } = await tocRun({ ".tocignore": "*.md\n" }, true, [], failingGit);
       expect(out).toContain(
         "warning: could not apply .tocignore (git ls-files failed: fatal: simulated failure); exemptions ignored",
       );
@@ -440,16 +486,16 @@ describe("agent-docs-check", () => {
       expect(out).not.toContain("second line");
       expect(reported).toEqual(all);
     });
-    it("does not mix in .gitignore", () => {
+    it("does not mix in .gitignore", async () => {
       // src/notes.md is tracked although .gitignore lists src/: only .tocignore may hide it.
-      const { reported } = tocRun({ ".gitignore": "src/\n", ".tocignore": "docs/\n" }, true, [
+      const { reported } = await tocRun({ ".gitignore": "src/\n", ".tocignore": "docs/\n" }, true, [
         "src/notes.md",
       ]);
       expect(reported).toContain("src/notes.md");
       expect(reported).not.toContain("docs/guide.md");
     });
-    it("ignores .tocignore outside a git work tree and warns once", () => {
-      const { reported, out } = tocRun(
+    it("ignores .tocignore outside a git work tree and warns once", async () => {
+      const { reported, out } = await tocRun(
         { ".tocignore": "src/\n", "pkg/.tocignore": "inner/\n" },
         false,
       );
@@ -462,22 +508,19 @@ describe("agent-docs-check", () => {
     let tmp: string;
     afterEach(() => rmSync(tmp, { recursive: true, force: true }));
     const fixed = (rel: string): string => readFileSync(join(tmp, rel), "utf8");
-    function fixCopy(fixture: string): { code: number | null; out: string } {
+    async function fixCopy(fixture: string): Promise<{ code: number | null; out: string }> {
       const base = tmpBase;
       mkdirSync(base, { recursive: true });
       tmp = mkdtempSync(join(base, "fix-"));
       copyFixture(join(fixtures, fixture), tmp);
-      const res = spawnSync("node", [script, tmp, "--fix"], {
-        encoding: "utf8",
-        env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: tmpdir() },
-      });
+      const res = await runMain([tmp, "--fix"]);
       return { code: res.status, out: `${res.stdout}${res.stderr}` };
     }
     const body = "## Contents\n\n- [Alpha](#alpha)\n- [Beta](#beta)";
     const hidden = `<!-- toc\n${body}\n-->`;
 
-    it("inserts a hidden region after the H1, or at the top without one", () => {
-      const { code, out } = fixCopy("toc-fix");
+    it("inserts a hidden region after the H1, or at the top without one", async () => {
+      const { code, out } = await fixCopy("toc-fix");
       expect(out).toContain(`fixed: ${join(tmp, "docs/h1.md")}`);
       expect(out).toMatch(/0 error\(s\)/);
       expect(code).toBe(0);
@@ -494,16 +537,16 @@ describe("agent-docs-check", () => {
       expect(fixed("docs/noh1-nofm.md")).toBe(`${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`);
     });
 
-    it("rewrites only the lines between the markers, keeping the spelling", () => {
-      fixCopy("toc-fix");
+    it("rewrites only the lines between the markers, keeping the spelling", async () => {
+      await fixCopy("toc-fix");
       expect(fixed("docs/visible.md")).toBe(
         "# Vis\n\n<!-- toc -->\n## Contents\n\n- [Alpha](#alpha)\n- [Beta](#beta)\n- [Alpha](#alpha-1)\n<!-- /toc -->\n\nIntro.\n\n## Alpha\n\n## `Beta`\n\n## Alpha\n",
       );
       expect(fixed("docs/hidden.md")).toBe(`# Hid\n\n${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`);
     });
 
-    it("removes a legacy Contents comment (and one blank line) and adds the region", () => {
-      fixCopy("toc-fix");
+    it("removes a legacy Contents comment (and one blank line) and adds the region", async () => {
+      await fixCopy("toc-fix");
       expect(fixed("docs/legacy.md")).toBe(
         `# Legacy\n\n${hidden}\n\nIntro.\n\n## Alpha\n\n## Beta\n`,
       );
@@ -512,8 +555,8 @@ describe("agent-docs-check", () => {
       );
     });
 
-    it("is idempotent: a second --fix run changes nothing", () => {
-      fixCopy("toc-fix");
+    it("is idempotent: a second --fix run changes nothing", async () => {
+      await fixCopy("toc-fix");
       const rels = [
         "docs/h1.md",
         "docs/frontmatter.md",
@@ -526,18 +569,15 @@ describe("agent-docs-check", () => {
         "docs/legacy-multi.md",
       ];
       const first = rels.map(fixed);
-      const res = spawnSync("node", [script, tmp, "--fix"], {
-        encoding: "utf8",
-        env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: tmpdir() },
-      });
+      const res = await runMain([tmp, "--fix"]);
       expect(rels.map(fixed)).toEqual(first);
       expect(`${res.stdout}${res.stderr}`).not.toContain("fixed:");
       expect(res.status).toBe(0);
     });
 
-    it("never edits a ## Contents section and still reports it", () => {
+    it("never edits a ## Contents section and still reports it", async () => {
       const before = readFileSync(join(fixtures, "toc-fix-unmanaged/docs/guide.md"), "utf8");
-      const { code, out } = fixCopy("toc-fix-unmanaged");
+      const { code, out } = await fixCopy("toc-fix-unmanaged");
       expect(fixed("docs/guide.md")).toBe(before);
       expect(out).not.toContain("fixed:");
       expect(out).toContain("toc-unmanaged:");
@@ -593,13 +633,13 @@ describe("agent-docs-check", () => {
       "skill-harness-opencode-pass",
       "skill-harness-quoted-double-pass",
       "skill-harness-quoted-single-pass",
-    ])("passes with and without the flag: %s", (fixture) => {
-      expectPass(fixture);
-      expectPass(fixture, flag);
+    ])("passes with and without the flag: %s", async (fixture) => {
+      await expectPass(fixture);
+      await expectPass(fixture, flag);
     });
-    it("fails an unknown value, with or without the flag", () => {
+    it("fails an unknown value, with or without the flag", async () => {
       for (const args of [[], flag]) {
-        expectFail(
+        await expectFail(
           "skill-harness-unknown-fail",
           ['skill-harness: metadata.harness is "claude", must be generic or opencode'],
           args,
@@ -608,9 +648,9 @@ describe("agent-docs-check", () => {
     });
     it("fails a metadata that is not a map", () =>
       expectFail("skill-harness-nonmap-fail", ["skill-harness: metadata must be a map"]));
-    it("does not report a missing tag without the flag", () => {
-      expectPass("skill-harness-missing");
-      expectPass("skill-harness-metadata-other");
+    it("does not report a missing tag without the flag", async () => {
+      await expectPass("skill-harness-missing");
+      await expectPass("skill-harness-metadata-other");
     });
     it.each(["skill-harness-missing", "skill-harness-metadata-other"])(
       "reports a missing tag with --require-skill-harness: %s",
@@ -621,13 +661,10 @@ describe("agent-docs-check", () => {
           flag,
         ),
     );
-    it("reads the flag from the require-skill-harness input", () => {
+    it("reads the flag from the require-skill-harness input", async () => {
       const env = { GITHUB_ACTIONS: "true", "INPUT_REQUIRE-SKILL-HARNESS": "true" };
-      withFixture("skill-harness-missing", (dir) => {
-        const res = spawnSync("node", [script], {
-          encoding: "utf8",
-          env: { ...process.env, ...env, INPUT_PATH: dir, GIT_CEILING_DIRECTORIES: tmpBase },
-        });
+      await withFixture("skill-harness-missing", async (dir) => {
+        const res = await runMain([], { ...env, INPUT_PATH: dir });
         expect(`${res.stdout}${res.stderr}`).toContain("skill-harness: missing metadata.harness");
         expect(res.status).toBe(1);
       });
@@ -699,29 +736,21 @@ describe("agent-docs-check", () => {
         "AGENTS.md:3: pyck-path: ~/.pyck/pyck-path-self-fail/missing does not exist",
         "1 error(s)",
       ]));
-    it("names the repo under check after the origin remote when there is one", () => {
-      const { code, out } = withFixture("pyck-path-self-pass", (dir) => {
+    it("names the repo under check after the origin remote when there is one", async () => {
+      const { code, out } = await withFixture("pyck-path-self-pass", async (dir) => {
         const git = (...a: string[]) =>
           spawnSync("git", ["-C", dir, ...a], { encoding: "utf8", env: { ...process.env } });
         git("init", "-q");
         git("remote", "add", "origin", "git@github.com:acme/renamed-repo.git");
         writeFileSync(join(dir, "AGENTS.md"), "# Agents\n\nSee `~/.pyck/renamed-repo/existing`.\n");
-        const res = spawnSync("node", [script, dir], {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            GITHUB_ACTIONS: "",
-            GIT_CEILING_DIRECTORIES: tmpBase,
-            PYCK_HOME: join(tmpBase, "no-pyck-home"),
-          },
-        });
+        const res = await runMain([dir], {}, realGit);
         return { code: res.status, out: `${res.stdout}${res.stderr}` };
       });
       expect(out).toContain("0 error(s)");
       expect(code).toBe(0);
     });
-    it("warns once per repo that is not installed and checks nothing", () => {
-      const { code, out } = run("pyck-path-other-warn");
+    it("warns once per repo that is not installed and checks nothing", async () => {
+      const { code, out } = await run("pyck-path-other-warn");
       expect(code).toBe(0);
       expect(out).toContain("0 error(s), 1 warning(s)");
       expect(out).toContain(
@@ -743,24 +772,50 @@ describe("agent-docs-check", () => {
   });
 
   describe("output modes", () => {
-    it("prints workflow annotations in GitHub Actions", () => {
-      const { code, out } = withFixture("claude-md-fail", (dir) => {
-        const res = spawnSync("node", [script], {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            GITHUB_ACTIONS: "true",
-            GIT_CEILING_DIRECTORIES: tmpBase,
-            INPUT_PATH: dir,
-            INPUT_PROFILE: "repo",
-            "INPUT_CHECK-URLS": "false",
-          },
+    it("prints workflow annotations in GitHub Actions", async () => {
+      const { code, out } = await withFixture("claude-md-fail", async (dir) => {
+        const res = await runMain([], {
+          GITHUB_ACTIONS: "true",
+          INPUT_PATH: dir,
+          INPUT_PROFILE: "repo",
+          "INPUT_CHECK-URLS": "false",
         });
         return { code: res.status, out: `${res.stdout}${res.stderr}` };
       });
       expect(code).toBe(1);
       expect(out).toContain("::error file=");
       expect(out).toMatch(/CLAUDE\.md,line=1::no-claude-md: /);
+    });
+  });
+
+  // Starts the real script: the only tests that cover the entry point, the
+  // guard that ends the process with main's exit code, and the real git.
+  describe("entry point (child process)", () => {
+    it("exits 0 and prints the summary on a passing run", async () => {
+      await withFixture("claude-md-pass", (dir) => {
+        const res = spawnScript([dir]);
+        expect(res.stdout).toContain("0 error(s)");
+        expect(res.status).toBe(0);
+      });
+    });
+    it("exits 1 and prints the finding on a failing run", async () => {
+      await withFixture("claude-md-fail", (dir) => {
+        const res = spawnScript([dir]);
+        expect(`${res.stdout}${res.stderr}`).toMatch(/CLAUDE\.md:1: no-claude-md/);
+        expect(res.status).toBe(1);
+      });
+    });
+    it("prints ::error annotations from the INPUT_* variables in GitHub Actions", async () => {
+      await withFixture("claude-md-fail", (dir) => {
+        const res = spawnScript([], {
+          GITHUB_ACTIONS: "true",
+          INPUT_PATH: dir,
+          INPUT_PROFILE: "repo",
+          "INPUT_CHECK-URLS": "false",
+        });
+        expect(res.stdout).toMatch(/^::error file=[^,]*CLAUDE\.md,line=1::no-claude-md: /m);
+        expect(res.status).toBe(1);
+      });
     });
   });
 
