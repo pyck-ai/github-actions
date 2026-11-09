@@ -85,6 +85,12 @@ export function onPrefix(
       : undefined;
 }
 
+/** A real fetch sets `Response.url`; paginate reads it on the last page of an answer that carries `total_count`. */
+function withUrl(response: Response, url: URL): Response {
+  if (response.url === "") Object.defineProperty(response, "url", { value: url.toString() });
+  return response;
+}
+
 export function createFakeApi(options: FakeApiOptions): {
   fetch: typeof fetch;
   requests: RecordedRequest[];
@@ -102,15 +108,15 @@ export function createFakeApi(options: FakeApiOptions): {
     const forced = options.fail?.(recorded);
     if (forced instanceof Error) return Promise.reject(forced);
     if (forced !== undefined) {
-      return Promise.resolve(json(forced, { message: `forced ${String(forced)}` }));
+      return Promise.resolve(withUrl(json(forced, { message: `forced ${String(forced)}` }), url));
     }
     const fakeRequest: FakeRequest = { ...recorded, url };
     for (const handler of options.handlers) {
       const response = handler(fakeRequest);
-      if (response !== undefined) return Promise.resolve(response);
+      if (response !== undefined) return Promise.resolve(withUrl(response, url));
     }
     return Promise.resolve(
-      json(404, { message: `fake has no route for ${method} ${url.pathname}` }),
+      withUrl(json(404, { message: `fake has no route for ${method} ${url.pathname}` }), url),
     );
   };
 

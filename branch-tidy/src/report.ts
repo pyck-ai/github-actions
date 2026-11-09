@@ -40,6 +40,20 @@ export function recreateCommand(branch: ReportedBranch): string {
   return `git push origin ${branch.sha}:refs/heads/${branch.name}`;
 }
 
+/** The one log line every run writes, so a run can be checked from the log alone. */
+export function countLine(report: Report): string {
+  const deletedLabel = report.dryRun ? "would delete" : "deleted";
+  const kept = Object.values(report.kept).reduce((sum, n) => sum + n, 0);
+  return (
+    `branch-tidy: ${report.dryRun ? "dry run" : "live"}, cutoff ${report.cutoff.toISOString()}: ` +
+    `${String(report.seen)} branches seen, ${String(report.stale)} stale, ` +
+    `${String(kept)} kept, ${String(report.unreadable)} without a date, ` +
+    `${deletedLabel} ${String(report.deleted.length)}, ${String(report.alreadyGone)} already gone, ` +
+    `${String(report.changedSinceListing)} changed since listing, ` +
+    `${String(report.failed.length)} failed, ${String(report.skipped.length)} not attempted.`
+  );
+}
+
 /** Markdown for `GITHUB_STEP_SUMMARY`. */
 export function renderSummary(report: Report): string {
   const deletedLabel = report.dryRun ? "would delete" : "deleted";

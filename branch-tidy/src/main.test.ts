@@ -513,6 +513,50 @@ describe("report", () => {
     expect(noFile.code).toBe(0);
   });
 
+  it("logs one count line when nothing is stale, in a dry run and in a live run", async () => {
+    const branches = [branch("fresh", AFTER)];
+    const countLines = (r: RunResult): string[] =>
+      r.log.filter((l) => l.startsWith("branch-tidy: "));
+    const live = await run({ branches });
+    expect(countLines(live)).toEqual([
+      `branch-tidy: live, cutoff ${new Date(CUTOFF).toISOString()}: 1 branches seen, 0 stale, 0 kept, 0 without a date, deleted 0, 0 already gone, 0 changed since listing, 0 failed, 0 not attempted.`,
+    ]);
+    const dry = await run({ branches }, { "dry-run": "true" });
+    expect(countLines(dry)).toEqual([
+      `branch-tidy: dry run, cutoff ${new Date(CUTOFF).toISOString()}: 1 branches seen, 0 stale, 0 kept, 0 without a date, would delete 0, 0 already gone, 0 changed since listing, 0 failed, 0 not attempted.`,
+    ]);
+  });
+
+  it("the count line agrees with the summary of a run that deletes", async () => {
+    const old = "2020-01-01T00:00:00Z";
+    const r = await run({
+      branches: [branch("old", old), branch("main", old), branch("fresh", AFTER)],
+    });
+    expect(r.log.at(-1)).toBe(
+      `branch-tidy: live, cutoff ${new Date(CUTOFF).toISOString()}: 3 branches seen, 2 stale, 1 kept, 0 without a date, deleted 1, 0 already gone, 0 changed since listing, 0 failed, 0 not attempted.`,
+    );
+    const dry = await run(
+      { branches: [branch("old", old), branch("main", old)] },
+      { "dry-run": "true" },
+    );
+    expect(dry.log.at(-1)).toContain("2 stale, 1 kept, 0 without a date, would delete 1,");
+  });
+
+  it("logs the count line before the final error after an authorization failure", async () => {
+    const old = "2020-01-01T00:00:00Z";
+    const r = await run({
+      branches: [branch("a", old), branch("b", old), branch("c", old)],
+      deleteStatus: { b: 403 },
+    });
+    const lines = r.log.filter((l) => l.startsWith("branch-tidy: "));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(
+      "deleted 1, 0 already gone, 0 changed since listing, 1 failed, 1 not attempted.",
+    );
+    expect(r.log.indexOf(lines[0] ?? "")).toBeLessThan(r.log.length - 1);
+    expect(r.log.at(-1)).toContain("Not attempted: c");
+  });
+
   it("uses https://api.github.com when GITHUB_API_URL is unset", async () => {
     const urls: string[] = [];
     const code = await main({

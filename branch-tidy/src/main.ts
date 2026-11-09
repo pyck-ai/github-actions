@@ -19,7 +19,7 @@ import {
 } from "./github.js";
 import { parseInputs, type Inputs } from "./inputs.js";
 import { judgeBranches, type KeepReason } from "./judge.js";
-import { renderSummary, type Report } from "./report.js";
+import { countLine, renderSummary, type Report } from "./report.js";
 
 /** Everything `main` needs from its surroundings; the seam tests and the entry point share. */
 export interface MainOptions {
@@ -166,6 +166,7 @@ export async function main(opts: MainOptions): Promise<number> {
     }
   }
 
+  out(countLine(report));
   await appendStepSummary(env["GITHUB_STEP_SUMMARY"], renderSummary(report), warning);
 
   if (authFailure) {

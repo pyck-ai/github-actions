@@ -72,7 +72,7 @@ export function createFakeGithub(options: FakeOptions): {
     }));
     const response = jsonPage(all, url, size);
     const link = response.headers.get("link");
-    const answer = json(
+    return json(
       200,
       {
         total_count: all.length,
@@ -80,10 +80,6 @@ export function createFakeGithub(options: FakeOptions): {
       },
       link === null ? {} : { link },
     );
-    // A real fetch sets Response.url; paginate reads it on the last page of an
-    // answer that carries total_count.
-    Object.defineProperty(answer, "url", { value: url.toString() });
-    return answer;
   });
 
   const deleteCache = onPrefix("DELETE", `${base}/actions/caches/`, (rest) => {

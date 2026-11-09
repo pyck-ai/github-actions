@@ -49,6 +49,8 @@ Branches are handled one at a time in name order. For each one the action reads 
 
 With `dry-run: true` the action lists and judges every branch as in a live run and reports each branch it would delete. It sends no request other than reads.
 
+Every run that reads the branches ends its log with one line of counts, also when nothing is stale: `branch-tidy: live, cutoff 2026-10-28T12:00:00.000Z: 3 branches seen, 2 stale, 1 kept, 0 without a date, deleted 1, 0 already gone, 0 changed since listing, 0 failed, 0 not attempted.` In a dry run the mode reads `dry run` and `deleted` reads `would delete`.
+
 The step summary shows the mode, the cutoff, the counts (seen, stale, kept per reason, deleted or would delete, already gone, changed since listing, failed) and a table of the deleted branches. The action has no outputs.
 
 ## Permissions

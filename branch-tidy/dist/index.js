@@ -4928,6 +4928,17 @@ function cell(text) {
 function recreateCommand(branch) {
     return `git push origin ${branch.sha}:refs/heads/${branch.name}`;
 }
+/** The one log line every run writes, so a run can be checked from the log alone. */
+function countLine(report) {
+    const deletedLabel = report.dryRun ? "would delete" : "deleted";
+    const kept = Object.values(report.kept).reduce((sum, n) => sum + n, 0);
+    return (`branch-tidy: ${report.dryRun ? "dry run" : "live"}, cutoff ${report.cutoff.toISOString()}: ` +
+        `${String(report.seen)} branches seen, ${String(report.stale)} stale, ` +
+        `${String(kept)} kept, ${String(report.unreadable)} without a date, ` +
+        `${deletedLabel} ${String(report.deleted.length)}, ${String(report.alreadyGone)} already gone, ` +
+        `${String(report.changedSinceListing)} changed since listing, ` +
+        `${String(report.failed.length)} failed, ${String(report.skipped.length)} not attempted.`);
+}
 /** Markdown for `GITHUB_STEP_SUMMARY`. */
 function renderSummary(report) {
     const deletedLabel = report.dryRun ? "would delete" : "deleted";
@@ -5090,6 +5101,7 @@ async function main(opts) {
             }
         }
     }
+    out(countLine(report));
     await appendStepSummary(env["GITHUB_STEP_SUMMARY"], renderSummary(report), warning);
     if (authFailure) {
         error(`Stopped after an authorization failure on ${report.failed.join(", ")}. Not attempted: ${report.skipped.length > 0 ? report.skipped.join(", ") : "none"}.`);

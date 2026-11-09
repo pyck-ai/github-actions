@@ -52,6 +52,13 @@ describe("createFakeApi", () => {
     expect(await res.json()).toEqual({ message: "fake has no route for PUT /nope" });
   });
 
+  it("sets Response.url to the request URL on every answer, like a real fetch", async () => {
+    const fake = api();
+    for (const path of ["/a?x=1", "/list?page=2", "/boom", "/nope"]) {
+      expect((await fake.fetch(`${BASE}${path}`)).url).toBe(`${BASE}${path}`);
+    }
+  });
+
   it("injects a status or a network failure before the handlers", async () => {
     const fake = api();
     const forced = await fake.fetch(`${BASE}/boom`);
