@@ -20,6 +20,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, normalize, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const LIMITS = {
   repo: { rootLines: 60, rootBytes: 4096 },
@@ -47,7 +48,11 @@ const ORG_URL_RE =
 
 // ---------------------------------------------------------------- arguments
 
-function parseArgs(argv, env) {
+/**
+ * The options, or `{ exit }` when the arguments end the run early (--help, a
+ * bad flag), after the message went through `log` or `error`.
+ */
+function parseArgs(argv, env, log, error) {
   if (env.GITHUB_ACTIONS === "true") {
     return {
       path: env.INPUT_PATH || ".",
@@ -76,13 +81,13 @@ function parseArgs(argv, env) {
     else if (a === "--fix") opts.fix = true;
     else if (a === "--require-skill-harness") opts.requireSkillHarness = true;
     else if (a === "-h" || a === "--help") {
-      console.log(
+      log(
         "usage: node check.mjs [path] [--profile repo|central] [--check-urls] [--fix] [--require-skill-harness]",
       );
-      process.exit(0);
+      return { exit: 0 };
     } else if (a.startsWith("-")) {
-      console.error(`agent-docs-check: unknown option ${a}`);
-      process.exit(2);
+      error(`agent-docs-check: unknown option ${a}`);
+      return { exit: 2 };
     } else opts.path = a;
   }
   return opts;
@@ -637,7 +642,7 @@ function fixToc(root, rel) {
 
 // ----------------------------------------------------------------- the checks
 
-async function check(root, profile, checkUrls, pyckHome, requireSkillHarness) {
+async function check(root, profile, checkUrls, pyckBase, requireSkillHarness, fetch) {
   /** @type {Finding[]} */
   const findings = [];
   /** @type {{ rel: string }[]} */
@@ -663,7 +668,6 @@ async function check(root, profile, checkUrls, pyckHome, requireSkillHarness) {
 
   const urlsToCheck = [];
   const selfRepo = selfRepoName(root);
-  const pyckBase = pyckHome || join(process.env.HOME || homedir(), ".pyck");
   const missingRepos = new Set();
 
   for (const rel of files) {
@@ -941,7 +945,7 @@ async function check(root, profile, checkUrls, pyckHome, requireSkillHarness) {
   if (checkUrls) {
     const seen = new Map();
     for (const { file, line, url } of urlsToCheck) {
-      if (!seen.has(url)) seen.set(url, await probe(url));
+      if (!seen.has(url)) seen.set(url, await probe(url, fetch));
       const status = seen.get(url);
       if (status === 404) {
         add("error", file, line, `url-404: ${url} returns 404`);
@@ -960,7 +964,7 @@ async function check(root, profile, checkUrls, pyckHome, requireSkillHarness) {
 }
 
 /** HEAD, falling back to GET when HEAD is not ok. Returns the status, 0 on network failure. */
-async function probe(url) {
+async function probe(url, fetch) {
   const attempt = async (method) => {
     try {
       const res = await fetch(url, {
@@ -989,36 +993,73 @@ function display(inputPath, rel) {
   return p.startsWith("./") ? p.slice(2) : p;
 }
 
-async function main() {
-  const opts = parseArgs(process.argv.slice(2), process.env);
+/**
+ * @typedef {object} MainOptions
+ * @property {string[]} [argv] The command line after the script path. Defaults to the process arguments.
+ * @property {Record<string, string | undefined>} [env] Action inputs, PYCK_HOME and HOME. Defaults to the process environment.
+ * @property {string} [cwd] What a relative path argument is resolved against. Defaults to the working directory.
+ * @property {(line: string) => void} [log] Receives every stdout line. Defaults to console.log.
+ * @property {(line: string) => void} [error] Receives every stderr line. Defaults to console.error.
+ * @property {typeof globalThis.fetch} [fetch] Probes the org URLs under --check-urls. Defaults to the global fetch.
+ */
+
+/**
+ * Runs the check and returns the exit code; it never ends the process. An
+ * exception from the check is printed through `error` and gives exit code 1.
+ *
+ * @param {MainOptions} [options]
+ * @returns {Promise<number>}
+ */
+export async function main({
+  argv = process.argv.slice(2),
+  env = process.env,
+  cwd = process.cwd(),
+  log = console.log,
+  error = console.error,
+  fetch = globalThis.fetch,
+} = {}) {
+  try {
+    return await run(argv, env, cwd, log, error, fetch);
+  } catch (err) {
+    error(err instanceof Error ? (err.stack ?? String(err)) : String(err));
+    return 1;
+  }
+}
+
+async function run(argv, env, cwd, log, error, fetch) {
+  const opts = parseArgs(argv, env, log, error);
+  if ("exit" in opts) return opts.exit;
   if (!(opts.profile in LIMITS)) {
-    console.error(`agent-docs-check: unknown profile "${opts.profile}" (use repo or central)`);
-    process.exit(2);
+    error(`agent-docs-check: unknown profile "${opts.profile}" (use repo or central)`);
+    return 2;
   }
-  const root = resolve(opts.path);
+  const root = resolve(cwd, opts.path);
   if (!existsSync(root)) {
-    console.error(`agent-docs-check: path "${opts.path}" does not exist`);
-    process.exit(2);
+    error(`agent-docs-check: path "${opts.path}" does not exist`);
+    return 2;
   }
+  const pyckBase = opts.pyckHome || join(env.HOME || homedir(), ".pyck");
 
   let result = await check(
     root,
     opts.profile,
     opts.checkUrls,
-    opts.pyckHome,
+    pyckBase,
     opts.requireSkillHarness,
+    fetch,
   );
   if (opts.fix) {
     for (const { rel } of result.tocFixes) {
-      if (fixToc(root, rel)) console.log(`fixed: ${display(opts.path, rel)}`);
+      if (fixToc(root, rel)) log(`fixed: ${display(opts.path, rel)}`);
     }
     if (result.tocFixes.length)
       result = await check(
         root,
         opts.profile,
         opts.checkUrls,
-        opts.pyckHome,
+        pyckBase,
         opts.requireSkillHarness,
+        fetch,
       );
   }
   const { findings, checked } = result;
@@ -1026,17 +1067,19 @@ async function main() {
     const file = display(opts.path, f.file);
     if (opts.actions) {
       const props = `file=${escProp(file)},line=${f.line ?? 1}`;
-      console.log(`::${f.level} ${props}::${escData(f.msg)}`);
+      log(`::${f.level} ${props}::${escData(f.msg)}`);
     } else {
-      console.log(`${file}:${f.line ?? 1}: ${f.level === "warning" ? "warning: " : ""}${f.msg}`);
+      log(`${file}:${f.line ?? 1}: ${f.level === "warning" ? "warning: " : ""}${f.msg}`);
     }
   }
   const errors = findings.filter((f) => f.level === "error").length;
   const warnings = findings.length - errors;
-  console.log(
+  log(
     `agent-docs-check: ${errors} error(s), ${warnings} warning(s), ${checked} file(s) checked (profile ${opts.profile})`,
   );
-  process.exit(errors > 0 ? 1 : 0);
+  return errors > 0 ? 1 : 0;
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exit(await main());
+}
