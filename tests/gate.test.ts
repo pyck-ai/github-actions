@@ -3,9 +3,11 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { main } from "../gate/check.mjs";
 
-// Runs gate/check.mjs as a child process the way the runner does: the `needs`
-// input arrives as INPUT_NEEDS and the step summary path as GITHUB_STEP_SUMMARY.
+// Most tests call main() in-process: the `needs` input arrives as INPUT_NEEDS
+// and the step summary path as GITHUB_STEP_SUMMARY, as on the runner. Two
+// end-to-end tests spawn gate/check.mjs so the entry point stays covered.
 
 const script = join(__dirname, "..", "gate", "check.mjs");
 const dirs: string[] = [];
@@ -14,23 +16,37 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function runGate(needs: string | undefined) {
+function envFor(needs: string | undefined) {
   const dir = mkdtempSync(join(tmpdir(), "gate-tests-"));
   dirs.push(dir);
   const summary = join(dir, "summary.md");
-  const env: Record<string, string> = {
-    PATH: process.env["PATH"] ?? "",
-    GITHUB_STEP_SUMMARY: summary,
-  };
+  const env: Record<string, string> = { GITHUB_STEP_SUMMARY: summary };
   if (needs !== undefined) env["INPUT_NEEDS"] = needs;
-  const r = spawnSync(process.execPath, [script], { env, encoding: "utf8" });
-  let written = "";
+  return { env, summary };
+}
+
+function readSummary(summary: string) {
   try {
-    written = readFileSync(summary, "utf8");
+    return readFileSync(summary, "utf8");
   } catch {
-    // no summary written
+    return ""; // no summary written
   }
-  return { status: r.status, stdout: r.stdout, summary: written };
+}
+
+function runGate(needs: string | undefined) {
+  const { env, summary } = envFor(needs);
+  const lines: string[] = [];
+  const status = main(env, (line) => lines.push(line));
+  return { status, stdout: lines.join("\n"), summary: readSummary(summary) };
+}
+
+function spawnGate(needs: string) {
+  const { env, summary } = envFor(needs);
+  const r = spawnSync(process.execPath, [script], {
+    env: { PATH: process.env["PATH"] ?? "", ...env },
+    encoding: "utf8",
+  });
+  return { status: r.status, stdout: r.stdout, summary: readSummary(summary) };
 }
 
 const needs = (results: Record<string, string>) =>
@@ -96,5 +112,20 @@ describe("gate", () => {
   it("fails when needs is not an object", () => {
     expect(runGate("[]").status).toBe(1);
     expect(runGate("null").status).toBe(1);
+  });
+
+  describe("as a child process", () => {
+    it("exits 0 and prints each job when every job passed", () => {
+      const r = spawnGate(needs({ lint: "success" }));
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("lint: success");
+      expect(r.summary).toContain("`lint`: success");
+    });
+
+    it("exits 1 and names the failed job", () => {
+      const r = spawnGate(needs({ lint: "failure" }));
+      expect(r.status).toBe(1);
+      expect(r.stdout).toContain("::error::gate: job lint did not pass (failure)");
+    });
   });
 });

@@ -42,15 +42,21 @@ export function judge(raw) {
   return { ok: passing, jobs };
 }
 
-function main(env) {
+/**
+ * Run the gate for `env`, printing through `log` (injectable for tests).
+ * @param {Record<string, string | undefined>} env
+ * @param {(line: string) => void} [log]
+ * @returns {number} the exit code
+ */
+export function main(env, log = console.log) {
   const verdict = judge(env.INPUT_NEEDS);
-  if (verdict.problem) console.log(`::error::gate: ${verdict.problem}`);
+  if (verdict.problem) log(`::error::gate: ${verdict.problem}`);
   for (const j of verdict.jobs) {
     if (j.result === "success" || j.result === "skipped") {
-      console.log(`${j.name}: ${j.result}`);
+      log(`${j.name}: ${j.result}`);
     } else {
       const why = FAILING.includes(j.result) ? j.result : `unexpected result "${j.result}"`;
-      console.log(`::error::gate: job ${j.name} did not pass (${why})`);
+      log(`::error::gate: job ${j.name} did not pass (${why})`);
     }
   }
   if (env.GITHUB_STEP_SUMMARY) {
