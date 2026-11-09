@@ -7,7 +7,7 @@
 // Exit 1 if any job failed or was cancelled, or if `needs` is empty or not
 // valid JSON; 0 otherwise. A skipped job passes.
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const FAILING = ["failure", "cancelled"];
@@ -68,6 +68,8 @@ export function main(env, log = console.log) {
   return verdict.ok ? 0 : 1;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Node resolves symlinks in the main module's URL but not in argv[1], so both
+// sides compare as real paths: a checkout reached through a symlink must still run.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   process.exit(main(process.env));
 }

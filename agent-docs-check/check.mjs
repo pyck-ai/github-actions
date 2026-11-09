@@ -1091,6 +1091,8 @@ async function run(argv, env, cwd, log, error, fetch, git) {
   return errors > 0 ? 1 : 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Node resolves symlinks in the main module's URL but not in argv[1], so both
+// sides compare as real paths: a checkout reached through a symlink must still run.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   process.exit(await main());
 }

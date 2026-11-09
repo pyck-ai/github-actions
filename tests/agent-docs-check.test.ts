@@ -113,7 +113,12 @@ async function runMain(
 
 /** Starts the real script as a child process. */
 function spawnScript(args: string[], env: NodeJS.ProcessEnv = {}): RunResult {
-  const res = spawnSync("node", [script, ...args], {
+  return spawnSyncScript(script, args, env);
+}
+
+/** Starts the script at `path` (the real one, possibly through a symlink) as a child process. */
+function spawnSyncScript(path: string, args: string[], env: NodeJS.ProcessEnv = {}): RunResult {
+  const res = spawnSync("node", [path, ...args], {
     encoding: "utf8",
     env: { ...process.env, GITHUB_ACTIONS: "", GIT_CEILING_DIRECTORIES: tmpBase, ...env },
   });
@@ -475,7 +480,7 @@ describe("agent-docs-check", () => {
         if (!args.includes("--exclude-per-directory=.tocignore")) return realGit(args, options);
         throw Object.assign(new Error("Command failed: git ls-files"), {
           status: 128,
-          stderr: Buffer.from("fatal: simulated failure\nsecond line\n"),
+          stderr: "fatal: simulated failure\nsecond line\n",
         });
       };
       const { reported, out } = await tocRun({ ".tocignore": "*.md\n" }, true, [], failingGit);
@@ -814,6 +819,15 @@ describe("agent-docs-check", () => {
           "INPUT_CHECK-URLS": "false",
         });
         expect(res.stdout).toMatch(/^::error file=[^,]*CLAUDE\.md,line=1::no-claude-md: /m);
+        expect(res.status).toBe(1);
+      });
+    });
+    it("runs the check when started through a symlinked directory", async () => {
+      await withFixture("claude-md-fail", (dir) => {
+        const link = join(dirname(dir), "linked-checkout");
+        symlinkSync(root, link);
+        const res = spawnSyncScript(join(link, "agent-docs-check", "check.mjs"), [dir]);
+        expect(`${res.stdout}${res.stderr}`).toMatch(/CLAUDE\.md:1: no-claude-md/);
         expect(res.status).toBe(1);
       });
     });
