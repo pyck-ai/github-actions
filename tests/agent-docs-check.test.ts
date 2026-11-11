@@ -509,6 +509,115 @@ describe("agent-docs-check", () => {
     });
   });
 
+  describe(".linkignore (exempts files from relative-link only, via git's matcher)", () => {
+    const dirs: string[] = [];
+    afterEach(() => {
+      for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    });
+
+    const brokenLink = "See [gone](./gone/).\n";
+    /** Link-checked docs (READMEs, docs/) with a broken relative link and no `##` headings, so only relative-link can report them. */
+    const brokenDocs = {
+      "content/README.md": brokenLink,
+      "content/sub/README.md": brokenLink,
+      "docs/c.md": brokenLink,
+    };
+
+    /** Write the files to a temp dir, optionally git init, and return the files with relative-link errors. */
+    async function linkRun(
+      files: Record<string, string>,
+      git = true,
+      checkGit: Git = realGit,
+    ): Promise<{ reported: string[]; out: string; code: number | null }> {
+      mkdirSync(tmpBase, { recursive: true });
+      const tmp = mkdtempSync(join(tmpBase, "linkignore-"));
+      dirs.push(tmp);
+      for (const [rel, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(tmp, rel)), { recursive: true });
+        writeFileSync(join(tmp, rel), text);
+      }
+      if (git) spawnSync("git", ["-C", tmp, "init", "-q"]);
+      const res = await runMain([tmp], {}, git ? checkGit : notARepo);
+      const out = `${res.stdout}${res.stderr}`;
+      const reported = [...out.matchAll(/^(\S+?):\d+: relative-link:/gm)]
+        .map((m) => m[1].slice(tmp.length + 1))
+        .sort();
+      return { reported, out, code: res.status };
+    }
+    const all = ["content/README.md", "content/sub/README.md", "docs/c.md"];
+
+    it("reports every broken link without a .linkignore", async () => {
+      const { reported, code } = await linkRun(brokenDocs);
+      expect(reported).toEqual(all);
+      expect(code).toBe(1);
+    });
+    it("reports nothing for a file a .linkignore matches, and still reports the others", async () => {
+      const { reported, out, code } = await linkRun({ ...brokenDocs, ".linkignore": "content/\n" });
+      expect(reported).toEqual(["docs/c.md"]);
+      expect(out).toMatch(/1 error\(s\)/);
+      expect(code).toBe(1);
+    });
+    it("exits 0 when .linkignore covers every file with a broken link", async () => {
+      const { reported, out, code } = await linkRun({ ...brokenDocs, ".linkignore": "*.md\n" });
+      expect(reported).toEqual([]);
+      expect(out).toMatch(/0 error\(s\)/);
+      expect(code).toBe(0);
+    });
+    it("reads .linkignore files at any depth, relative to their own directory", async () => {
+      const { reported } = await linkRun({
+        ...brokenDocs,
+        "content/.linkignore": "/README.md\nsub/\n",
+      });
+      expect(reported).toEqual(["docs/c.md"]);
+      const nested = await linkRun({ ...brokenDocs, "docs/.linkignore": "/README.md\n" });
+      expect(nested.reported).toEqual(all); // anchored to docs/, which has no README.md
+    });
+    it("lets a later negation re-include a file whose directory is not excluded", async () => {
+      const { reported } = await linkRun({
+        ...brokenDocs,
+        ".linkignore": "content/**/README.md\n!content/sub/README.md\n",
+      });
+      expect(reported).toEqual(["content/sub/README.md", "docs/c.md"]);
+    });
+    it("does not affect the TOC rules", async () => {
+      const toc = "# T\n\n## One\n\ntext\n\n## Two\n\ntext\n";
+      const { out } = await linkRun({ "docs/t.md": toc, ".linkignore": "docs/\n" });
+      expect(out).toContain("docs/t.md:");
+      expect(out).toContain("toc-missing");
+    });
+    it("is not affected by .tocignore", async () => {
+      const { reported } = await linkRun({ ...brokenDocs, ".tocignore": "*.md\n" });
+      expect(reported).toEqual(all);
+    });
+    it("warns with git's first stderr line when git ls-files fails, and ignores the exemptions", async () => {
+      const failingGit: Git = (args, options) => {
+        if (!args.includes("--exclude-per-directory=.linkignore")) return realGit(args, options);
+        throw Object.assign(new Error("Command failed: git ls-files"), {
+          status: 128,
+          stderr: "fatal: simulated failure\nsecond line\n",
+        });
+      };
+      const { reported, out } = await linkRun(
+        { ...brokenDocs, ".linkignore": "*.md\n" },
+        true,
+        failingGit,
+      );
+      expect(out).toContain(
+        "warning: could not apply .linkignore (git ls-files failed: fatal: simulated failure); exemptions ignored",
+      );
+      expect(out.match(/could not apply \.linkignore/g)).toHaveLength(1);
+      expect(reported).toEqual(all);
+    });
+    it("ignores .linkignore outside a git work tree and warns once", async () => {
+      const { reported, out } = await linkRun(
+        { ...brokenDocs, ".linkignore": "content/\n", "docs/.linkignore": "c.md\n" },
+        false,
+      );
+      expect(reported).toEqual(all);
+      expect(out.match(/warning: .linkignore needs a git work tree/g)).toHaveLength(1);
+    });
+  });
+
   describe("--fix", () => {
     let tmp: string;
     afterEach(() => rmSync(tmp, { recursive: true, force: true }));

@@ -194,28 +194,28 @@ function listFiles(root, git) {
 }
 
 /**
- * Files matched by `.tocignore` files, with gitignore syntax and semantics:
- * git's own matcher does the work (any number of `.tocignore` files at any
- * depth, negation, anchoring, dir-only, `**`, escapes, later rules win, no
- * re-including below an excluded directory). `-c -o -i` lists tracked and
- * untracked files matched by the per-directory exclude file; without
- * `--exclude-standard` no `.gitignore` is mixed in. Outside a git work tree
- * there is no matcher: `.tocignore` files are ignored, with one warning.
+ * Files matched by the `ignoreName` files (`.tocignore`, `.linkignore`), with
+ * gitignore syntax and semantics: git's own matcher does the work (any number
+ * of such files at any depth, negation, anchoring, dir-only, `**`, escapes,
+ * later rules win, no re-including below an excluded directory). `-c -o -i`
+ * lists tracked and untracked files matched by the per-directory exclude file;
+ * without `--exclude-standard` no `.gitignore` is mixed in. Outside a git work
+ * tree there is no matcher: the files are ignored, with one warning.
  * Returns `warning`: the message to report, or null.
  */
-function tocIgnoredFiles(root, gitTree, files, git) {
-  const hasTocIgnore = files.some((f) => basename(f) === ".tocignore");
+function ignoredFiles(root, gitTree, files, git, ignoreName) {
+  const hasIgnoreFile = files.some((f) => basename(f) === ignoreName);
   if (!gitTree) {
     return {
       ignored: new Set(),
-      warning: hasTocIgnore
-        ? ".tocignore needs a git work tree (it uses git's matcher); not a git work tree, so .tocignore is ignored"
+      warning: hasIgnoreFile
+        ? `${ignoreName} needs a git work tree (it uses git's matcher); not a git work tree, so ${ignoreName} is ignored`
         : null,
     };
   }
   try {
     const out = git(
-      ["-C", root, "ls-files", "-z", "-c", "-o", "-i", "--exclude-per-directory=.tocignore"],
+      ["-C", root, "ls-files", "-z", "-c", "-o", "-i", `--exclude-per-directory=${ignoreName}`],
       { maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] },
     );
     return { ignored: new Set(out.split("\0").filter(Boolean)), warning: null };
@@ -226,8 +226,8 @@ function tocIgnoredFiles(root, gitTree, files, git) {
     const reason = stderr.split("\n").find((l) => l.trim()) ?? err?.message ?? "no output";
     return {
       ignored: new Set(),
-      warning: hasTocIgnore
-        ? `could not apply .tocignore (git ls-files failed: ${reason.trim()}); exemptions ignored`
+      warning: hasIgnoreFile
+        ? `could not apply ${ignoreName} (git ls-files failed: ${reason.trim()}); exemptions ignored`
         : null,
     };
   }
@@ -657,8 +657,10 @@ async function check(root, profile, checkUrls, pyckBase, requireSkillHarness, fe
   const add = (level, file, line, msg) => findings.push({ level, file, line, msg });
   const limits = LIMITS[profile];
   const { files, gitTree, broken, topSkills } = listFiles(root, git);
-  const tocIgnore = tocIgnoredFiles(root, gitTree, files, git);
+  const tocIgnore = ignoredFiles(root, gitTree, files, git, ".tocignore");
   if (tocIgnore.warning) add("warning", ".tocignore", undefined, tocIgnore.warning);
+  const linkIgnore = ignoredFiles(root, gitTree, files, git, ".linkignore");
+  if (linkIgnore.warning) add("warning", ".linkignore", undefined, linkIgnore.warning);
   for (const { rel, target } of broken) {
     add(
       "error",
@@ -859,8 +861,9 @@ async function check(root, profile, checkUrls, pyckBase, requireSkillHarness, fe
     if (!isMd) continue;
     const prose = proseLines(lines);
 
-    // Rule 6: only markdown files we treat as checked (agent files, skill dirs, docs, README).
-    if (linkChecked) {
+    // Rule 6: only markdown files we treat as checked (agent files, skill dirs, docs, README),
+    // minus the files a `.linkignore` matches.
+    if (linkChecked && !linkIgnore.ignored.has(rel)) {
       for (const { line, text: t } of prose) {
         const re = /\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g;
         let m;

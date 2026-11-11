@@ -4,7 +4,7 @@ description: >-
   budgets, a line limit for Markdown agent files (skill dirs, CODING_STANDARDS.md), a
   managed table of contents on every doc with two or more sections, skill frontmatter,
   relative links that resolve, no URLs in agent files (they name local
-  `~/.pyck/<repo>/` paths, which must exist) and no raw links in human files. Exemptions via `.tocignore` need git in PATH (tested
+  `~/.pyck/<repo>/` paths, which must exist) and no raw links in human files. Exemptions via `.tocignore` and `.linkignore` need git in PATH (tested
   with git 2.x). Plain Node, no dependencies; runs locally as
   `node agent-docs-check/check.mjs <path>`.
 inputs:
