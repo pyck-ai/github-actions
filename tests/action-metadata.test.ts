@@ -54,6 +54,20 @@ describe("action metadata", () => {
     expect(expressionsOutsideRuns(doc, [], [])).toEqual([]);
   });
 
+  it("docs-check is a node24 action with its three inputs and the files it ships", () => {
+    const doc = parse(readFileSync(join(root, "docs-check", "action.yml"), "utf8")) as {
+      inputs: Record<string, { default: string }>;
+      runs: { using: string; main: string };
+    };
+    expect(doc.runs).toEqual({ using: "node24", main: "check.mjs" });
+    expect(Object.keys(doc.inputs).sort()).toEqual(["extra-words", "markdownlint-config", "path"]);
+    expect(doc.inputs["path"]?.default).toBe("docs");
+    const shipped = readdirSync(join(root, "docs-check"));
+    expect(shipped).toEqual(
+      expect.arrayContaining(["heading-words.txt", "markdownlint-cli2.yaml"]),
+    );
+  });
+
   it("jev-check exposes run-script and image, set by a step that runs first", () => {
     const doc = parse(readFileSync(join(root, "jev-check", "action.yml"), "utf8")) as {
       outputs: Record<string, { value: string }>;

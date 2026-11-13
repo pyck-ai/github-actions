@@ -1,0 +1,13 @@
+# Words and phrases that keep their capital letter inside a heading, a page title or a sidebar label.
+# Read by docs-check/check.mjs; the `extra-words` input adds a caller's own file in the same form.
+# One word or phrase per line, case-sensitive; `#` starts a comment.
+# Add proper nouns and product names only. A common noun (Warehouse, Item, Workflow, Tenant) is not a name:
+# write it in lowercase. All-caps words (API, NATS) and CamelCase words (GraphQL) need no entry.
+
+# Third-party products and proper nouns. Each of these was checked against the guides or the code.
+Shopify
+Temporal
+Zitadel
+Kubernetes
+Hetzner
+Apollo

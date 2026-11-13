@@ -1,0 +1,29 @@
+name: docs-check
+description: >-
+  Checks a docs folder: sentence-case headings, no links to pyck-ai/guidelines
+  and markdownlint-cli2 (pinned). Reads the folder's Markdown, skipping dot
+  entries, symlinks and folders named `internal`. A missing folder or one with no
+  Markdown file fails. Plain Node; markdownlint runs through `npx`, which needs
+  network on first use. Runs locally as `node docs-check/check.mjs <path>`.
+inputs:
+  path:
+    description: Docs folder to check, relative to the workspace.
+    required: false
+    default: docs
+  extra-words:
+    description: >-
+      File of extra words and phrases that keep their capital letter in a
+      heading (proper nouns, product names), relative to the workspace. One per
+      line, `#` starts a comment. Added to the list the action ships. Empty
+      means none.
+    required: false
+    default: ""
+  markdownlint-config:
+    description: >-
+      markdownlint-cli2 config file, relative to the workspace. Empty means the
+      one the action ships (MD013, MD041 and MD060 off).
+    required: false
+    default: ""
+runs:
+  using: node24
+  main: check.mjs
