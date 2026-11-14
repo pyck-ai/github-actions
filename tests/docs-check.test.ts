@@ -3,13 +3,13 @@ import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { main } from "../docs-check/check.mjs";
+import { lintCommand, main } from "../docs-check/check.mjs";
 
 // Runs docs-check's main() in-process against the fixture trees in
 // tests/fixtures/docs-check/<case>/ (each holds a `docs/` folder). The first
 // two checks need no tools, so most tests inject a `lint` that finds nothing.
 // The "markdownlint" block starts the real script, which runs the pinned
-// markdownlint-cli2 through npx and so needs network access the first time.
+// markdownlint-cli2 through bunx or npx and so needs network access the first time.
 
 const root = join(__dirname, "..");
 const script = join(root, "docs-check", "check.mjs");
@@ -247,7 +247,61 @@ describe("docs-check", () => {
     });
   });
 
-  // Starts the real script and the real, pinned markdownlint-cli2 through npx.
+  describe("lintCommand", () => {
+    const spec = "markdownlint-cli2@0.23.1";
+    const execPath = "/runner/externals/node24/bin/node";
+    const cli = "/runner/externals/node24/lib/node_modules/npm/bin/npx-cli.js";
+    const lookups = (files: string[]) => ({
+      execPath,
+      pathEnv: "/usr/local/bin::/usr/bin",
+      exists: (f: string) => files.includes(f),
+      realpath: (f: string) => (f === "/runner/externals/node24/bin/npx" ? cli : f),
+    });
+
+    it("prefers bunx on PATH over every npx", () => {
+      const { cmd, args } = lintCommand(
+        lookups(["/usr/bin/bunx", "/runner/externals/node24/bin/npx", "/usr/bin/npx"]),
+      );
+      expect(cmd).toBe("/usr/bin/bunx");
+      expect(args).toEqual([spec]);
+    });
+
+    it("takes the first bunx on PATH and skips an empty PATH entry", () => {
+      const { cmd } = lintCommand(lookups(["/usr/local/bin/bunx", "/usr/bin/bunx"]));
+      expect(cmd).toBe("/usr/local/bin/bunx");
+    });
+
+    it("runs the npx-cli.js of the running Node with that Node when there is no bunx", () => {
+      const { cmd, args } = lintCommand(
+        lookups(["/runner/externals/node24/bin/npx", "/usr/bin/npx"]),
+      );
+      expect(cmd).toBe(execPath);
+      expect(args).toEqual([cli, "--yes", spec]);
+    });
+
+    it("falls back to npx on PATH when there is neither, and says what was tried", () => {
+      const { cmd, args, tried } = lintCommand(lookups([]));
+      expect(cmd).toBe("npx");
+      expect(args).toEqual(["--yes", spec]);
+      expect(tried.join("\n")).toContain("bunx on PATH: not found");
+      expect(tried.join("\n")).toContain(`npx next to ${execPath}: not found`);
+    });
+
+    it("does not run a bundled npx that does not resolve to a JavaScript file", () => {
+      const { cmd } = lintCommand({
+        ...lookups(["/runner/externals/node24/bin/npx"]),
+        realpath: (f: string) => f,
+      });
+      expect(cmd).toBe("npx");
+    });
+
+    it("finds no bunx when PATH is empty", () => {
+      const { cmd } = lintCommand({ ...lookups(["/bunx"]), pathEnv: "" });
+      expect(cmd).toBe("npx");
+    });
+  });
+
+  // Starts the real script and the real, pinned markdownlint-cli2 through bunx or npx.
   describe("markdownlint (real markdownlint-cli2 0.23.1)", { timeout: 120_000 }, () => {
     it("passes on clean Markdown and prints the summary", async () => {
       await withFixture("pass", (ws) => {

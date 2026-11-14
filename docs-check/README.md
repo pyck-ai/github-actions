@@ -9,7 +9,7 @@
 
 Checks a docs folder: sentence-case headings, no links to the company guidelines, and markdownlint.
 
-A plain JavaScript action (`node24`, no dependencies, no build step). The checker is [`check.mjs`](./check.mjs); its header owns the local invocation. The first two checks are adapted from [pyck-ai/docs-poc](https://github.com/pyck-ai/docs-poc) at `9ec8c73` (directory mode of `check-headings.mjs` and `check-guideline-links.mjs`). markdownlint runs through `npx markdownlint-cli2@0.23.1`, so the action needs network access the first time it runs on a runner.
+A plain JavaScript action (`node24`, no dependencies, no build step). The checker is [`check.mjs`](./check.mjs); its header owns the local invocation. The first two checks are adapted from [pyck-ai/docs-poc](https://github.com/pyck-ai/docs-poc) at `9ec8c73` (directory mode of `check-headings.mjs` and `check-guideline-links.mjs`). markdownlint runs `markdownlint-cli2@0.23.1` through the first of these that exists: `bunx` on `PATH`; the `npx` that ships with the Node running the action (started as `<that node> npx-cli.js`, so a `node` on `PATH` that is really bun does not matter); `npx` on `PATH`. A runner image with `bun` but no `npx` therefore works. If none starts, the error names what was tried. The action needs network access the first time it runs on a runner.
 
 ## Usage
 

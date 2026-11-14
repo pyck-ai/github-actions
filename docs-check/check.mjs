@@ -7,13 +7,22 @@
 // The checks (the first two adapted from pyck-ai/docs-poc at 9ec8c73, directory mode):
 //   headings          sentence case for every heading, the frontmatter `title` and the link texts of SUMMARY.md
 //   guideline-links   no link to pyck-ai/guidelines
-//   markdownlint      markdownlint-cli2 on the folder's Markdown, through `npx`
+//   markdownlint      markdownlint-cli2 on the folder's Markdown, through the first of: `bunx` on PATH,
+//                     the npx bundled with the Node running this script, `npx` on PATH (see lintCommand)
 // All three read the same files: the folder's *.md, skipping dot entries, symlinks and folders named `internal`.
 // Exit 0 when nothing is found, 1 when a check finds something, 2 for a bad path or option.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MARKDOWNLINT_VERSION = "0.23.1";
@@ -181,22 +190,77 @@ function checkGuidelineLinks(dir, files) {
 // `<file>:<line>[:<column>] error <rule> <description>`, on stderr.
 const LINT_LINE = /^(.+?):(\d+)(?::\d+)? (?:error|warning) (.*)$/;
 
+const MARKDOWNLINT_SPEC = `markdownlint-cli2@${MARKDOWNLINT_VERSION}`;
+
+/** True for a regular file the process may execute. */
+function isExecutable(file) {
+  try {
+    accessSync(file, constants.X_OK);
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How to start the pinned markdownlint-cli2: `{ cmd, args, tried }`, where `args` come before
+ * the tool's own arguments and `tried` names the options looked at, for the error message.
+ * The order:
+ *   1. `bunx` on PATH.
+ *   2. The npx of the Node running this script (the runner's own Node for a `node24` action ships
+ *      npm). Its `npx-cli.js` has a `#!/usr/bin/env node` shebang, which would pick whatever `node`
+ *      is first on PATH (bun on pyck's runner image), so it runs as `execPath npx-cli.js`.
+ *   3. `npx` on PATH.
+ * The lookups are parameters so a test can check the order without a file system.
+ */
+export function lintCommand({
+  execPath = process.execPath,
+  pathEnv = process.env.PATH ?? "",
+  exists = isExecutable,
+  realpath = realpathSync,
+} = {}) {
+  const tried = [];
+  const bunx = pathEnv
+    .split(delimiter)
+    .filter(Boolean)
+    .map((d) => join(d, "bunx"))
+    .find((f) => exists(f));
+  if (bunx) return { cmd: bunx, args: [MARKDOWNLINT_SPEC], tried };
+  tried.push("bunx on PATH: not found");
+
+  const bundled = join(dirname(execPath), "npx");
+  if (exists(bundled)) {
+    const cli = realpath(bundled);
+    if (cli.endsWith(".js"))
+      return { cmd: execPath, args: [cli, "--yes", MARKDOWNLINT_SPEC], tried };
+    tried.push(`npx next to ${execPath}: ${cli} is not a JavaScript file`);
+  } else tried.push(`npx next to ${execPath}: not found`);
+
+  tried.push("npx on PATH");
+  return { cmd: "npx", args: ["--yes", MARKDOWNLINT_SPEC], tried };
+}
+
 /**
  * Runs markdownlint-cli2 on `files` (relative to `dir`) and returns the findings as
  * `file:line: <rule> <description>` lines. Throws when it does not run: exit code 2
- * (bad config, crash) or no `npx`. `npx` downloads the pinned version on first use.
+ * (bad config, crash) or no way to start it (see lintCommand). The pinned version is
+ * downloaded on first use.
  */
 function defaultLint({ dir, files, config }) {
+  const { cmd, args: runner, tried } = lintCommand();
   const args = [
-    "--yes",
-    `markdownlint-cli2@${MARKDOWNLINT_VERSION}`,
+    ...runner,
     "--config",
     config,
     // A leading colon names a literal path, so a file name is never read as a glob.
     ...files.map((f) => `:${f}`),
   ];
-  const res = spawnSync("npx", args, { cwd: dir, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-  if (res.error) throw new Error(`markdownlint-cli2 did not run: ${res.error.message}`);
+  const res = spawnSync(cmd, args, { cwd: dir, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  if (res.error) {
+    throw new Error(
+      `markdownlint-cli2 did not run: ${res.error.message} (started ${cmd}; tried: ${tried.join("; ")})`,
+    );
+  }
   const found = [];
   for (const raw of res.stderr.split(/\r?\n/)) {
     const m = LINT_LINE.exec(raw);
@@ -237,7 +301,7 @@ function parseArgs(argv, env, log, error) {
 
 // ---------------------------------------------------------------------- main
 
-/** `lint` is injectable so tests need not start npx; it has defaultLint's signature. */
+/** `lint` is injectable so tests need not start a process; it has defaultLint's signature. */
 export async function main({
   argv = process.argv.slice(2),
   env = process.env,
