@@ -42,7 +42,9 @@ jobs:
       issues: write
       pull-requests: write
       contents: write
-    secrets: inherit
+    # No `secrets:`: tidy-repo.yml uses only GITHUB_TOKEN, which a called
+    # workflow always gets, so `secrets: inherit` would only hand it every
+    # other secret of the repository for nothing (ghalint deny_inherit_secrets).
     # No inputs: the declared defaults (30-day workflow-run retention,
     # 30/7-day issue and PR stale/close, 90-day branch retention) suit a
     # small, young, public repo. Renovate branches close their own PRs on
@@ -59,7 +61,7 @@ jobs:
       contents: read
       packages: write
       issues: write
-    secrets: inherit
+    # No `secrets:`, as above: tidy-ghcr.yml uses only GITHUB_TOKEN.
     # No inputs: `.github/tidy-ghcr.yml` (packages: []) and the workflow's own
     # defaults are enough. On the daily `schedule` trigger tidy-ghcr.yml
     # forces `apply` on regardless of `inputs.apply` (see its

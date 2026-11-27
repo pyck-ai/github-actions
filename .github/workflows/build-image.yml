@@ -244,6 +244,8 @@ jobs:
           # Reproducible builds: the head commit with full history (see the
           # header comment). Off: GitHub's defaults, as before.
           ref: ${{ inputs.reproducible && (github.event.pull_request.head.sha || github.sha) || '' }}
+          # No token left in .git/config: no later step pushes or fetches with it.
+          persist-credentials: false
           # String values: the number 0 is falsy in an expression, so
           # `&& 0 || 1` would always give 1.
           fetch-depth: ${{ inputs.reproducible && '0' || '1' }}
@@ -441,6 +443,8 @@ jobs:
           # Reproducible builds: the head commit with full history (see the
           # header comment). Off: GitHub's defaults, as before.
           ref: ${{ inputs.reproducible && (github.event.pull_request.head.sha || github.sha) || '' }}
+          # No token left in .git/config: no later step pushes or fetches with it.
+          persist-credentials: false
           # String values: the number 0 is falsy in an expression, so
           # `&& 0 || 1` would always give 1.
           fetch-depth: ${{ inputs.reproducible && '0' || '1' }}
@@ -769,6 +773,8 @@ jobs:
           # Reproducible builds: the head commit with full history (see the
           # header comment). Off: GitHub's defaults, as before.
           ref: ${{ inputs.reproducible && (github.event.pull_request.head.sha || github.sha) || '' }}
+          # No token left in .git/config: no later step pushes or fetches with it.
+          persist-credentials: false
           # String values: the number 0 is falsy in an expression, so
           # `&& 0 || 1` would always give 1.
           fetch-depth: ${{ inputs.reproducible && '0' || '1' }}

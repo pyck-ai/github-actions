@@ -27,9 +27,14 @@ jobs:
       contents: read
     # Lint, tsc and 500+ tests: the standard pool.
     runs-on: [pyck-ai, firecracker, standard]
+    # Lint, tsc and the tests took at most 1.3 minutes in the last 30 runs;
+    # 15 leaves room for a cold npm cache.
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -44,13 +49,15 @@ jobs:
       - name: Run the checks
         run: task check
 
-  # Both run the shared actions of this repo (`task zizmor`, `task gitleaks`),
-  # which install the pinned tool binary and then run the task. They are two
-  # jobs, not steps of `ci`, so a finding is attributed to its own check.
+  # All three run the shared actions of this repo (`task zizmor`,
+  # `task ghalint`, `task gitleaks`), which install the pinned tool binary and
+  # then run the task. They are separate jobs, not steps of `ci`, so a finding
+  # is attributed to its own check.
   zizmor:
     permissions:
       contents: read
     runs-on: [pyck-ai, firecracker, light]
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,10 +67,27 @@ jobs:
       - name: Scan workflows and actions
         uses: ./zizmor
 
+  ghalint:
+    permissions:
+      contents: read
+    runs-on: [pyck-ai, firecracker, light]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # ghalint comes from the runner image (pyck-ai/baseimages all-in-one,
+      # which pyck-ai/github-runner builds on), so nothing is downloaded here.
+      - name: Check workflows and actions against the ghalint policies
+        run: task ghalint
+
   gitleaks:
     permissions:
       contents: read
     runs-on: [pyck-ai, firecracker, light]
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,15 +103,18 @@ jobs:
   # cancelled; a skipped job passes. The logic is this repo's own ./gate action.
   ci-success:
     if: always()
-    needs: [ci, zizmor, gitleaks]
+    needs: [ci, zizmor, ghalint, gitleaks]
     # The only content it reads is the ./gate action itself, which the local
     # `uses:` path needs a checkout for.
     permissions:
       contents: read
     runs-on: [pyck-ai, firecracker, light]
+    timeout-minutes: 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Check all required jobs succeeded
         uses: ./gate

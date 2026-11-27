@@ -54,11 +54,11 @@ Work on this repository:
 
 ```sh
 npm ci             # install dependencies
-task ci            # run every check CI runs (also needs zizmor and gitleaks on PATH)
+task ci            # run every check CI runs (also needs zizmor, ghalint and gitleaks on PATH)
 task generate      # rebuild ghcr-tidy/dist/, branch-tidy/dist/, run-tidy/dist/ and cache-tidy/dist/ (committed) after changing their src/
 ```
 
-Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json); CI runs 24), npm, [go-task](https://taskfile.dev), [zizmor](https://docs.zizmor.sh) and [gitleaks](https://github.com/gitleaks/gitleaks) (versions in [zizmor/action.yml](./zizmor/action.yml) and [gitleaks/action.yml](./gitleaks/action.yml)). `task check` runs the Node checks alone. Run `task --list` for every other command. For the inputs and behaviour of one action, see the README in its directory: [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [branch-tidy](./branch-tidy/README.md), [run-tidy](./run-tidy/README.md), [cache-tidy](./cache-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [docs-check](./docs-check/README.md), [zizmor](./zizmor/README.md), [gitleaks](./gitleaks/README.md).
+Prerequisites: Node.js 22 or later (`engines` in [package.json](./package.json); CI runs 24), npm, [go-task](https://taskfile.dev), [zizmor](https://docs.zizmor.sh), [ghalint](https://github.com/suzuki-shunsuke/ghalint) and [gitleaks](https://github.com/gitleaks/gitleaks) (versions in [zizmor/action.yml](./zizmor/action.yml) and [gitleaks/action.yml](./gitleaks/action.yml); CI takes ghalint from the runner image, version in pyck-ai/baseimages `buildargs.conf`). `task check` runs the Node checks alone. Run `task --list` for every other command. For the inputs and behaviour of one action, see the README in its directory: [verify-image](./verify-image/README.md), [ghcr-tidy](./ghcr-tidy/README.md), [branch-tidy](./branch-tidy/README.md), [run-tidy](./run-tidy/README.md), [cache-tidy](./cache-tidy/README.md), [jev-check](./jev-check/README.md), [agent-docs-check](./agent-docs-check/README.md), [docs-check](./docs-check/README.md), [zizmor](./zizmor/README.md), [gitleaks](./gitleaks/README.md).
 
 ## Documentation
 

@@ -1,0 +1,11 @@
+# ghalint exclusions. `task ghalint` runs the check. Only four policies can be
+# excluded at all; each entry here names one workflow file and job and says
+# why. Only ever remove entries; a new finding must be fixed, not added here.
+excludes:
+  # The build job hoists the Docker Hub username into its env because
+  # `secrets` cannot be read in an `if:`; the conditional "Log in to Docker
+  # Hub" step reads env.DOCKERHUB_USERNAME instead. The username is not the
+  # credential: the token stays in `secrets` and goes to that step only.
+  - policy_name: job_secrets
+    workflow_file_path: .github/workflows/build-image.yml
+    job_name: build

@@ -2,9 +2,9 @@
 version: "3"
 
 # `ci` runs every check; `generate` rebuilds what the repository commits as
-# generated output. The CI workflow runs `check`, `zizmor` and `gitleaks` as
-# three parallel jobs, which together are `ci`. Run `npm ci` first on a clean
-# checkout.
+# generated output. The CI workflow runs `check`, `zizmor`, `ghalint` and
+# `gitleaks` as four parallel jobs, which together are `ci`. Run `npm ci`
+# first on a clean checkout.
 tasks:
   generate:
     desc: Rebuild the committed ghcr-tidy/dist, branch-tidy/dist, run-tidy/dist and cache-tidy/dist bundles
@@ -16,7 +16,17 @@ tasks:
     cmds:
       - task: check
       - task: zizmor
+      - task: ghalint
       - task: gitleaks
+
+  ghalint:
+    desc: Check the workflows and composite actions against the ghalint policies
+    # `run` checks .github/workflows, `run-action` the composite actions in the
+    # top-level directories. Exclusions are in .github/ghalint.yml; that file
+    # may only shrink. Offline: no token needed.
+    cmds:
+      - ghalint run
+      - ghalint run-action
 
   zizmor:
     desc: Scan the workflows and composite actions for security problems
