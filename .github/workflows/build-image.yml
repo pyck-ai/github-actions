@@ -120,6 +120,15 @@ on:
         required: false
       DOCKERHUB_TOKEN:
         required: false
+      # Optional: a token that can read the org's private repositories, for
+      # callers whose build fetches a private Go module. The build step
+      # exports it as GITHUB_TOKEN, which the caller's bake file hands to
+      # the Dockerfile as a build secret
+      # (`secret = ["id=github_token,env=GITHUB_TOKEN"]`). The workflow's own
+      # GITHUB_TOKEN cannot do this: it reads only the calling repository.
+      # Named after the org secret, so `secrets: inherit` passes it.
+      PYCK_WIDE_REPO_ACCESS_TOKEN:
+        required: false
     inputs:
       registry:
         description: >-
@@ -610,7 +619,11 @@ jobs:
           # docker/bake-action#239 and #135, and pyck-ai/baseimages'
           # build-images.yml which hit this for real.
           BUILDX_METADATA_PROVENANCE: disabled
+          PRIVATE_REPO_TOKEN: ${{ secrets.PYCK_WIDE_REPO_ACCESS_TOKEN }}
         run: |
+          # Exported only when set, so a caller without the secret sees no
+          # GITHUB_TOKEN at all, as before.
+          if [ -n "$PRIVATE_REPO_TOKEN" ]; then export GITHUB_TOKEN="$PRIVATE_REPO_TOKEN"; fi
           overrides=(--pull --metadata-file "$RUNNER_TEMP/bake-meta.json")
           # Reproducible: no provenance attestation in the image; its
           # run-specific times and ids would change the index digest.
